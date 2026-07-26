@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Config } from "./types.ts";
@@ -67,6 +67,34 @@ export async function loadConfig(path = configPath()): Promise<Config> {
     throw err;
   }
   return validate(JSON.parse(raw));
+}
+
+/**
+ * Add entries to the config, keeping it sorted and never silently replacing an
+ * existing tool — a tool you hand-tuned should survive a later `bumpii add`.
+ * Returns the names actually added.
+ */
+export async function addTools(
+  entries: import("./types.ts").ToolConfig[],
+  path = configPath(),
+): Promise<string[]> {
+  const cfg = await loadConfig(path);
+  const have = new Set(cfg.tools.map((t) => t.name));
+  const added: string[] = [];
+  for (const e of entries) {
+    if (have.has(e.name)) continue;
+    cfg.tools.push(e);
+    have.add(e.name);
+    added.push(e.name);
+  }
+  if (added.length === 0) return [];
+  cfg.tools.sort((a, b) => a.name.localeCompare(b.name));
+  // Write via a temp file + rename: a config torn by a crash mid-write is the
+  // kind of thing you only notice when the next run reports every tool gone.
+  const tmp = `${path}.tmp.${process.pid}`;
+  await writeFile(tmp, `${JSON.stringify(cfg, null, 2)}\n`, "utf8");
+  await rename(tmp, path);
+  return added;
 }
 
 /** Write the default config. Never clobbers an existing one. */

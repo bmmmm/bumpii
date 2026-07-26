@@ -42,9 +42,48 @@ $ bumpii init          # writes ~/.config/bumpii/tools.json
 Node 24+ (runs the TypeScript directly, no build step). `pnpm`, not npm — the
 `preinstall` guard will say so.
 
+## Adding tools
+
+For anything installed via Homebrew, let it write the entry:
+
+```console
+$ bumpii scan                       # installed formulae you don't track yet
+44 installed formula(e) not tracked:
+  bat bats-core cmake gitleaks jq restic shellcheck tea uv …
+
+$ bumpii add tea gitleaks uv
+tea → tea 0.14.2
+  source: https://gitea.com/gitea/tea
+  probe:  tea --version → Version: 0.14.2	golang: 1.26.4
+  update: brew upgrade tea
+…
+added to ~/.config/bumpii/tools.json: tea, gitleaks, uv
+```
+
+Everything is derived from what is already on the machine: brew knows the
+upstream tarball URL (hence the forge repo), which binaries the formula
+installs — `forgejo-cli` ships `fj`, so the entry is keyed on the binary — and
+which version is current.
+
+The one thing brew cannot say is how a binary reports its own version, so
+`bumpii` probes `--version`, `version`, `-V`, `-v` and **validates the probe
+against the version brew already knows**. A regex that matched nothing would
+make the tool look permanently "not installed"; requiring it to reproduce the
+known version is what makes a generated entry trustworthy. Colour is stripped
+first, so a CLI that bolds its version number (`tea` does) still yields a
+portable regex.
+
+`--dry-run` shows the entries without writing. A formula whose source cannot
+be determined is reported and skipped rather than guessed at — a plain tarball
+mirror (`ftp.gnu.org/gnu/wget/…`) looks like `owner/repo` but is not a forge,
+and an entry built from it would 404 on every run.
+
+`scan` lists `brew leaves` — what you asked for, not the dependencies dragged
+in behind them.
+
 ## Configure
 
-`~/.config/bumpii/tools.json`:
+Or write entries by hand. `~/.config/bumpii/tools.json`:
 
 ```json
 {

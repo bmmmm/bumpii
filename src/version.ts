@@ -6,6 +6,18 @@ import type { Release, ToolConfig } from "./types.ts";
 const run = promisify(execFile);
 
 /**
+ * Strip ANSI SGR sequences before matching. Some CLIs colour their version
+ * output even when stdout is not a TTY (`tea --version` prints the number in
+ * bold), and those bytes would otherwise have to appear verbatim in every
+ * `version.match` regex — working today and breaking the moment the tool stops
+ * colouring, in a way that reads as "not installed".
+ */
+export function stripAnsi(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+/**
  * Ask the installed binary for its version. Returns null when the tool is not
  * installed at all, which is a normal state (a tool you track but have not put
  * on this machine yet), not an error.
@@ -30,7 +42,7 @@ export async function installedVersion(tool: ToolConfig): Promise<string | null>
     out = `${e.stdout ?? ""}\n${e.stderr ?? ""}`;
     if (!out.trim()) throw new Error(`${tool.name}: version probe failed: ${e.message}`);
   }
-  const m = new RegExp(tool.version.match).exec(out);
+  const m = new RegExp(tool.version.match).exec(stripAnsi(out));
   if (!m?.[1]) {
     throw new Error(
       `${tool.name}: version.match /${tool.version.match}/ did not match output: ${out.trim().split("\n")[0]}`,

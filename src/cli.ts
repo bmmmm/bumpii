@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { initConfig, loadConfig, configPath } from "./config.ts";
+import { addTools, initConfig, loadConfig, configPath } from "./config.ts";
+import { discoverFormula, untrackedFormulae } from "./discover.ts";
 import { digest, resolveEngine } from "./judge.ts";
 import { listReleases, parseSource } from "./sources.ts";
 import { renderReport } from "./render.ts";
@@ -15,6 +16,8 @@ const HELP = `bumpii — what changed in the CLIs you use, judged against your o
 
   bumpii [options]        digest pending releases for every configured tool
   bumpii init             write a starter config
+  bumpii add <formula>…   derive entries from installed Homebrew formulae
+  bumpii scan             list installed formulae not yet tracked
   bumpii --yes            digest, then run each tool's update command
 
 Options:
@@ -22,6 +25,7 @@ Options:
   --model <id>        force a judge model instead of discovering one
   --json              machine-readable report
   --no-judge          skip the model; list pending releases and their URLs
+  --dry-run           with add: show the entries, write nothing
   -h, --help
 
 Config: ${configPath()}
@@ -29,27 +33,43 @@ Engine: OPENAI_BASE_URL (oMLX/Ollama/vLLM) is preferred, else the \`claude\` CLI
 `;
 
 interface Args {
-  cmd: "digest" | "init" | "help";
+  cmd: "digest" | "init" | "add" | "scan" | "help";
   yes: boolean;
   json: boolean;
   noJudge: boolean;
+  dryRun: boolean;
   only: string[];
+  /** Positional arguments after a subcommand, e.g. formula names for `add`. */
+  rest: string[];
   model?: string;
 }
 
 export function parseArgs(argv: string[]): Args {
-  const a: Args = { cmd: "digest", yes: false, json: false, noJudge: false, only: [] };
+  const a: Args = {
+    cmd: "digest",
+    yes: false,
+    json: false,
+    noJudge: false,
+    dryRun: false,
+    only: [],
+    rest: [],
+  };
+  let sawCmd = false;
   for (let i = 0; i < argv.length; i++) {
     const v = argv[i];
     if (v === undefined) continue;
-    if (v === "init") a.cmd = "init";
-    else if (v === "-h" || v === "--help") a.cmd = "help";
+    if (!sawCmd && (v === "init" || v === "add" || v === "scan")) {
+      a.cmd = v;
+      sawCmd = true;
+    } else if (v === "-h" || v === "--help") a.cmd = "help";
     else if (v === "--yes" || v === "-y") a.yes = true;
     else if (v === "--json") a.json = true;
     else if (v === "--no-judge") a.noJudge = true;
+    else if (v === "--dry-run" || v === "-n") a.dryRun = true;
     else if (v === "--only") a.only = (argv[++i] ?? "").split(",").filter(Boolean);
     else if (v === "--model") a.model = argv[++i];
     else if (v.startsWith("-")) throw new Error(`unknown option: ${v}`);
+    else a.rest.push(v);
   }
   return a;
 }
@@ -64,6 +84,59 @@ async function main(): Promise<number> {
   if (args.cmd === "init") {
     const { path, created } = await initConfig();
     process.stdout.write(created ? `wrote ${path}\n` : `already exists: ${path}\n`);
+    return 0;
+  }
+
+  if (args.cmd === "scan") {
+    const cfg = await loadConfig();
+    // Key by the formula each entry upgrades, not by its binary name.
+    const tracked = new Set(
+      cfg.tools.flatMap((t) => {
+        const m = /brew\s+(?:upgrade|install)\s+(\S+)/.exec(t.update);
+        return m?.[1] ? [t.name, m[1]] : [t.name];
+      }),
+    );
+    const untracked = await untrackedFormulae(tracked);
+    if (untracked.length === 0) {
+      process.stdout.write("every installed formula is already tracked\n");
+      return 0;
+    }
+    process.stdout.write(
+      `${untracked.length} installed formula(e) not tracked:\n  ${untracked.join(" ")}\n\n` +
+        `add the ones whose release notes you want:\n  bumpii add ${untracked.slice(0, 4).join(" ")}\n`,
+    );
+    return 0;
+  }
+
+  if (args.cmd === "add") {
+    if (args.rest.length === 0) throw new Error("add: name at least one Homebrew formula");
+    const found = [];
+    for (const formula of args.rest) {
+      try {
+        const d = await discoverFormula(formula);
+        found.push(d);
+        process.stdout.write(
+          `${d.formula} → ${d.entry.name} ${d.version}\n` +
+            `  source: ${d.source}\n` +
+            `  probe:  ${d.probe}\n` +
+            `  update: ${d.entry.update}\n`,
+        );
+      } catch (err) {
+        // One unresolvable formula must not sink the rest of the batch.
+        process.stderr.write(`${(err as Error).message}\n`);
+      }
+    }
+    if (found.length === 0) return 2;
+    if (args.dryRun) {
+      process.stdout.write("\n--dry-run: nothing written\n");
+      return 0;
+    }
+    const added = await addTools(found.map((d) => d.entry));
+    process.stdout.write(
+      added.length > 0
+        ? `\nadded to ${configPath()}: ${added.join(", ")}\n`
+        : `\nnothing added — already tracked\n`,
+    );
     return 0;
   }
 

@@ -1,0 +1,191 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Derive a tool entry from an installed Homebrew formula.
+//
+// Everything needed is already on the machine: brew knows the upstream tarball
+// URL (hence the forge repo), which binaries the formula installs, and which
+// version is current. The one thing brew cannot tell us is how the binary
+// reports its own version — so we probe, and validate the probe against the
+// version brew already knows. A guessed regex that happens to match nothing
+// would silently make the tool look "not installed" forever; matching the
+// known version is what makes the generated entry trustworthy.
+import { execFile } from "node:child_process";
+import { readdir } from "node:fs/promises";
+import { promisify } from "node:util";
+import type { ToolConfig } from "./types.ts";
+import { stripAnsi } from "./version.ts";
+
+const run = promisify(execFile);
+
+export interface Discovery {
+  formula: string;
+  binary: string;
+  version: string;
+  source: string;
+  entry: ToolConfig;
+  /** How the version probe was confirmed, for the user to sanity-check. */
+  probe: string;
+}
+
+/** Version-probe forms, in the order they are tried. */
+const PROBES = [["--version"], ["version"], ["-V"], ["-v"], []];
+
+async function brewJson(formula: string): Promise<Record<string, unknown>> {
+  const { stdout } = await run("brew", ["info", "--json=v2", formula], { timeout: 60_000 });
+  const d = JSON.parse(stdout) as { formulae?: Record<string, unknown>[] };
+  const f = d.formulae?.[0];
+  if (!f) throw new Error(`brew knows no formula "${formula}"`);
+  return f;
+}
+
+async function brewPrefix(): Promise<string> {
+  const { stdout } = await run("brew", ["--prefix"], { timeout: 30_000 });
+  return stdout.trim();
+}
+
+/**
+ * Map a forge URL to a bumpii source string. github.com and codeberg.org get
+ * their shorthands; anything else Forgejo/Gitea-shaped keeps its full URL,
+ * which parseSource turns into that host's /api/v1.
+ */
+export function sourceFromUrls(urls: string[]): string | null {
+  const text = urls.filter(Boolean).join(" ");
+  const gh = /github\.com\/([^/\s]+\/[^/\s]+?)(?:\.git|\/archive|\/releases|[\s/]|$)/.exec(text);
+  if (gh?.[1]) return `github:${gh[1]}`;
+  const cb = /codeberg\.org\/([^/\s]+\/[^/\s]+?)(?:\.git|\/archive|\/releases|[\s/]|$)/.exec(text);
+  if (cb?.[1]) return `codeberg:${cb[1]}`;
+  // gitea.com and self-hosted Forgejo/Gitea instances speak the same API — but
+  // only accept hosts that plausibly ARE one. Plenty of formulae ship from a
+  // plain tarball mirror whose path plausibly looks like owner/repo
+  // (ftp.gnu.org/gnu/wget/…), and turning that into an /api/v1 source would
+  // produce an entry that 404s on every run. Returning null instead sends the
+  // user to the "add it by hand" message, which is recoverable.
+  const other = /https?:\/\/([^/\s]+)\/([^/\s]+\/[^/\s]+?)(?:\.git|\/archive|\/releases|[\s/]|$)/.exec(text);
+  const host = other?.[1] ?? "";
+  const forgeLike = /^git\./.test(host) || /(gitea|forgejo|codeberg)/.test(host);
+  if (other?.[2] && forgeLike) return `https://${host}/${other[2]}`;
+  return null;
+}
+
+/** Binaries the formula installs, from its opt prefix (no `brew ls` — that
+ * reads a cache path some sandboxes deny). */
+async function binariesOf(formula: string): Promise<string[]> {
+  const prefix = await brewPrefix();
+  try {
+    return await readdir(`${prefix}/opt/${formula}/bin`);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Find a probe whose output contains the version brew reports, and build a
+ * regex anchored on the surrounding text. Returns null when nothing matches —
+ * better to say so than to write a config entry that never resolves.
+ */
+async function confirmProbe(
+  binary: string,
+  known: string,
+): Promise<{ cmd: string[]; match: string; probe: string } | null> {
+  for (const args of PROBES) {
+    let out = "";
+    try {
+      const r = await run(binary, args, { timeout: 10_000 });
+      out = `${r.stdout}\n${r.stderr}`;
+    } catch (err) {
+      const e = err as { stdout?: string; stderr?: string; code?: string };
+      if (e.code === "ENOENT") return null;
+      out = `${e.stdout ?? ""}\n${e.stderr ?? ""}`;
+    }
+    // Strip colour before deriving the regex, or the escape bytes end up as
+    // literals in it (see stripAnsi in version.ts, which strips at match time).
+    const line = stripAnsi(out)
+      .split("\n")
+      .find((l) => l.includes(known));
+    if (!line) continue;
+
+    // Anchor on the literal text before the version so the regex stays
+    // specific: "gh version 2.96.0" -> /gh version ([0-9][0-9.]*)/ rather than
+    // a bare number match that would also catch a date or a Go version.
+    const idx = line.indexOf(known);
+    const prefixText = line.slice(0, idx);
+    const escaped = prefixText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return {
+      cmd: [binary, ...args],
+      match: `${escaped}v?([0-9][0-9.]*)`,
+      probe: `${[binary, ...args].join(" ")} → ${line.trim()}`,
+    };
+  }
+  return null;
+}
+
+/**
+ * Installed top-level formulae not yet in the config.
+ *
+ * `brew leaves` rather than `brew list`: leaves are what you asked for, the
+ * rest are dependencies pulled in behind them, and nobody wants a digest of
+ * libpng's release notes.
+ *
+ * Matching is by FORMULA name, taken from each entry's `brew upgrade <x>`
+ * command — the config keys tools by binary name, and those differ often
+ * enough (forgejo-cli ships `fj`) that matching on the key would keep
+ * re-suggesting tools already tracked.
+ */
+export async function untrackedFormulae(trackedNames: Set<string>): Promise<string[]> {
+  let leaves: string[];
+  try {
+    const { stdout } = await run("brew", ["leaves"], { timeout: 60_000 });
+    leaves = stdout.split("\n").map((l) => l.trim()).filter(Boolean);
+  } catch (err) {
+    throw new Error(`brew leaves failed: ${(err as Error).message}`);
+  }
+  // Tap-qualified names ("jundot/omlx/omlx") upgrade under their full name but
+  // list under it too, so compare on the last path segment as well.
+  const short = (s: string) => s.split("/").pop() ?? s;
+  const tracked = new Set([...trackedNames, ...[...trackedNames].map(short)]);
+  return leaves.filter((f) => !tracked.has(f) && !tracked.has(short(f)));
+}
+
+/** Build a ready-to-use tool entry for an installed formula. */
+export async function discoverFormula(formula: string): Promise<Discovery> {
+  const f = await brewJson(formula);
+  const versions = (f.versions ?? {}) as { stable?: string };
+  const version = versions.stable;
+  if (!version) throw new Error(`${formula}: brew reports no stable version`);
+
+  const urls = (f.urls ?? {}) as { stable?: { url?: string }; head?: { url?: string } };
+  const source = sourceFromUrls([
+    urls.stable?.url ?? "",
+    urls.head?.url ?? "",
+    (f.homepage as string) ?? "",
+  ]);
+  if (!source) {
+    throw new Error(
+      `${formula}: no forge repo in its brew URLs — add it by hand with a "source" of "github:owner/repo" or a full forge URL`,
+    );
+  }
+
+  const bins = await binariesOf(formula);
+  // The formula name is often not the binary name (forgejo-cli ships `fj`),
+  // so try every binary it installs and keep the first that reports a version.
+  const candidates = bins.length > 0 ? bins : [formula];
+  for (const binary of candidates) {
+    const probe = await confirmProbe(binary, version);
+    if (!probe) continue;
+    return {
+      formula,
+      binary,
+      version,
+      source,
+      probe: probe.probe,
+      entry: {
+        name: binary,
+        source,
+        version: { cmd: probe.cmd, match: probe.match },
+        update: `brew upgrade ${formula}`,
+      },
+    };
+  }
+  throw new Error(
+    `${formula}: none of its binaries (${candidates.join(", ")}) reported version ${version} — add the entry by hand`,
+  );
+}
