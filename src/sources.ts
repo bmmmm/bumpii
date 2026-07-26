@@ -15,9 +15,16 @@ export interface ForgeRef {
   repo: string;
 }
 
-/** Strip a leading "v" so "v2.96.0" and "2.96.0" compare equal. */
+/**
+ * Strip whatever prefixes a tag so versions compare on their numbers alone.
+ *
+ * Not just a leading "v": jq tags releases `jq-1.8.2`, and leaving the name in
+ * made every comparison fall into the non-numeric branch — which reported
+ * "up to date" forever instead of erroring. Silently claiming a tool is
+ * current is the one failure an update checker must not have.
+ */
 export function bare(tag: string): string {
-  return tag.replace(/^v/, "");
+  return tag.replace(/^[^0-9]*/, "");
 }
 
 /**

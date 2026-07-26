@@ -19,6 +19,24 @@ test("bare strips a leading v so tag forms compare equal", () => {
   assert.equal(bare("2.96.0"), "2.96.0");
 });
 
+test("bare strips a name prefix, not just a v", () => {
+  // jq tags releases `jq-1.8.2`. Leaving the name in sent every comparison
+  // into the non-numeric branch, which reported "up to date" forever — a
+  // silent wrong answer, the one failure mode an update checker must not have.
+  assert.equal(bare("jq-1.8.2"), "1.8.2");
+  assert.equal(bare("release-3.0"), "3.0");
+});
+
+test("a newer name-prefixed tag is detected as behind", () => {
+  const mk = (tag: string) => ({ tag, version: bare(tag), publishedAt: null, notes: "", url: "" });
+  const behind = releasesBehind([mk("jq-1.9.0"), mk("jq-1.8.2")], "1.8.2");
+  assert.deepEqual(
+    behind.map((r) => r.version),
+    ["1.9.0"],
+    "a new jq release must show up as pending",
+  );
+});
+
 test("parseSource understands the three source forms", () => {
   assert.deepEqual(parseSource("github:cli/cli"), {
     kind: "github",
