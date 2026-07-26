@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.gif" alt="bumpii — a capsule mascot bouncing beside the wordmark" width="560">
+</p>
+
 # bumpii
 
 Read what actually changed in the CLI tools you use every day — judged against
@@ -152,6 +156,11 @@ bare `fetch failed` while `curl` works fine. The launcher sets
 $ pnpm check   # tsc --noEmit
 $ pnpm test    # node:test
 ```
+
+The logo is regenerable, not a hand-made binary: `assets/logo-source.png` is
+the flat export, and `uvx --from pillow python assets/make-logo-gif.py` lifts
+the capsule out of it and animates the bounce. Re-export the source and re-run
+the script rather than editing the GIF.
 
 ## License
 
