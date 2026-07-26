@@ -1,0 +1,28 @@
+# `pnpm/action-setup` runs before `setup-node` so `cache: pnpm` can resolve the
+# store. node24 is the floor, not a preference: the sources are .ts and run
+# through Node's own type stripping, and src/cli.ts guards its entrypoint with
+# `import.meta.main` — both land in 24.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm test

@@ -1,0 +1,21 @@
+# Dependabot template — Node / pnpm. Copy to .github/dependabot.yml.
+# Dependabot handles pnpm-lock.yaml under the `npm` ecosystem.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: chore(deps)
+    labels:
+      - dependencies
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: chore(deps)
+    labels:
+      - dependencies
