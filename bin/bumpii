@@ -9,9 +9,22 @@ if [ -n "${HTTP_PROXY:-}${HTTPS_PROXY:-}${http_proxy:-}${https_proxy:-}" ]; then
   export NODE_USE_ENV_PROXY
 fi
 
+# Resolve $0 through any symlinks before deriving the repo root. The documented
+# install is a symlink in ~/.local/bin, so without this the root resolves to
+# ~/.local and the launcher looks for ~/.local/src/cli.ts. Hand-rolled loop
+# rather than `readlink -f`, which is GNU-only on older macOS.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname -- "$self")/$link ;;
+  esac
+done
+
 # Prefer compiled dist/ when a published tarball provides it; a clone runs the
 # TypeScript directly (Node strips types natively).
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+root=$(CDPATH= cd -- "$(dirname -- "$self")/.." && pwd)
 if [ -f "$root/dist/cli.js" ]; then
   exec node "$root/dist/cli.js" "$@"
 fi
