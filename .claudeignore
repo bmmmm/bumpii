@@ -1,0 +1,11 @@
+.env
+*.pem
+*.key
+*.p12
+*.pfx
+.ssh/
+id_*
+*_host_key
+node_modules/
+dist/
+.DS_Store

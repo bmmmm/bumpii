@@ -1,0 +1,18 @@
+#!/bin/sh
+# Node's fetch (undici) ignores HTTP_PROXY/HTTPS_PROXY unless explicitly told
+# to honour them — unlike curl, which is why "works in my shell, fetch failed
+# in the tool" is the usual first symptom behind a proxy (including Claude
+# Code's own sandbox). Opt in when a proxy is configured, never override an
+# explicit setting.
+if [ -n "${HTTP_PROXY:-}${HTTPS_PROXY:-}${http_proxy:-}${https_proxy:-}" ]; then
+  NODE_USE_ENV_PROXY="${NODE_USE_ENV_PROXY:-1}"
+  export NODE_USE_ENV_PROXY
+fi
+
+# Prefer compiled dist/ when a published tarball provides it; a clone runs the
+# TypeScript directly (Node strips types natively).
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -f "$root/dist/cli.js" ]; then
+  exec node "$root/dist/cli.js" "$@"
+fi
+exec node "$root/src/cli.ts" "$@"

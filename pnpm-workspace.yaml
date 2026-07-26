@@ -1,0 +1,5 @@
+# Supply-chain hardening. Both entries are policy, not preference:
+# a compromised release is usually yanked within hours, so a cooldown window
+# turns "we installed it the minute it shipped" into a non-event.
+minimumReleaseAge: 4320 # 3 days
+onlyBuiltDependencies: [] # no install-time build scripts unless curated here

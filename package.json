@@ -1,0 +1,28 @@
+{
+  "name": "bumpii",
+  "version": "0.1.0",
+  "description": "Read what actually changed in the CLI tools you use every day, judged against your own usage — then bump them.",
+  "type": "module",
+  "license": "GPL-3.0-or-later",
+  "packageManager": "pnpm@11.13.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "bumpii": "bin/bumpii"
+  },
+  "files": [
+    "bin/",
+    "src/"
+  ],
+  "scripts": {
+    "preinstall": "node -e \"if(!(process.env.npm_config_user_agent||'').startsWith('pnpm')){console.error('\\nUse pnpm, not npm/yarn: https://pnpm.io/installation\\n');process.exit(1)}\"",
+    "check": "tsc --noEmit",
+    "test": "node --test",
+    "start": "node src/cli.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2"
+  }
+}
