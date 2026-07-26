@@ -45,7 +45,7 @@ $ bumpii init          # writes ~/.config/bumpii/tools.json
 That is the whole install. **No dependency step** — nothing outside Node's own
 standard library is imported at runtime, and Node 24+ executes the TypeScript
 sources directly, so there is no build either. `pnpm install` is only needed to
-work on the code (it pulls `typescript` and `@types/node`, both dev-only).
+work on the code (typescript, `@types/node` and biome, all dev-only).
 
 Optional, and only for what they enable: `brew` for `bumpii add`/`scan`,
 `grep` for the usage verdict (present everywhere), and an engine for the
@@ -131,12 +131,23 @@ Read-only is the default and updating is never implied: the point is to know
 what is in a release before you take it. `--yes` exists for the unattended
 case; it prints the digest first regardless.
 
-Exit codes: `0` nothing pending, `1` updates available, `2` error. The `1` is
-there so a scheduled run can act on it:
+Exit codes: `0` nothing pending, `1` updates available, `2` error. Under
+`--yes` there is nothing left pending by definition, so it exits `0` when
+every update ran and `2` when any of them failed — an unattended run has to be
+able to say it did not work. The `1` is there so a scheduled run can act on it:
 
 ```console
 0 9 * * 1  bumpii --json > ~/tmp/bumpii.json || notify "tool updates pending"
 ```
+
+Two states are deliberately not folded into "up to date", because both mean
+bumpii could not check rather than checked and found nothing:
+
+- **`unknown`** — the forge publishes no versioned release. A repo that only
+  tags, or that ships a rolling `stable`/`nightly` pointer, gives nothing that
+  can be ordered against your installed version.
+- **`usagePaths not found`** — a configured path does not exist, so nothing
+  was searched there and every "affects you" verdict above it is incomplete.
 
 ### What it is not
 
@@ -172,14 +183,21 @@ bare `fetch failed` while `curl` works fine. The launcher sets
 ## Development
 
 ```console
-$ pnpm install         # typescript + @types/node, dev-only
+$ pnpm install         # typescript, @types/node, biome — all dev-only
 $ pnpm check           # tsc --noEmit
+$ pnpm lint            # biome check
+$ pnpm format          # biome check --write
 $ pnpm test            # node:test
 ```
 
+CI runs all three on Linux and macOS. macOS is not redundant: `add`/`scan` are
+built on brew, the launcher resolves symlinks in POSIX `sh` without GNU
+`readlink`, and the usage verdict shells out to grep — none of which Linux
+exercises against the userland they actually ship on.
+
 Three languages, and only one of them is load-bearing:
 
-- **TypeScript** — the tool. Honest caveat: this is roughly 1000 lines that
+- **TypeScript** — the tool. Honest caveat: this is roughly 1300 lines that
   `curl`, `jq` and `grep` could have carried in fewer, and a shell version
   would have sat more naturally next to the scripts this thing was written to
   serve. What the type checker did earn: it caught an unchecked `argv[i]`, and
