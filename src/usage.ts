@@ -1,16 +1,64 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Turn "this release changed X" into "you call X in these files" — the part
 // that makes the relevance verdict checkable instead of a model's opinion.
-import { execFile } from "node:child_process";
+import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import { promisify } from "node:util";
+import { run, type ExecError } from "./exec.ts";
 import type { UsageHit } from "./types.ts";
-
-const run = promisify(execFile);
 
 export function expandHome(p: string): string {
   return p.startsWith("~/") ? resolve(homedir(), p.slice(2)) : resolve(p);
+}
+
+export interface UsageRoots {
+  /** Configured paths that exist and can be searched. */
+  roots: string[];
+  /** Configured paths that do not — reported, never silently dropped. */
+  missing: string[];
+}
+
+/**
+ * Split the configured usage paths into searchable and missing.
+ *
+ * "affects you: none" is this tool's central claim, and a path that does not
+ * exist produces exactly that answer with nothing behind it. grep reports the
+ * failure (exit 2), but mixed in with the perfectly normal "no matches" (exit
+ * 1) — so the check happens here instead, once, where the result can be shown.
+ */
+export async function resolveUsagePaths(paths: string[]): Promise<UsageRoots> {
+  const roots: string[] = [];
+  const missing: string[] = [];
+  await Promise.all(
+    paths.map(async (p) => {
+      const abs = expandHome(p);
+      try {
+        await stat(abs);
+        roots.push(abs);
+      } catch {
+        missing.push(p);
+      }
+    }),
+  );
+  return { roots, missing };
+}
+
+/**
+ * Reduce extracted commands to needles specific enough to mean something.
+ *
+ * "gh" or "gh pr" matches half the user's scripts and would report "affects
+ * you" for a fix to some unrelated subcommand — noise that trains you to
+ * ignore the line. Three tokens ("gh pr view") or a flag ("gh pr --json")
+ * clears that bar.
+ */
+export function toNeedles(commands: string[]): string[] {
+  return [
+    ...new Set(
+      commands
+        .map((c) => c.trim().replace(/\s+/g, " "))
+        .filter((c) => c.length >= 3 && (c.split(" ").length >= 3 || /(^|\s)-/.test(c))),
+    ),
+  ];
 }
 
 /**
@@ -21,53 +69,52 @@ export function expandHome(p: string): string {
  * be a broken or over-matching pattern. A command that appears nowhere is the
  * useful answer too — that is what lets the report say "affects you: none"
  * with something behind it.
+ *
+ * All needles go into a single grep via repeated `-e`, rather than one grep
+ * per needle: a digest of two dozen changes would otherwise walk the whole of
+ * ~/dotfiles some fifty times over, per tool. `-e` also means a needle that
+ * starts with a dash ("--json") can never be read as an option.
  */
-export async function findUsage(paths: string[], commands: string[]): Promise<UsageHit[]> {
-  // A needle has to be specific enough to mean something. "gh" or "gh pr"
-  // matches half the user's scripts and would report "affects you" for a fix
-  // to some unrelated subcommand — noise that trains you to ignore the line.
-  // Three tokens ("gh pr view") or a flag ("gh pr --json") clears that bar.
-  const needles = [
-    ...new Set(
-      commands
-        .map((c) => c.trim().replace(/\s+/g, " "))
-        .filter((c) => c.length >= 3 && (c.split(" ").length >= 3 || c.includes("-"))),
-    ),
-  ];
-  if (needles.length === 0 || paths.length === 0) return [];
+export async function findUsage(roots: string[], commands: string[]): Promise<UsageHit[]> {
+  const needles = toNeedles(commands);
+  if (needles.length === 0 || roots.length === 0) return [];
 
-  const roots = paths.map(expandHome);
+  let stdout: string;
+  try {
+    const r = await run(
+      "grep",
+      [
+        "-rIn", // recursive, skip binaries, show line numbers
+        "-F",
+        ...needles.flatMap((n) => ["-e", n]),
+        "--exclude-dir=.git",
+        "--exclude-dir=node_modules",
+        ...roots,
+      ],
+      { timeout: 60_000, maxBuffer: 32 * 1024 * 1024 },
+    );
+    stdout = r.stdout;
+  } catch (err) {
+    // grep exits 1 on "no matches" — that is a result, not a failure. Paths
+    // that do not exist are already filtered by resolveUsagePaths, so any
+    // remaining exit 2 (an unreadable file mid-walk) still leaves the matches
+    // it did find on stdout, and those are worth keeping.
+    const e = err as ExecError;
+    if (e.code === 1 || e.code === "1") return [];
+    stdout = e.stdout ?? "";
+  }
+
   const hits: UsageHit[] = [];
-
-  for (const needle of needles) {
-    let stdout = "";
-    try {
-      const r = await run(
-        "grep",
-        [
-          "-rIn", // recursive, skip binaries, show line numbers
-          "-F",
-          needle,
-          "--exclude-dir=.git",
-          "--exclude-dir=node_modules",
-          ...roots,
-        ],
-        { timeout: 30_000, maxBuffer: 8 * 1024 * 1024 },
-      );
-      stdout = r.stdout;
-    } catch (err) {
-      // grep exits 1 on "no matches" — that is a result, not a failure. Any
-      // other code (2 = real error, e.g. unreadable path) is also non-fatal
-      // here: a missing usage path should not sink the whole digest.
-      const e = err as { code?: number | string; stdout?: string };
-      if (e.code !== 1 && e.code !== "1") stdout = e.stdout ?? "";
-      else continue;
-    }
-    for (const line of stdout.split("\n")) {
-      if (!line.trim()) continue;
-      const m = /^(.*?):(\d+):/.exec(line);
-      if (!m) continue;
-      hits.push({ command: needle, file: m[1]!, line: Number.parseInt(m[2]!, 10) });
+  for (const line of stdout.split("\n")) {
+    const m = /^(.*?):(\d+):(.*)$/.exec(line);
+    if (!m?.[1] || !m[2]) continue;
+    const [, file, lineNo, text] = m;
+    // One grep for many needles means the match has to be attributed after the
+    // fact — and a line may genuinely contain more than one.
+    for (const needle of needles) {
+      if (text?.includes(needle)) {
+        hits.push({ command: needle, file, line: Number.parseInt(lineNo, 10) });
+      }
     }
   }
   return hits;

@@ -6,11 +6,8 @@
 //     OPENAI_BASE_URL — the local path, so notes never have to leave the machine
 //   - the `claude` CLI, when it is on PATH
 // No model is hardcoded or crowned: /v1/models is asked what it serves.
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { run } from "./exec.ts";
 import type { DigestItem, ItemKind, Release } from "./types.ts";
-
-const run = promisify(execFile);
 
 export type EngineKind = "openai" | "claude-cli" | "none";
 
@@ -59,9 +56,28 @@ export async function resolveEngine(opts: { model?: string } = {}): Promise<Engi
   return { kind: "none", model: "", label: "none (no engine reachable)" };
 }
 
+/**
+ * Total release-note characters one digest may carry.
+ *
+ * A per-release cap alone is not one: a tool left alone for a year arrives
+ * with thirty releases, and thirty times a generous cap is a prompt no local
+ * 8k-context model can take — which is the path this tool prefers by default.
+ * The budget is split across whatever came in, with a floor low enough to stay
+ * useful and high enough to still describe a change.
+ */
+const PROMPT_BUDGET = 60_000;
+const MIN_PER_RELEASE = 800;
+
 function prompt(tool: string, releases: Release[]): string {
+  const per = Math.max(MIN_PER_RELEASE, Math.floor(PROMPT_BUDGET / Math.max(1, releases.length)));
   const body = releases
-    .map((r) => `### ${tool} ${r.version}\n${r.notes.slice(0, 12_000)}`)
+    .map((r) => {
+      const notes =
+        r.notes.length > per
+          ? `${r.notes.slice(0, per)}\n…[truncated at ${per} characters — see ${r.url}]`
+          : r.notes;
+      return `### ${tool} ${r.version}\n${notes}`;
+    })
     .join("\n\n");
   return `You are summarising release notes for someone who uses the \`${tool}\` CLI daily and needs to know what is newly available or newly broken.
 
@@ -88,7 +104,7 @@ Release notes:
 ${body}`;
 }
 
-function parseItems(text: string): DigestItem[] {
+export function parseItems(text: string): DigestItem[] {
   // Models wrap JSON in fences often enough that stripping is cheaper than
   // re-prompting; find the outermost array rather than trusting the shape.
   const start = text.indexOf("[");

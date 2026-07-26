@@ -60,6 +60,12 @@ export interface UsageHit {
 export interface ToolReport {
   tool: ToolConfig;
   installed: string | null;
+  /**
+   * Newest release carrying a comparable version, or null when the forge
+   * published none. Null is emphatically not "up to date": a repo that only
+   * tags, or tags "nightly", cannot be checked at all, and saying it is
+   * current would be the one wrong answer an update checker must not give.
+   */
   latest: string | null;
   /** Releases strictly newer than installed, oldest first. */
   behind: Release[];
@@ -68,4 +74,10 @@ export interface ToolReport {
   hits: UsageHit[];
   /** Set when the tool could not be inspected; everything above is then empty. */
   error?: string;
+  /**
+   * Set when the engine failed on this tool's notes. Kept apart from `error`
+   * on purpose: the releases were fetched successfully and are still worth
+   * showing, so a model that returns junk costs you the summary, not the news.
+   */
+  digestError?: string;
 }

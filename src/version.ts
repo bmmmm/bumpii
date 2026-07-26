@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { type ExecError, run } from "./exec.ts";
 import type { Release, ToolConfig } from "./types.ts";
-
-const run = promisify(execFile);
 
 /**
  * Strip ANSI SGR sequences before matching. Some CLIs colour their version
@@ -13,7 +10,7 @@ const run = promisify(execFile);
  * colouring, in a way that reads as "not installed".
  */
 export function stripAnsi(s: string): string {
-  // eslint-disable-next-line no-control-regex
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: ESC is the point — this matches the escape byte a CLI actually emits.
   return s.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
@@ -35,7 +32,7 @@ export async function installedVersion(tool: ToolConfig): Promise<string | null>
     // being wrong about that would silently report "not installed".
     out = `${r.stdout}\n${r.stderr}`;
   } catch (err) {
-    const e = err as NodeJS.ErrnoException & { stdout?: string; stderr?: string };
+    const e = err as ExecError;
     if (e.code === "ENOENT") return null;
     // A non-zero exit can still have printed the version (some tools exit 1 on
     // `--version` variants), so try the output before giving up.
@@ -70,12 +67,41 @@ export function compareVersions(a: string, b: string): number {
 }
 
 /**
+ * Whether a release carries a version that can be ordered at all.
+ *
+ * A tag like "nightly", "latest" or "continuous" produces an empty or
+ * non-numeric version, and comparing it takes compareVersions straight into
+ * the NaN branch — which answers "not newer" for everything and renders as a
+ * confident "up to date". Filtering these out up front is what lets the report
+ * distinguish "nothing pending" from "nothing comparable to compare against".
+ */
+export function isComparable(r: Release): boolean {
+  return /^[0-9]/.test(r.version);
+}
+
+/**
+ * The newest version that can actually be compared, or null when the forge
+ * published none.
+ *
+ * Not simply `releases[0]`: a rolling pointer release outranks the numbered
+ * one whenever it was republished more recently, and it is not a prerelease,
+ * so nothing upstream filters it out. neovim ships exactly this — a `stable`
+ * release alongside `v0.12.4`, both `"prerelease": false` — and taking the
+ * head of the list yields an empty version, which renders as "0.12.2 → " with
+ * nothing after the arrow.
+ */
+export function latestComparable(all: Release[]): string | null {
+  return all.find(isComparable)?.version ?? null;
+}
+
+/**
  * Releases strictly newer than `installed`, oldest first — so the digest reads
  * chronologically. When the installed version is unknown we only take the
  * newest release: dumping every release's notes for a tool you do not have
  * yet is noise, not a digest.
  */
 export function releasesBehind(all: Release[], installed: string | null): Release[] {
-  if (!installed) return all.slice(0, 1);
-  return all.filter((r) => compareVersions(r.version, installed) > 0).reverse();
+  const comparable = all.filter(isComparable);
+  if (!installed) return comparable.slice(0, 1);
+  return comparable.filter((r) => compareVersions(r.version, installed) > 0).reverse();
 }

@@ -8,13 +8,10 @@
 // version brew already knows. A guessed regex that happens to match nothing
 // would silently make the tool look "not installed" forever; matching the
 // known version is what makes the generated entry trustworthy.
-import { execFile } from "node:child_process";
 import { readdir } from "node:fs/promises";
-import { promisify } from "node:util";
+import { run, type ExecError } from "./exec.ts";
 import type { ToolConfig } from "./types.ts";
 import { stripAnsi } from "./version.ts";
-
-const run = promisify(execFile);
 
 export interface Discovery {
   formula: string;
@@ -26,7 +23,9 @@ export interface Discovery {
   probe: string;
 }
 
-/** Version-probe forms, in the order they are tried. */
+/** Version-probe forms, in the order they are tried. The bare form goes last:
+ * plenty of CLIs print usage when given nothing, but plenty of others open a
+ * REPL — which is survivable only because exec.ts closes their stdin. */
 const PROBES = [["--version"], ["version"], ["-V"], ["-v"], []];
 
 async function brewJson(formula: string): Promise<Record<string, unknown>> {
@@ -37,9 +36,12 @@ async function brewJson(formula: string): Promise<Record<string, unknown>> {
   return f;
 }
 
-async function brewPrefix(): Promise<string> {
-  const { stdout } = await run("brew", ["--prefix"], { timeout: 30_000 });
-  return stdout.trim();
+// The prefix cannot change while the process runs, and `add` resolves it once
+// per formula — memoised so a batch spawns one brew, not one per argument.
+let cachedPrefix: Promise<string> | null = null;
+function brewPrefix(): Promise<string> {
+  cachedPrefix ??= run("brew", ["--prefix"], { timeout: 30_000 }).then((r) => r.stdout.trim());
+  return cachedPrefix;
 }
 
 /**
@@ -92,7 +94,7 @@ async function confirmProbe(
       const r = await run(binary, args, { timeout: 10_000 });
       out = `${r.stdout}\n${r.stderr}`;
     } catch (err) {
-      const e = err as { stdout?: string; stderr?: string; code?: string };
+      const e = err as ExecError;
       if (e.code === "ENOENT") return null;
       out = `${e.stdout ?? ""}\n${e.stderr ?? ""}`;
     }

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bare, parseSource } from "../src/sources.ts";
-import { compareVersions, releasesBehind } from "../src/version.ts";
 import { parseArgs } from "../src/cli.ts";
+import { bare, parseSource } from "../src/sources.ts";
 import type { Release } from "../src/types.ts";
+import { compareVersions, isComparable, latestComparable, releasesBehind } from "../src/version.ts";
 
 const rel = (version: string): Release => ({
   tag: `v${version}`,
@@ -108,4 +108,45 @@ test("parseArgs reads the flags that change behaviour", () => {
 
 test("parseArgs rejects an unknown option rather than ignoring it", () => {
   assert.throws(() => parseArgs(["--upgrade-everything"]), /unknown option/);
+});
+
+test("parseArgs refuses to swallow the next flag as an option value", () => {
+  // `--model --json` used to set the model to "--json" and silently drop the
+  // flag that was meant to change the output.
+  assert.throws(() => parseArgs(["--model", "--json"]), /--model needs a value/);
+  assert.throws(() => parseArgs(["--only"]), /--only needs a value/);
+});
+
+test("isComparable rejects a tag that cannot be ordered", () => {
+  assert.equal(isComparable(rel("2.96.0")), true);
+  assert.equal(isComparable({ ...rel("x"), version: "nightly" }), false);
+  assert.equal(isComparable({ ...rel("x"), version: "" }), false);
+});
+
+test("latest skips a rolling pointer release at the head of the list", () => {
+  // Verified against the live API: neovim publishes a `stable` release next to
+  // v0.12.4, both with "prerelease": false, so nothing filters it out — and
+  // whichever was republished last comes first. Taking releases[0] gave an
+  // empty version, rendering as "0.12.2 → " with nothing after the arrow.
+  const stable = { ...rel("x"), tag: "stable", version: "" };
+  assert.equal(latestComparable([stable, rel("0.12.4"), rel("0.12.3")]), "0.12.4");
+  assert.equal(latestComparable([rel("0.12.4"), stable]), "0.12.4");
+  assert.equal(latestComparable([stable]), null, "nothing comparable is null, not an empty string");
+  assert.equal(latestComparable([]), null);
+});
+
+test("an unorderable tag never counts as a release you are behind", () => {
+  // compareVersions sends "nightly" into its NaN branch, which answers "not
+  // newer" — indistinguishable from being current. Filtering first is what
+  // lets the report say "unknown" instead of a green "up to date".
+  const all = [{ ...rel("x"), version: "nightly" }, rel("1.0.0")];
+  assert.deepEqual(
+    releasesBehind(all, "1.0.0").map((r) => r.version),
+    [],
+  );
+  assert.deepEqual(
+    releasesBehind([{ ...rel("x"), version: "continuous" }], null).map((r) => r.version),
+    [],
+    "with nothing installed, an unorderable newest release is still nothing to show",
+  );
 });

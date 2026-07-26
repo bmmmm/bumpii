@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+import type { Engine } from "./judge.ts";
 import type { ItemKind, ToolReport } from "./types.ts";
 
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
@@ -25,7 +26,25 @@ function paint(kind: ItemKind, s: string): string {
 /** security first, then breaking, then features, then fixes. */
 const ORDER: ItemKind[] = ["security", "breaking", "feature", "fix"];
 
-export function renderReport(reports: ToolReport[], engineLabel: string): string {
+export interface RenderOptions {
+  engine: Engine;
+  /** Configured usagePaths that do not exist — named, because they silently
+   * turn every "affects you" verdict into "none". */
+  missingPaths: string[];
+}
+
+/**
+ * Why a tool has releases pending but no digested items. All three read as an
+ * empty list, and telling the user "engine unavailable" when the engine
+ * answered — or answered badly — sends them to fix the wrong thing.
+ */
+function noDigestReason(r: ToolReport, engine: Engine): string {
+  if (r.digestError) return `digest failed: ${r.digestError}`;
+  if (engine.kind === "none") return "no digest — no engine available";
+  return "engine returned nothing usable";
+}
+
+export function renderReport(reports: ToolReport[], opts: RenderOptions): string {
   const out: string[] = [""];
 
   for (const r of reports) {
@@ -39,19 +58,31 @@ export function renderReport(reports: ToolReport[], engineLabel: string): string
       out.push(`${name}  ${dim("not installed")}  ${dim(`latest ${r.latest ?? "?"}`)}`, "");
       continue;
     }
+    // No comparable release means nothing was checked, which is a different
+    // answer from "checked, nothing newer" — and must never wear its green.
+    if (!r.latest) {
+      out.push(
+        `${name} ${r.installed}  ${yellow("unknown")}  ${dim(
+          `${r.tool.source} publishes no versioned releases — bumpii cannot tell whether this is current`,
+        )}`,
+        dim("  it may tag without releasing; track it by hand or drop the entry"),
+        "",
+      );
+      continue;
+    }
     if (r.behind.length === 0) {
       out.push(`${name} ${r.installed}  ${green("up to date")}`, "");
       continue;
     }
 
     const plural = r.behind.length === 1 ? "release" : "releases";
-    out.push(
-      `${name} ${r.installed} → ${bold(r.latest ?? "?")}  ${yellow(`${r.behind.length} ${plural} behind`)}`,
-    );
+    out.push(`${name} ${r.installed} → ${bold(r.latest)}  ${yellow(`${r.behind.length} ${plural} behind`)}`);
 
     if (r.items.length === 0) {
-      out.push(dim("  no digest — engine unavailable; raw notes:"));
+      out.push(dim(`  ${noDigestReason(r, opts.engine)}; raw notes:`));
       for (const rel of r.behind) out.push(dim(`    ${rel.version}  ${rel.url}`));
+      out.push(`  ${dim("→")} ${r.tool.update}`, "");
+      continue;
     }
 
     const sorted = [...r.items].sort((a, b) => ORDER.indexOf(a.kind) - ORDER.indexOf(b.kind));
@@ -81,6 +112,15 @@ export function renderReport(reports: ToolReport[], engineLabel: string): string
     out.push(`  ${dim("→")} ${r.tool.update}`, "");
   }
 
-  out.push(dim(`engine: ${engineLabel}`), "");
+  // Loud rather than dim: an unsearched path makes every "affects you" verdict
+  // above meaningless, and it is the kind of typo that otherwise goes years.
+  if (opts.missingPaths.length > 0) {
+    out.push(
+      `${yellow("usagePaths not found")}: ${opts.missingPaths.join(", ")}`,
+      dim("  nothing was searched there, so every “affects you” above is incomplete"),
+      "",
+    );
+  }
+  out.push(dim(`engine: ${opts.engine.label}`), "");
   return out.join("\n");
 }
