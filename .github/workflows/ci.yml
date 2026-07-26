@@ -2,6 +2,10 @@
 # store. node24 is the floor, not a preference: the sources are .ts and run
 # through Node's own type stripping, and src/cli.ts guards its entrypoint with
 # `import.meta.main` — both land in 24.
+#
+# Actions are pinned to commit SHAs, not tags: a tag is a movable pointer, and
+# these run with the repo checked out. The version each SHA belongs to is in
+# the trailing comment so Dependabot can bump both together.
 name: tests
 
 on:
@@ -13,16 +17,30 @@ on:
 permissions:
   contents: read
 
+# A second push supersedes the first; nothing here is worth finishing twice.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # macOS is not redundant: `add`/`scan` are built on brew, the launcher is
+    # POSIX sh resolving symlinks without GNU readlink, and usage.ts shells out
+    # to BSD grep. Linux alone would test none of those against their real
+    # userland.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+      - run: pnpm lint
       - run: pnpm test

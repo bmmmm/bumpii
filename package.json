@@ -18,10 +18,13 @@
   "scripts": {
     "preinstall": "node -e \"if(!(process.env.npm_config_user_agent||'').startsWith('pnpm')){console.error('\\nUse pnpm, not npm/yarn: https://pnpm.io/installation\\n');process.exit(1)}\"",
     "check": "tsc --noEmit",
+    "lint": "biome check",
+    "format": "biome check --write",
     "test": "node --test",
     "start": "node src/cli.ts"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.5",
     "@types/node": "^26.1.1",
     "typescript": "^7.0.2"
   }

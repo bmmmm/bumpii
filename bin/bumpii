@@ -22,10 +22,7 @@ while [ -L "$self" ]; do
   esac
 done
 
-# Prefer compiled dist/ when a published tarball provides it; a clone runs the
-# TypeScript directly (Node strips types natively).
+# Node 24 strips the types itself, so the .ts sources are the artifact. There
+# is deliberately no build step and no dist/ to prefer over them.
 root=$(CDPATH= cd -- "$(dirname -- "$self")/.." && pwd)
-if [ -f "$root/dist/cli.js" ]; then
-  exec node "$root/dist/cli.js" "$@"
-fi
 exec node "$root/src/cli.ts" "$@"

@@ -4,7 +4,7 @@
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import { run, type ExecError } from "./exec.ts";
+import { type ExecError, run } from "./exec.ts";
 import type { UsageHit } from "./types.ts";
 
 export function expandHome(p: string): string {

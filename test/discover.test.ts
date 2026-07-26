@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { parseArgs } from "../src/cli.ts";
 import { sourceFromUrls } from "../src/discover.ts";
 import { stripAnsi } from "../src/version.ts";
-import { parseArgs } from "../src/cli.ts";
 
 test("sourceFromUrls maps the shorthand forges", () => {
   assert.equal(

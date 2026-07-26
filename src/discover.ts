@@ -9,7 +9,7 @@
 // would silently make the tool look "not installed" forever; matching the
 // known version is what makes the generated entry trustworthy.
 import { readdir } from "node:fs/promises";
-import { run, type ExecError } from "./exec.ts";
+import { type ExecError, run } from "./exec.ts";
 import type { ToolConfig } from "./types.ts";
 import { stripAnsi } from "./version.ts";
 
@@ -136,7 +136,10 @@ export async function untrackedFormulae(trackedNames: Set<string>): Promise<stri
   let leaves: string[];
   try {
     const { stdout } = await run("brew", ["leaves"], { timeout: 60_000 });
-    leaves = stdout.split("\n").map((l) => l.trim()).filter(Boolean);
+    leaves = stdout
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
   } catch (err) {
     throw new Error(`brew leaves failed: ${(err as Error).message}`);
   }
@@ -155,11 +158,7 @@ export async function discoverFormula(formula: string): Promise<Discovery> {
   if (!version) throw new Error(`${formula}: brew reports no stable version`);
 
   const urls = (f.urls ?? {}) as { stable?: { url?: string }; head?: { url?: string } };
-  const source = sourceFromUrls([
-    urls.stable?.url ?? "",
-    urls.head?.url ?? "",
-    (f.homepage as string) ?? "",
-  ]);
+  const source = sourceFromUrls([urls.stable?.url ?? "", urls.head?.url ?? "", (f.homepage as string) ?? ""]);
   if (!source) {
     throw new Error(
       `${formula}: no forge repo in its brew URLs — add it by hand with a "source" of "github:owner/repo" or a full forge URL`,

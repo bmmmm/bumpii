@@ -7,7 +7,7 @@
 // at all (the last entry in discover.ts's PROBES). A CLI invoked bare is quite
 // often a REPL, and an inherited open stdin pipe keeps it alive until the
 // timeout fires. Closing stdin makes it read EOF and exit at once.
-import { execFile, type ExecFileOptions } from "node:child_process";
+import { type ExecFileOptions, execFile } from "node:child_process";
 
 export interface ExecOutput {
   stdout: string;
@@ -21,11 +21,7 @@ export interface ExecError extends Error {
   stderr?: string;
 }
 
-export function run(
-  file: string,
-  args: string[],
-  opts: ExecFileOptions = {},
-): Promise<ExecOutput> {
+export function run(file: string, args: string[], opts: ExecFileOptions = {}): Promise<ExecOutput> {
   return new Promise((resolve, reject) => {
     // Explicit encoding, though utf8 is the default: it is what picks the
     // overload whose callback hands back strings rather than Buffers.

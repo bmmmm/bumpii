@@ -7,6 +7,10 @@
     "types": ["node"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
     "noEmit": true,
     "skipLibCheck": true,
     // Node runs the .ts sources directly via type stripping, so imports carry
