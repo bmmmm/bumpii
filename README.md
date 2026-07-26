@@ -38,13 +38,18 @@ here calls `gh attestation` or `gh release verify`.
 
 ```console
 $ gh repo clone bmmmm/bumpii && cd bumpii
-$ pnpm install
 $ ln -sf "$PWD/bin/bumpii" ~/.local/bin/bumpii
 $ bumpii init          # writes ~/.config/bumpii/tools.json
 ```
 
-Node 24+ (runs the TypeScript directly, no build step). `pnpm`, not npm — the
-`preinstall` guard will say so.
+That is the whole install. **No dependency step** — nothing outside Node's own
+standard library is imported at runtime, and Node 24+ executes the TypeScript
+sources directly, so there is no build either. `pnpm install` is only needed to
+work on the code (it pulls `typescript` and `@types/node`, both dev-only).
+
+Optional, and only for what they enable: `brew` for `bumpii add`/`scan`,
+`grep` for the usage verdict (present everywhere), and an engine for the
+digest — see below.
 
 ## Adding tools
 
@@ -126,7 +131,21 @@ Read-only is the default and updating is never implied: the point is to know
 what is in a release before you take it. `--yes` exists for the unattended
 case; it prints the digest first regardless.
 
-Exit codes: `0` nothing pending, `1` updates available, `2` error.
+Exit codes: `0` nothing pending, `1` updates available, `2` error. The `1` is
+there so a scheduled run can act on it:
+
+```console
+0 9 * * 1  bumpii --json > ~/tmp/bumpii.json || notify "tool updates pending"
+```
+
+### What it is not
+
+Not a package manager — it never resolves or installs anything, it runs the
+`update` command you wrote. Not a vulnerability scanner: it reports what a
+release says about itself, so an unmentioned CVE stays unmentioned. And not a
+fact-checker of those claims — for "are these notes even true?", the sibling
+tool [comparereleaseii](https://github.com/bmmmm/comparereleaseii) verifies
+release notes against the actual code diff.
 
 ## Engine
 
@@ -153,14 +172,30 @@ bare `fetch failed` while `curl` works fine. The launcher sets
 ## Development
 
 ```console
-$ pnpm check   # tsc --noEmit
-$ pnpm test    # node:test
+$ pnpm install         # typescript + @types/node, dev-only
+$ pnpm check           # tsc --noEmit
+$ pnpm test            # node:test
 ```
 
-The logo is regenerable, not a hand-made binary: `assets/logo-source.png` is
-the flat export, and `uvx --from pillow python assets/make-logo-gif.py` lifts
-the capsule out of it and animates the bounce. Re-export the source and re-run
-the script rather than editing the GIF.
+Three languages, and only one of them is load-bearing:
+
+- **TypeScript** — the tool. Honest caveat: this is roughly 1000 lines that
+  `curl`, `jq` and `grep` could have carried in fewer, and a shell version
+  would have sat more naturally next to the scripts this thing was written to
+  serve. What the type checker did earn: it caught an unchecked `argv[i]`, and
+  per-tool error isolation across concurrent fetches is cleaner here than
+  collecting exit codes from background jobs. Not enough to call it the
+  obvious choice — it was picked to match its sibling project, which is not a
+  reason.
+- **Shell** — `bin/bumpii`, and it has to be: the proxy opt-in and the symlink
+  resolution both have to happen before Node starts.
+- **Python** — only `assets/make-logo-gif.py`, run through `uvx` when the logo
+  changes. Never imported, never installed.
+
+The logo is regenerable rather than a hand-made binary: `assets/logo-source.png`
+is the flat export, and `uvx --from pillow python assets/make-logo-gif.py`
+lifts the capsule out of it and animates the bounce. Re-export the source and
+re-run the script instead of editing the GIF.
 
 ## License
 
