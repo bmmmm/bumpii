@@ -84,7 +84,7 @@ async function binariesOf(formula: string): Promise<string[]> {
  * regex anchored on the surrounding text. Returns null when nothing matches —
  * better to say so than to write a config entry that never resolves.
  */
-async function confirmProbe(
+export async function confirmProbe(
   binary: string,
   known: string,
 ): Promise<{ cmd: string[]; match: string; probe: string } | null> {
@@ -108,12 +108,18 @@ async function confirmProbe(
     // Anchor on the literal text before the version so the regex stays
     // specific: "gh version 2.96.0" -> /gh version ([0-9][0-9.]*)/ rather than
     // a bare number match that would also catch a date or a Go version.
+    //
+    // The line anchor matters most where that prefix is empty. fzf prints
+    // "0.74.1 (Homebrew)" — nothing to anchor on — and installedVersion runs
+    // the regex over the binary's whole output, not the matching line, so a
+    // bare number pattern would take the first digits anywhere in it. The
+    // prefix always starts at a line boundary, so anchoring is never wrong.
     const idx = line.indexOf(known);
     const prefixText = line.slice(0, idx);
     const escaped = prefixText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     return {
       cmd: [binary, ...args],
-      match: `${escaped}v?([0-9][0-9.]*)`,
+      match: `(?:^|\\n)${escaped}v?([0-9][0-9.]*)`,
       probe: `${[binary, ...args].join(" ")} → ${line.trim()}`,
     };
   }

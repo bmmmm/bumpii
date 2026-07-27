@@ -72,14 +72,34 @@ test("no engine and a silent engine are not described the same way", () => {
     engine: noEngine,
     missingPaths: [],
   });
-  assert.match(withoutEngine, /no engine available/);
+  assert.match(withoutEngine, /no engine reachable/);
 
   const silent = renderReport([report({ behind: [rel("2.96.0")] })], { engine, missingPaths: [] });
   assert.match(silent, /returned nothing usable/);
-  assert.doesNotMatch(
-    silent,
-    /no engine available/,
-    "blaming a working engine sends you to fix the wrong thing",
+  assert.doesNotMatch(silent, /no engine/, "blaming a working engine sends you to fix the wrong thing");
+});
+
+test("an engine you turned off yourself is not reported as unavailable", () => {
+  // --no-judge is a choice, and "no engine available" reads as a broken setup.
+  const skipped: Engine = { kind: "none", model: "", label: "skipped (--no-judge)" };
+  const out = renderReport([report({ behind: [rel("2.96.0")] })], {
+    engine: skipped,
+    missingPaths: [],
+  });
+  assert.match(out, /no digest — skipped \(--no-judge\)/);
+  assert.doesNotMatch(out, /unavailable|not reachable/);
+});
+
+test("a count the page cut short is marked, not reported as exact", () => {
+  const behind = [rel("2.94.0"), rel("2.95.0"), rel("2.96.0")];
+  assert.match(
+    renderReport([report({ behind, truncated: true })], { engine, missingPaths: [] }),
+    /3\+ releases behind/,
+  );
+  assert.match(
+    renderReport([report({ behind })], { engine, missingPaths: [] }),
+    /3 releases behind/,
+    "an exact count must not grow a plus",
   );
 });
 

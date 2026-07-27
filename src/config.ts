@@ -37,6 +37,9 @@ export const DEFAULT_CONFIG: Config = {
 function validate(cfg: unknown): Config {
   const c = cfg as Partial<Config>;
   if (!Array.isArray(c.tools)) throw new Error("config: `tools` must be an array");
+  if (c.usagePaths !== undefined && !Array.isArray(c.usagePaths)) {
+    throw new Error("config: `usagePaths` must be an array of paths");
+  }
   for (const [i, t] of c.tools.entries()) {
     for (const field of ["name", "source", "update"] as const) {
       if (typeof t?.[field] !== "string" || !t[field]) {
@@ -49,14 +52,26 @@ function validate(cfg: unknown): Config {
     if (typeof t.version?.match !== "string") {
       throw new Error(`config: tools[${i}].version.match must be a regex string`);
     }
+    // Caught here rather than at probe time: a broken pattern otherwise
+    // surfaces per tool, mid-run, as an error that never names the field.
+    try {
+      new RegExp(t.version.match);
+    } catch (err) {
+      throw new Error(`config: tools[${i}].version.match is not a valid regex — ${(err as Error).message}`);
+    }
   }
-  return {
-    usagePaths: Array.isArray(c.usagePaths) ? c.usagePaths : [],
-    tools: c.tools,
-  };
+  return { ...c, usagePaths: c.usagePaths ?? [], tools: c.tools };
 }
 
-export async function loadConfig(path = configPath()): Promise<Config> {
+/**
+ * The config file as it is on disk, parsed but not reshaped.
+ *
+ * addTools writes this object back, so it has to be the whole document: this
+ * is a hand-edited file the README invites you to edit, and rebuilding it from
+ * the fields the current version happens to know deletes everything else in it
+ * — a `$schema` line, a setting added by a newer release — without a word.
+ */
+async function readDocument(path: string): Promise<Record<string, unknown>> {
   let raw: string;
   try {
     raw = await readFile(path, "utf8");
@@ -66,7 +81,15 @@ export async function loadConfig(path = configPath()): Promise<Config> {
     }
     throw err;
   }
-  return validate(JSON.parse(raw));
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch (err) {
+    throw new Error(`config at ${path} is not valid JSON — ${(err as Error).message}`);
+  }
+}
+
+export async function loadConfig(path = configPath()): Promise<Config> {
+  return validate(await readDocument(path));
 }
 
 /**
@@ -78,7 +101,10 @@ export async function addTools(
   entries: import("./types.ts").ToolConfig[],
   path = configPath(),
 ): Promise<string[]> {
-  const cfg = await loadConfig(path);
+  const doc = await readDocument(path);
+  // Validated before anything is written: refusing to rewrite a file we cannot
+  // read correctly beats rewriting it into something we can.
+  const cfg = validate(doc);
   const have = new Set(cfg.tools.map((t) => t.name));
   const added: string[] = [];
   for (const e of entries) {
@@ -89,10 +115,11 @@ export async function addTools(
   }
   if (added.length === 0) return [];
   cfg.tools.sort((a, b) => a.name.localeCompare(b.name));
+  doc.tools = cfg.tools;
   // Write via a temp file + rename: a config torn by a crash mid-write is the
   // kind of thing you only notice when the next run reports every tool gone.
   const tmp = `${path}.tmp.${process.pid}`;
-  await writeFile(tmp, `${JSON.stringify(cfg, null, 2)}\n`, "utf8");
+  await writeFile(tmp, `${JSON.stringify(doc, null, 2)}\n`, "utf8");
   await rename(tmp, path);
   return added;
 }

@@ -40,7 +40,9 @@ export interface RenderOptions {
  */
 function noDigestReason(r: ToolReport, engine: Engine): string {
   if (r.digestError) return `digest failed: ${r.digestError}`;
-  if (engine.kind === "none") return "no digest — no engine available";
+  // The label carries why there is no engine — "skipped (--no-judge)" when you
+  // turned it off yourself, which is not something to report as unavailable.
+  if (engine.kind === "none") return `no digest — ${engine.label}`;
   return "engine returned nothing usable";
 }
 
@@ -76,7 +78,10 @@ export function renderReport(reports: ToolReport[], opts: RenderOptions): string
     }
 
     const plural = r.behind.length === 1 ? "release" : "releases";
-    out.push(`${name} ${r.installed} → ${bold(r.latest)}  ${yellow(`${r.behind.length} ${plural} behind`)}`);
+    // "30+" rather than "30" when the page ran out first: the count is what a
+    // person acts on, and a silent cap makes a year-old install look routine.
+    const count = `${r.behind.length}${r.truncated ? "+" : ""}`;
+    out.push(`${name} ${r.installed} → ${bold(r.latest)}  ${yellow(`${count} ${plural} behind`)}`);
 
     if (r.items.length === 0) {
       out.push(dim(`  ${noDigestReason(r, opts.engine)}; raw notes:`));

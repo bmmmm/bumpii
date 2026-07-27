@@ -69,6 +69,11 @@ export interface ToolReport {
   latest: string | null;
   /** Releases strictly newer than installed, oldest first. */
   behind: Release[];
+  /**
+   * The forge had more releases than one page held and all of them were
+   * pending, so `behind` is a floor rather than the count. Rendered as "30+".
+   */
+  truncated?: boolean;
   items: DigestItem[];
   /** Where the extracted commands actually appear in your own files. */
   hits: UsageHit[];

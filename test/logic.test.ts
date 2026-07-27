@@ -4,7 +4,13 @@ import { test } from "node:test";
 import { parseArgs } from "../src/cli.ts";
 import { bare, parseSource } from "../src/sources.ts";
 import type { Release } from "../src/types.ts";
-import { compareVersions, isComparable, latestComparable, releasesBehind } from "../src/version.ts";
+import {
+  compareVersions,
+  isComparable,
+  isTruncated,
+  latestComparable,
+  releasesBehind,
+} from "../src/version.ts";
 
 const rel = (version: string): Release => ({
   tag: `v${version}`,
@@ -121,6 +127,24 @@ test("isComparable rejects a tag that cannot be ordered", () => {
   assert.equal(isComparable(rel("2.96.0")), true);
   assert.equal(isComparable({ ...rel("x"), version: "nightly" }), false);
   assert.equal(isComparable({ ...rel("x"), version: "" }), false);
+});
+
+test("isTruncated fires only when the page ran out before your version did", () => {
+  // The 30-release page is a floor, not a count: yabai has over a hundred, so
+  // a stale install reads as "30 releases behind" when it is far more.
+  const page = [rel("3.0"), rel("2.0"), rel("1.0")];
+  assert.equal(
+    isTruncated(page, releasesBehind(page, "0.9"), true),
+    true,
+    "every release on a full page is newer — the boundary ended the list, not the version",
+  );
+  assert.equal(
+    isTruncated(page, releasesBehind(page, "1.0"), true),
+    false,
+    "the oldest release on the page is one you already have, so the count is exact",
+  );
+  assert.equal(isTruncated(page, releasesBehind(page, "0.9"), false), false, "a short page is complete");
+  assert.equal(isTruncated(page, [], true), false, "nothing pending is never truncated");
 });
 
 test("latest skips a rolling pointer release at the head of the list", () => {

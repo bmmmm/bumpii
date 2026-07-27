@@ -40,9 +40,17 @@ export async function installedVersion(tool: ToolConfig): Promise<string | null>
     if (!out.trim()) throw new Error(`${tool.name}: version probe failed: ${e.message}`);
   }
   const m = new RegExp(tool.version.match).exec(stripAnsi(out));
-  if (!m?.[1]) {
+  if (!m) {
     throw new Error(
       `${tool.name}: version.match /${tool.version.match}/ did not match output: ${out.trim().split("\n")[0]}`,
+    );
+  }
+  // A pattern that matches but captures nothing is a different mistake from
+  // one that does not match, and saying "did not match" sends you to rewrite
+  // a regex that was already finding the right line.
+  if (m[1] === undefined) {
+    throw new Error(
+      `${tool.name}: version.match /${tool.version.match}/ matched but captured nothing — put the version number in parentheses`,
     );
   }
   return m[1];
@@ -92,6 +100,18 @@ export function isComparable(r: Release): boolean {
  */
 export function latestComparable(all: Release[]): string | null {
   return all.find(isComparable)?.version ?? null;
+}
+
+/**
+ * Whether the fetched page ran out before the oldest pending release did.
+ *
+ * The signal is that every comparable release we saw is newer than what is
+ * installed: the oldest one on the page is still ahead of you, so the page
+ * boundary — not your version — is what ended the list. Only then does the
+ * count understate the gap, and only then is a "+" honest.
+ */
+export function isTruncated(all: Release[], behind: Release[], capped: boolean): boolean {
+  return capped && behind.length > 0 && behind.length === all.filter(isComparable).length;
 }
 
 /**

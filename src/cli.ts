@@ -7,7 +7,7 @@ import { renderReport } from "./render.ts";
 import { listReleases, parseSource } from "./sources.ts";
 import type { DigestItem, ToolReport } from "./types.ts";
 import { findUsage, resolveUsagePaths } from "./usage.ts";
-import { installedVersion, latestComparable, releasesBehind } from "./version.ts";
+import { installedVersion, isTruncated, latestComparable, releasesBehind } from "./version.ts";
 
 const HELP = `bumpii — what changed in the CLIs you use, judged against your own usage
 
@@ -178,11 +178,11 @@ async function main(): Promise<number> {
     tools.map(async (tool): Promise<ToolReport> => {
       const base: ToolReport = { tool, installed: null, latest: null, behind: [], items: [], hits: [] };
       try {
-        const [installed, releases] = await Promise.all([
+        const [installed, list] = await Promise.all([
           installedVersion(tool),
           listReleases(parseSource(tool.source)),
         ]);
-        const behind = releasesBehind(releases, installed);
+        const behind = releasesBehind(list.releases, installed);
 
         // Digesting is fallible in a way fetching is not — a small local model
         // returning prose instead of JSON is routine. Catching it here keeps
@@ -203,8 +203,9 @@ async function main(): Promise<number> {
         return {
           ...base,
           installed,
-          latest: latestComparable(releases),
+          latest: latestComparable(list.releases),
           behind,
+          truncated: isTruncated(list.releases, behind, list.capped),
           items,
           hits,
           digestError,

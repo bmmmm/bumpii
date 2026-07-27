@@ -100,17 +100,33 @@ function toRelease(r: RawRelease, ref: ForgeRef): Release {
   };
 }
 
+export interface ReleaseList {
+  releases: Release[];
+  /**
+   * The forge returned as many as we asked for, so there are probably older
+   * ones we never saw. Reported rather than assumed away: a tool thirty
+   * versions behind would otherwise be described as exactly thirty, and this
+   * is the one number in the report a person acts on.
+   */
+  capped: boolean;
+}
+
 /**
  * Newest-first list of published releases. Drafts and prereleases are dropped:
  * a prerelease is not something `brew upgrade` would ever hand you, so showing
  * its notes would describe changes you cannot get.
  */
-export async function listReleases(ref: ForgeRef, limit = 30): Promise<Release[]> {
+export async function listReleases(ref: ForgeRef, limit = 30): Promise<ReleaseList> {
   const url =
     ref.kind === "github"
       ? `${ref.api}/repos/${ref.repo}/releases?per_page=${limit}`
       : `${ref.api}/repos/${ref.repo}/releases?limit=${limit}`;
   const raw = (await getJson(url, ref)) as RawRelease[];
   if (!Array.isArray(raw)) throw new Error(`unexpected release payload from ${url}`);
-  return raw.filter((r) => !r.draft && !r.prerelease).map((r) => toRelease(r, ref));
+  return {
+    // Capped on the raw page, before filtering: a full page of drafts still
+    // means the forge had more to give.
+    capped: raw.length >= limit,
+    releases: raw.filter((r) => !r.draft && !r.prerelease).map((r) => toRelease(r, ref)),
+  };
 }
