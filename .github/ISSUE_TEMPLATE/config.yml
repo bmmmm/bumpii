@@ -1,11 +1,14 @@
 # blank_issues_enabled: false does not remove the "Blank issue" option — it
 # restricts it to maintainers and labels it "(Maintainers only)" in the
-# chooser.
+# chooser. Confirmed by rendering the page as the repo owner.
 blank_issues_enabled: false
+
+# No security entry here on purpose: GitHub adds its own "Report a security
+# vulnerability" row to the chooser once SECURITY.md exists, and that one goes
+# straight to the private advisory form rather than to the policy text. A
+# hand-written contact_link only duplicated it — verified in the rendered
+# chooser, where both showed up.
 contact_links:
-  - name: Security vulnerability
-    url: https://github.com/bmmmm/bumpii/security/policy
-    about: Do not open a public issue. Report privately — see SECURITY.md.
   - name: Usage question or setup help
     url: https://github.com/bmmmm/bumpii#readme
     about: Install, config format, source forms and engine setup are documented there.

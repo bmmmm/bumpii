@@ -19,6 +19,9 @@ body:
         latest comes from the forge's release list; the count comes from
         comparing them.
       options:
+        # A GitHub dropdown displays its first entry before anything is
+        # picked, so the first entry has to be true of someone who skipped it.
+        - Not sure
         - The installed version (left of the arrow)
         - The latest version (right of the arrow)
         - The count of pending releases

@@ -15,6 +15,8 @@ body:
     attributes:
       label: What is wrong?
       options:
+        # First entry is what a dropdown shows before anyone picks.
+        - Not sure
         - A change is summarised incorrectly
         - A change in the notes is missing from the digest
         - Something is listed that is not a real change (dependency bump, noise)
@@ -36,6 +38,10 @@ body:
         finds nothing either, the model extracted a string that does not match
         how you actually write the command, and the fix is in the prompt.
       options:
+        # First option is the honest default: a GitHub dropdown shows its
+        # first entry before anything is picked, so it has to be the answer
+        # that is true when nobody answered.
+        - I have not checked yet
         - "Yes — grep finds it, bumpii did not report it"
         - "No — grep does not find it either"
         - N/A, this is not about the usage verdict

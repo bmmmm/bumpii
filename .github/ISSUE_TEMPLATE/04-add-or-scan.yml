@@ -23,6 +23,9 @@ body:
     attributes:
       label: What happened?
       options:
+        # First entry is what a dropdown shows before anyone picks, so it has
+        # to be the answer that stays true when nobody did.
+        - Not sure
         - "`add` said it could not find a forge repo in the brew URLs"
         - "`add` said none of the binaries reported the expected version"
         - "`add` wrote an entry, but the entry is wrong"

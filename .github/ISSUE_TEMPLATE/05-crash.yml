@@ -41,6 +41,9 @@ body:
         This splits a bug in the shared path from one in a single entry's data.
         `bumpii --only <tool>` on a few different entries answers it.
       options:
+        # First entry is what a dropdown shows before anyone picks, so it has
+        # to be the answer that stays true when nobody did.
+        - Not sure
         - Every tool
         - One specific tool
         - Some tools, not others
