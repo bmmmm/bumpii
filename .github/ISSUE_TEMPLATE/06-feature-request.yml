@@ -1,0 +1,60 @@
+name: Feature request
+description: Propose a change in what bumpii does
+labels: [enhancement, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        bumpii is deliberately small: no runtime dependencies, no build step,
+        and it never installs anything itself. Proposals that hold to those
+        are much easier to say yes to.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What you were trying to find out or do, and what stopped you. Describe
+        the situation rather than the solution — the fix you have in mind goes
+        in the next box, and separating the two leaves room for a better one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+      description: Concretely — the flag, the config key, the output line.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: How you would know it works
+      description: >
+        The command someone would run and what they should see. A proposal
+        that cannot be stated this way usually needs sharpening first.
+      placeholder: |
+        $ bumpii --only gh --since 2.94.0
+        gh 2.96.0  2 releases since 2.94.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: non-goals
+    attributes:
+      label: What this should NOT do
+      description: >
+        The nearby thing you are explicitly not asking for. This is the field
+        that keeps a small feature small.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraints
+      options:
+        - label: This needs no new runtime dependency, or I have said below why one is unavoidable
+        - label: This does not make bumpii install, resolve or build anything itself

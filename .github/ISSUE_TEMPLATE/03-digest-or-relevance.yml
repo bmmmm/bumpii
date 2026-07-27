@@ -1,0 +1,76 @@
+name: Wrong digest or "affects you" verdict
+description: A change is summarised wrongly, missed entirely, or the usage verdict does not match reality
+labels: [bug, digest, usage-verdict, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two different machines produce this output. A model reads the release
+        notes and extracts which CLI surface each change touches; grep then
+        looks for exactly those strings in your own files. The question below
+        decides which of the two is wrong — they are unrelated fixes.
+
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: What is wrong?
+      options:
+        - A change is summarised incorrectly
+        - A change in the notes is missing from the digest
+        - Something is listed that is not a real change (dependency bump, noise)
+        - '"you use this" does not appear although I do use the command'
+        - '"you use this" appears for something I do not use'
+        - The kind is wrong (a security fix listed as a feature, etc.)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: literal
+    attributes:
+      label: Does the extracted command string appear verbatim in your files?
+      description: >
+        This is the routing question, and only applies to the "affects you"
+        symptoms — pick N/A otherwise. Take the `commands` value from `--json`
+        and grep for it yourself: `grep -rn "gh pr view --json" ~/dotfiles`.
+        If grep finds it and bumpii did not, the search is at fault. If grep
+        finds nothing either, the model extracted a string that does not match
+        how you actually write the command, and the fix is in the prompt.
+      options:
+        - "Yes — grep finds it, bumpii did not report it"
+        - "No — grep does not find it either"
+        - N/A, this is not about the usage verdict
+    validations:
+      required: true
+
+  - type: textarea
+    id: json
+    attributes:
+      label: "`bumpii --json --only <tool>`"
+      description: >
+        The `engine`, `items` and `hits` fields together show what was
+        extracted and what was found. Redact file paths if you would rather
+        not share them — the command strings are the part that matters.
+      render: json
+    validations:
+      required: true
+
+  - type: input
+    id: engine
+    attributes:
+      label: Engine
+      description: >
+        Copy the `engine` line from the report footer. A 3B local model and
+        Claude behave very differently on the same notes, and knowing which
+        one produced this decides whether the prompt needs work or the model
+        was simply too small for the job.
+      placeholder: openai-compatible/qwen3-30b @ http://127.0.0.1:8080/v1
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+      description: For a wrong summary, quote the release note line it came from.
+    validations:
+      required: true

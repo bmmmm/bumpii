@@ -223,6 +223,19 @@ is the flat export, and `uvx --from pillow python assets/make-logo-gif.py`
 lifts the capsule out of it and animates the bounce. Re-export the source and
 re-run the script instead of editing the GIF.
 
+## Contributing
+
+Bug reports want particular evidence — the raw output of a version probe, the
+project's real tag names, whether grep finds a string bumpii did not. The
+[issue forms](https://github.com/bmmmm/bumpii/issues/new/choose) ask for it
+per report class, and [CONTRIBUTING.md](CONTRIBUTING.md) explains why each
+one settles the question it does. Security issues go
+[privately](SECURITY.md), never in a public issue.
+
+## Support
+
+If this is useful to you, [ko-fi.com/bmabma](https://ko-fi.com/bmabma).
+
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).

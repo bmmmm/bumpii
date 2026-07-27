@@ -1,0 +1,74 @@
+name: Crash or unexpected error
+description: bumpii exits with an unhandled error, hangs, or fails in a way the other forms do not cover
+labels: [bug, crash, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A per-tool error rendered inside the report — `gh  error  404 Not
+        Found` — is bumpii working as intended: one unreachable forge is not
+        allowed to sink the run. That belongs in one of the other forms. This
+        one is for the process itself falling over.
+
+  - type: textarea
+    id: command
+    attributes:
+      label: The exact command
+      description: Include every flag. Redact tokens if any are in the line.
+      render: shell
+      placeholder: bumpii --json --only gh
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Full output and the exit code
+      description: >
+        Everything printed, plus `echo "exit: $?"` afterwards. Exit 0 means
+        nothing pending, 1 means updates available, 2 means an error — an exit
+        code that contradicts what was printed is itself the bug and worth
+        saying so.
+      render: shell
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Does it happen for every tool, or one?
+      description: >
+        This splits a bug in the shared path from one in a single entry's data.
+        `bumpii --only <tool>` on a few different entries answers it.
+      options:
+        - Every tool
+        - One specific tool
+        - Some tools, not others
+        - It does not get as far as the tools
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node version
+      description: "`node --version` — 24 is the floor; type stripping and `import.meta.main` both need it."
+      placeholder: v24.4.0
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: macOS 15.5 (arm64)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: bumpii version
+      description: The commit you are on — `git -C <checkout> rev-parse --short HEAD`.
+    validations:
+      required: true

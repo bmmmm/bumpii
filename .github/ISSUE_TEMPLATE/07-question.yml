@@ -1,0 +1,35 @@
+name: Question
+description: Ask about using or configuring bumpii
+labels: [question, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The README covers install, the config format, the source forms and the
+        engine setup. If the answer turns out to be in there, that is a
+        documentation bug worth fixing — say so and it will be.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you have tried
+      description: Commands and their output, if any.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant part of your config
+      description: Only if the question is about a specific entry.
+      render: json
+    validations:
+      required: false

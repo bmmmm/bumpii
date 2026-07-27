@@ -1,0 +1,73 @@
+name: "`add` or `scan` cannot derive an entry"
+description: bumpii add refuses a formula, generates a wrong entry, or scan lists tools you already track
+labels: [bug, discovery, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        `add` builds an entry from what brew already knows: the upstream URL,
+        the binaries the formula installs, and the current version. Its own
+        output plus brew's is usually enough to see which of those three came
+        back wrong.
+
+  - type: input
+    id: formula
+    attributes:
+      label: Formula
+      placeholder: forgejo-cli
+    validations:
+      required: true
+
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: What happened?
+      options:
+        - "`add` said it could not find a forge repo in the brew URLs"
+        - "`add` said none of the binaries reported the expected version"
+        - "`add` wrote an entry, but the entry is wrong"
+        - "`scan` lists a formula I already track"
+        - "`scan` does not list a formula I do not track"
+    validations:
+      required: true
+
+  - type: textarea
+    id: bumpii
+    attributes:
+      label: "`bumpii add <formula> --dry-run`"
+      description: >
+        `--dry-run` writes nothing, so this is safe to run just for the report.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: brew
+    attributes:
+      label: What brew knows about it
+      description: >
+        `brew info --json=v2 <formula> | jq '.formulae[0] | {versions, urls, homepage}'`
+        — this is the routing question in one command. If there is no forge URL
+        in there, bumpii declining is correct behaviour and the entry has to be
+        written by hand. If there is one and bumpii did not find it, the URL
+        parsing is at fault.
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: binaries
+    attributes:
+      label: Which binaries the formula installs
+      description: "`ls $(brew --prefix)/opt/<formula>/bin`"
+      render: shell
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: bumpii version
+      description: The commit you are on — `git -C <checkout> rev-parse --short HEAD`.
+    validations:
+      required: true

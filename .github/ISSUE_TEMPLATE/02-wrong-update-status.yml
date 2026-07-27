@@ -1,0 +1,72 @@
+name: Wrong update status
+description: A tool is called up to date when it is not, or the pending count or latest version is wrong
+labels: [bug, update-status, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A confident wrong answer here is the worst thing this tool can do, so
+        these reports get priority. `--json` carries everything needed to tell
+        the possible causes apart — please paste it rather than describing it.
+
+  - type: dropdown
+    id: which
+    attributes:
+      label: Which number is wrong?
+      description: >
+        This is the routing question, and the three answers are unrelated
+        fixes. The installed version comes from probing your binary; the
+        latest comes from the forge's release list; the count comes from
+        comparing them.
+      options:
+        - The installed version (left of the arrow)
+        - The latest version (right of the arrow)
+        - The count of pending releases
+        - It says "up to date" but there is a newer release
+        - It says "unknown" but the repo does publish releases
+    validations:
+      required: true
+
+  - type: textarea
+    id: json
+    attributes:
+      label: "`bumpii --json --no-judge --only <tool>`"
+      description: >
+        `--no-judge` keeps the engine out of it, so what is left is only the
+        version and release logic. The `installed`, `latest`, `behind` and
+        `truncated` fields are what settle this.
+      render: json
+    validations:
+      required: true
+
+  - type: input
+    id: source
+    attributes:
+      label: The entry's `source`
+      placeholder: github:cli/cli
+    validations:
+      required: true
+
+  - type: textarea
+    id: tags
+    attributes:
+      label: How the project tags its releases
+      description: >
+        The newest few tag names from the forge's releases page. Tag shape is
+        behind most wrong answers here — `jq-1.8.2` carries a name, neovim
+        publishes a rolling `stable` alongside `v0.12.4`, llama.cpp uses
+        `b10141`. Seeing the real tags is usually enough to spot it.
+      placeholder: |
+        v0.12.4
+        stable
+        v0.12.3
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: bumpii version
+      description: The commit you are on — `git -C <checkout> rev-parse --short HEAD`.
+    validations:
+      required: true
