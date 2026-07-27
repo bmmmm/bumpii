@@ -117,6 +117,10 @@ Or write entries by hand. `~/.config/bumpii/tools.json`:
   `fj version`, and some print to stderr — both are handled.
 - **`update`** — whatever bumps it on your machine. Only ever run with `--yes`.
 
+`bumpii add` rewrites this file, and it writes back the whole document: an
+entry you tuned by hand is never replaced, and any key bumpii does not know
+about survives untouched.
+
 ## Use
 
 ```console
@@ -148,6 +152,10 @@ bumpii could not check rather than checked and found nothing:
   can be ordered against your installed version.
 - **`usagePaths not found`** — a configured path does not exist, so nothing
   was searched there and every "affects you" verdict above it is incomplete.
+
+A count reads as **`30+`** when the forge's first page of releases was full
+and every one of them was pending — the page boundary ended the list, not your
+version, so the real gap is larger.
 
 ### What it is not
 
