@@ -42,6 +42,21 @@ const release = (tag: string, over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+test("a forge under a base path keeps it, and owner/repo stay the last two segments", async () => {
+  // A Forgejo proxied at /git/ is an ordinary deployment. Reading the segments
+  // from the front makes "git" the owner and points /api/v1 at the proxy root.
+  assert.deepEqual(parseSource("https://example.com/git/team/app"), {
+    kind: "forgejo",
+    api: "https://example.com/git/api/v1",
+    repo: "team/app",
+  });
+  assert.deepEqual(parseSource("https://example.com/forge/inner/team/app.git"), {
+    kind: "forgejo",
+    api: "https://example.com/forge/inner/api/v1",
+    repo: "team/app",
+  });
+});
+
 test("listReleases drops drafts and prereleases", async () => {
   // A prerelease is not something `brew upgrade` would ever hand you, so its
   // notes would describe changes you cannot get.

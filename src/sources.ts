@@ -41,9 +41,16 @@ export function parseSource(source: string): ForgeRef {
   }
   if (source.startsWith("https://") || source.startsWith("http://")) {
     const u = new URL(source);
-    const repo = u.pathname.replace(/^\/|\.git$|\/$/g, "");
-    if (!repo.includes("/")) throw new Error(`source URL has no owner/repo path: ${source}`);
-    return { kind: "forgejo", api: `${u.origin}/api/v1`, repo };
+    const parts = u.pathname.split("/").filter(Boolean);
+    if (parts.length < 2) throw new Error(`source URL has no owner/repo path: ${source}`);
+    // owner/repo are the LAST two segments, not the first two. Anything before
+    // them is the instance's own base path — a Forgejo behind a reverse proxy
+    // at /git/ is an ordinary deployment, and taking the segments from the
+    // front would read the mount point as the owner and point /api/v1 at the
+    // proxy root, where nothing answers.
+    const repo = `${parts.at(-2)}/${parts.at(-1)?.replace(/\.git$/, "")}`;
+    const prefix = parts.slice(0, -2).join("/");
+    return { kind: "forgejo", api: `${u.origin}${prefix ? `/${prefix}` : ""}/api/v1`, repo };
   }
   throw new Error(
     `unrecognised source: ${source} — use "github:owner/repo", "codeberg:owner/repo", or a full https URL`,

@@ -82,6 +82,22 @@ export function parseArgs(argv: string[]): Args {
   return a;
 }
 
+/**
+ * The Homebrew formula an update command upgrades, if it is one.
+ *
+ * Options are skipped rather than taken as the first word after the
+ * subcommand: `brew upgrade --fetch-HEAD gh` upgrades gh, and reading
+ * "--fetch-HEAD" as the formula made `scan` keep offering a tool that was
+ * already tracked. Returns an empty list for anything that is not a brew
+ * command, so callers can spread it.
+ */
+export function formulaOf(update: string): string[] {
+  const m = /brew\s+(?:upgrade|install)\s+(.+)/.exec(update);
+  if (!m?.[1]) return [];
+  const formula = m[1].split(/\s+/).find((word) => word && !word.startsWith("-"));
+  return formula ? [formula] : [];
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
 
@@ -98,12 +114,7 @@ async function main(): Promise<number> {
   if (args.cmd === "scan") {
     const cfg = await loadConfig();
     // Key by the formula each entry upgrades, not by its binary name.
-    const tracked = new Set(
-      cfg.tools.flatMap((t) => {
-        const m = /brew\s+(?:upgrade|install)\s+(\S+)/.exec(t.update);
-        return m?.[1] ? [t.name, m[1]] : [t.name];
-      }),
-    );
+    const tracked = new Set(cfg.tools.flatMap((t) => [t.name, ...formulaOf(t.update)]));
     const untracked = await untrackedFormulae(tracked);
     if (untracked.length === 0) {
       process.stdout.write("every installed formula is already tracked\n");
@@ -217,8 +228,11 @@ async function main(): Promise<number> {
   );
 
   if (args.json) {
+    // The whole engine, not just its label: a scheduled run that acts on this
+    // should be able to branch on "was anything actually judged" without
+    // parsing prose.
     process.stdout.write(
-      `${JSON.stringify({ engine: engine.label, missingUsagePaths: usage.missing, reports }, null, 2)}\n`,
+      `${JSON.stringify({ engine, missingUsagePaths: usage.missing, reports }, null, 2)}\n`,
     );
   } else {
     process.stdout.write(renderReport(reports, { engine, missingPaths: usage.missing }));

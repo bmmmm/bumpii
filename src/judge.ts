@@ -20,40 +20,74 @@ export interface Engine {
 
 const KINDS: ItemKind[] = ["security", "breaking", "feature", "fix"];
 
-/** Ask an OpenAI-compatible server what it serves; first model wins. */
-async function discoverOpenAiModel(base: string): Promise<string | null> {
+type EngineProbe = { reachable: true; models: string[] } | { reachable: false; reason: string };
+
+/** Ask an OpenAI-compatible server what it serves — and whether it is there. */
+async function probeOpenAi(base: string): Promise<EngineProbe> {
   try {
     const res = await fetch(`${base.replace(/\/$/, "")}/models`, {
       headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY ?? "local"}` },
       signal: AbortSignal.timeout(8000),
     });
-    if (!res.ok) return null;
+    if (!res.ok) return { reachable: false, reason: `HTTP ${res.status}` };
     const body = (await res.json()) as { data?: { id?: string }[] };
-    return body.data?.find((m) => m.id)?.id ?? null;
-  } catch {
-    return null;
+    const models = (body.data ?? []).map((m) => m.id).filter((id): id is string => Boolean(id));
+    return { reachable: true, models };
+  } catch (err) {
+    return { reachable: false, reason: describeFetchError(err) };
   }
 }
 
 /**
- * Pick an engine. Explicit --model wins; otherwise a local OpenAI-compatible
- * server is preferred over the hosted CLI, so the default keeps release notes
- * on the machine.
+ * Node's fetch reports every transport failure as a bare "fetch failed" and
+ * puts the part you can act on — ECONNREFUSED, ENOTFOUND, a TLS complaint —
+ * in `cause`. Unwrapping it is the difference between a message that names the
+ * problem and one that only confirms there was one.
+ */
+function describeFetchError(err: unknown): string {
+  const top = err instanceof Error ? err.message : String(err);
+  const cause = err instanceof Error ? err.cause : undefined;
+  const detail = cause instanceof Error ? cause.message : undefined;
+  return detail && detail !== top ? `${top}: ${detail}` : top;
+}
+
+/** Append why the preferred engine was not used, so the footer explains itself. */
+function labelWith(label: string, note: string): string {
+  return note ? `${label} — ${note}` : label;
+}
+
+/**
+ * Pick an engine. A local OpenAI-compatible server is preferred over the
+ * hosted CLI, so the default keeps release notes on the machine.
+ *
+ * The server is probed even when --model names one. Skipping the probe in that
+ * case meant a dead OPENAI_BASE_URL was still reported as the engine, and
+ * every tool then made its own doomed request — the same failure printed once
+ * per tool, and up to a three-minute wait each where the socket hangs rather
+ * than refuses. An explicit --model still wins over what /v1/models lists,
+ * though: a server is allowed to serve more than it advertises.
  */
 export async function resolveEngine(opts: { model?: string } = {}): Promise<Engine> {
   const base = process.env.OPENAI_BASE_URL;
+  let note = "";
   if (base) {
-    const model = opts.model ?? (await discoverOpenAiModel(base));
-    if (model) return { kind: "openai", model, label: `openai-compatible/${model} @ ${base}` };
+    const probe = await probeOpenAi(base);
+    if (probe.reachable) {
+      const model = opts.model ?? probe.models[0];
+      if (model) return { kind: "openai", model, label: `openai-compatible/${model} @ ${base}` };
+      note = `OPENAI_BASE_URL serves no models`;
+    } else {
+      note = `OPENAI_BASE_URL unreachable (${probe.reason})`;
+    }
   }
   try {
     await run("claude", ["--version"], { timeout: 8000 });
     const model = opts.model ?? "haiku";
-    return { kind: "claude-cli", model, label: `claude-cli/${model}` };
+    return { kind: "claude-cli", model, label: labelWith(`claude-cli/${model}`, note) };
   } catch {
     // fall through
   }
-  return { kind: "none", model: "", label: "none (no engine reachable)" };
+  return { kind: "none", model: "", label: labelWith("none (no engine reachable)", note) };
 }
 
 /**

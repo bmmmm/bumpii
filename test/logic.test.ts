@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseArgs } from "../src/cli.ts";
+import { formulaOf, parseArgs } from "../src/cli.ts";
 import { bare, parseSource } from "../src/sources.ts";
 import type { Release } from "../src/types.ts";
 import {
@@ -127,6 +127,21 @@ test("isComparable rejects a tag that cannot be ordered", () => {
   assert.equal(isComparable(rel("2.96.0")), true);
   assert.equal(isComparable({ ...rel("x"), version: "nightly" }), false);
   assert.equal(isComparable({ ...rel("x"), version: "" }), false);
+});
+
+test("formulaOf skips options instead of reading one as the formula", () => {
+  // `scan` matches tracked tools by the formula their update command upgrades.
+  // Taking "--fetch-HEAD" as the formula meant an already-tracked tool kept
+  // being offered as untracked.
+  assert.deepEqual(formulaOf("brew upgrade gh"), ["gh"]);
+  assert.deepEqual(formulaOf("brew upgrade --fetch-HEAD gh"), ["gh"]);
+  assert.deepEqual(formulaOf("brew install --cask foo"), ["foo"]);
+  assert.deepEqual(formulaOf("brew upgrade jundot/omlx/omlx"), ["jundot/omlx/omlx"]);
+});
+
+test("formulaOf yields nothing for an update command that is not brew", () => {
+  assert.deepEqual(formulaOf("cargo install ripgrep"), []);
+  assert.deepEqual(formulaOf("brew upgrade"), [], "a bare upgrade names no formula");
 });
 
 test("isTruncated fires only when the page ran out before your version did", () => {
