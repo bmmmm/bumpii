@@ -51,6 +51,23 @@ Optional, and only for what they enable: `brew` for `bumpii add`/`scan`,
 `podman` or `docker` for `bumpii add --image`, `grep` for the usage verdict
 (present everywhere), and an engine for the digest — see below.
 
+## Commands
+
+| | |
+| --- | --- |
+| `bumpii` | digest pending releases for everything tracked |
+| `bumpii init` | write a starter config |
+| `bumpii add <formula>…` | derive entries from installed Homebrew formulae |
+| `bumpii add --image <container>…` | derive entries from running containers |
+| `bumpii scan` | installed formulae not yet tracked |
+| `bumpii list` | what is tracked, and what is still incomplete |
+| `bumpii set <name> <field> <value>` | change one field: `source` or `update` |
+| `bumpii rm <name>…` | stop tracking these |
+| `bumpii --yes` | digest, then run each tool's update command |
+
+`bumpii --help` carries the options; the sections below cover what each of
+these does and why.
+
 ## Adding tools
 
 For anything installed via Homebrew, let it write the entry:
