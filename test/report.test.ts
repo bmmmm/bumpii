@@ -178,3 +178,23 @@ test("parseItems refuses output with no array rather than inventing one", () => 
   assert.throws(() => parseItems("I could not find any release notes."), /no JSON array/);
   assert.throws(() => parseItems('{"kind":"fix"}'), /no JSON array/);
 });
+
+test("an entry that is neither installed nor comparable says both, not a bare ?", () => {
+  // Two findings in one line: nothing here to run, and nothing at the source to
+  // measure against. "latest ?" rendered that as a formatting slip.
+  const out = renderReport([report({ installed: null, latest: null })], {
+    engine,
+    missingPaths: [],
+  });
+  assert.match(out, /not installed/);
+  assert.match(out, /publishes no versioned releases/);
+  assert.doesNotMatch(out, /latest \?/);
+});
+
+test("a missing usage path says what to do about it, like every other state", () => {
+  const out = renderReport([report({ installed: "2.96.0", latest: "2.96.0" })], {
+    engine,
+    missingPaths: ["~/ops/scripts"],
+  });
+  assert.match(out, /correct it in usagePaths, or remove it/);
+});

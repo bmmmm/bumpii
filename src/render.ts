@@ -71,7 +71,16 @@ export function renderReport(reports: ToolReport[], opts: RenderOptions): string
       continue;
     }
     if (!r.installed) {
-      out.push(`${name}  ${dim("not installed")}  ${dim(`latest ${r.latest ?? "?"}`)}`, "");
+      // A bare "?" for the latest version reads as a rendering slip when it is
+      // really a second finding: the entry is not installed AND its source has
+      // nothing to compare against, so there is nothing behind it to come back
+      // to. Saying so is what separates a dormant entry from a dead one.
+      out.push(
+        r.latest
+          ? `${name}  ${dim("not installed")}  ${dim(`latest ${r.latest}`)}`
+          : `${name}  ${dim("not installed")}  ${dim(`and ${r.tool.source} publishes no versioned releases — nothing to install or watch`)}`,
+        "",
+      );
       continue;
     }
     // No comparable release means nothing was checked, which is a different
@@ -137,6 +146,7 @@ export function renderReport(reports: ToolReport[], opts: RenderOptions): string
     out.push(
       `${yellow("usagePaths not found")}: ${opts.missingPaths.join(", ")}`,
       dim("  nothing was searched there, so every “affects you” above is incomplete"),
+      dim("  correct it in usagePaths, or remove it, so the verdict means something again"),
       "",
     );
   }
