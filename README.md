@@ -90,6 +90,38 @@ and an entry built from it would 404 on every run.
 `scan` lists `brew leaves` — what you asked for, not the dependencies dragged
 in behind them.
 
+### Containers
+
+For anything running as a container, `--image` reads the entry off it:
+
+```console
+$ bumpii add --image gateway grafana
+gateway (podman) → gateway 2.4.1
+  source: github:owner/gateway
+  probe:  image ghcr.io/owner/gateway:2.4.1
+  update: # complete this: pull ghcr.io/owner/gateway:2.4.1 and restart gateway
+```
+
+This path is more reliable than the Homebrew one, because it does not have to
+guess. `org.opencontainers.image.source` is part of the OCI image spec and its
+whole purpose is to say where the code lives, whereas brew only offers a
+tarball URL to extract a repo address from. podman and docker are driven
+identically here — same `inspect --format`, same labels — so whichever is on
+PATH answers.
+
+Two things it will not do. An image without the `source` label is reported and
+skipped rather than guessed at. And the `update` line is left as a comment for
+you to finish: pulling is only half an update, the container still has to be
+restarted onto the new image, and how depends on how you run it. Until you
+complete that line, `--yes` skips the entry and exits non-zero rather than
+running a comment and calling it a success — which is what `sh -c` would
+otherwise do, happily and with exit 0.
+
+A container update is also exactly what
+[revertii](https://github.com/bmmmm/revertii) is for: it applies the change,
+checks health, and puts the old image back if the service does not return.
+`update` can simply be `revertii update gateway`.
+
 ## Configure
 
 Or write entries by hand. `~/.config/bumpii/tools.json`:

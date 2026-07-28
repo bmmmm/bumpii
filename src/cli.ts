@@ -2,6 +2,7 @@
 import { addTools, configPath, initConfig, loadConfig } from "./config.ts";
 import { discoverFormula, untrackedFormulae } from "./discover.ts";
 import { run } from "./exec.ts";
+import { discoverImage } from "./images.ts";
 import { digest, resolveEngine } from "./judge.ts";
 import { renderReport } from "./render.ts";
 import { listReleases, parseSource } from "./sources.ts";
@@ -14,10 +15,12 @@ const HELP = `bumpii — what changed in the CLIs you use, judged against your o
   bumpii [options]        digest pending releases for every configured tool
   bumpii init             write a starter config
   bumpii add <formula>…   derive entries from installed Homebrew formulae
+  bumpii add --image <c>… derive entries from running containers
   bumpii scan             list installed formulae not yet tracked
   bumpii --yes            digest, then run each tool's update command
 
 Options:
+  --image             with add: read the arguments as container names
   --only <name,...>   restrict to these tools
   --model <id>        force a judge model instead of discovering one
   --json              machine-readable report
@@ -35,6 +38,8 @@ interface Args {
   json: boolean;
   noJudge: boolean;
   dryRun: boolean;
+  /** With `add`: the positionals are container names, not brew formulae. */
+  image: boolean;
   only: string[];
   /** Positional arguments after a subcommand, e.g. formula names for `add`. */
   rest: string[];
@@ -59,6 +64,7 @@ export function parseArgs(argv: string[]): Args {
     json: false,
     noJudge: false,
     dryRun: false,
+    image: false,
     only: [],
     rest: [],
   };
@@ -74,6 +80,7 @@ export function parseArgs(argv: string[]): Args {
     else if (v === "--json") a.json = true;
     else if (v === "--no-judge") a.noJudge = true;
     else if (v === "--dry-run" || v === "-n") a.dryRun = true;
+    else if (v === "--image") a.image = true;
     else if (v === "--only") a.only = takeValue(argv, ++i, v).split(",").filter(Boolean);
     else if (v === "--model") a.model = takeValue(argv, ++i, v);
     else if (v.startsWith("-")) throw new Error(`unknown option: ${v}`);
@@ -96,6 +103,17 @@ export function formulaOf(update: string): string[] {
   if (!m?.[1]) return [];
   const formula = m[1].split(/\s+/).find((word) => word && !word.startsWith("-"));
   return formula ? [formula] : [];
+}
+
+/**
+ * Whether an update line is still the placeholder `add --image` writes.
+ *
+ * It matters that this is not just skipped: `sh -c` runs a comment happily and
+ * exits 0, so an unfinished entry would report a successful update that never
+ * happened — and `--yes` would exit 0 with it.
+ */
+export function isPlaceholderUpdate(update: string): boolean {
+  return update.trim().startsWith("#");
 }
 
 async function main(): Promise<number> {
@@ -128,14 +146,21 @@ async function main(): Promise<number> {
   }
 
   if (args.cmd === "add") {
-    if (args.rest.length === 0) throw new Error("add: name at least one Homebrew formula");
-    // Concurrently: each formula costs a brew call plus up to five version
-    // probes, every one of them able to sit out its own timeout.
+    if (args.rest.length === 0) {
+      throw new Error(
+        args.image
+          ? "add --image: name at least one running container"
+          : "add: name at least one Homebrew formula (or use --image for containers)",
+      );
+    }
+    // Concurrently: each entry costs an inspect or a brew call, and on the
+    // brew path up to five version probes able to sit out their own timeout.
     const settled = await Promise.all(
-      args.rest.map(async (formula) => {
+      args.rest.map(async (name) => {
         try {
-          // One unresolvable formula must not sink the rest of the batch.
-          return { ok: true as const, value: await discoverFormula(formula) };
+          // One unresolvable name must not sink the rest of the batch.
+          const d = args.image ? await discoverImage(name) : await discoverFormula(name);
+          return { ok: true as const, value: d };
         } catch (err) {
           return { ok: false as const, message: (err as Error).message };
         }
@@ -150,14 +175,24 @@ async function main(): Promise<number> {
       }
       const d = r.value;
       found.push(d);
+      const from = "formula" in d ? d.formula : `${d.container} (${d.runtime})`;
+      const how = "probe" in d ? d.probe : `image ${d.image}`;
       process.stdout.write(
-        `${d.formula} → ${d.entry.name} ${d.version}\n` +
+        `${from} → ${d.entry.name} ${d.version}\n` +
           `  source: ${d.source}\n` +
-          `  probe:  ${d.probe}\n` +
+          `  probe:  ${how}\n` +
           `  update: ${d.entry.update}\n`,
       );
     }
     if (found.length === 0) return 2;
+    // A container entry cannot have its update command guessed — pulling is
+    // only half of it — so say so once rather than letting `--yes` later run
+    // a comment.
+    if (found.some((d) => isPlaceholderUpdate(d.entry.update))) {
+      process.stdout.write(
+        `\nfinish the "update" line for the container entries in ${configPath()} before using --yes\n`,
+      );
+    }
     if (args.dryRun) {
       process.stdout.write("\n--dry-run: nothing written\n");
       return 0;
@@ -242,6 +277,16 @@ async function main(): Promise<number> {
   if (args.yes) {
     for (const r of reports) {
       if (r.error || !r.installed || r.behind.length === 0) continue;
+      // A placeholder update line is a comment, which `sh -c` runs happily and
+      // exits 0 on — reporting a successful update that never happened. That
+      // is the exact class of quiet wrong answer this tool exists to avoid.
+      if (isPlaceholderUpdate(r.tool.update)) {
+        updateFailures++;
+        process.stderr.write(
+          `${r.tool.name}: update line is still a placeholder (${r.tool.update.trim()}) — skipped\n`,
+        );
+        continue;
+      }
       process.stdout.write(`\n$ ${r.tool.update}\n`);
       try {
         const out = await run("/bin/sh", ["-c", r.tool.update], { timeout: 600_000 });

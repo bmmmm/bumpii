@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { formulaOf, parseArgs } from "../src/cli.ts";
+import { formulaOf, isPlaceholderUpdate, parseArgs } from "../src/cli.ts";
 import { bare, parseSource } from "../src/sources.ts";
 import type { Release } from "../src/types.ts";
 import {
@@ -137,6 +137,15 @@ test("formulaOf skips options instead of reading one as the formula", () => {
   assert.deepEqual(formulaOf("brew upgrade --fetch-HEAD gh"), ["gh"]);
   assert.deepEqual(formulaOf("brew install --cask foo"), ["foo"]);
   assert.deepEqual(formulaOf("brew upgrade jundot/omlx/omlx"), ["jundot/omlx/omlx"]);
+});
+
+test("an unfinished update line is recognised as a placeholder", () => {
+  // `sh -c` runs a comment and exits 0, so an entry left unfinished by
+  // `add --image` would otherwise report an update that never happened.
+  assert.equal(isPlaceholderUpdate("# complete this: pull app and restart it"), true);
+  assert.equal(isPlaceholderUpdate("   # still a comment"), true);
+  assert.equal(isPlaceholderUpdate("brew upgrade gh"), false);
+  assert.equal(isPlaceholderUpdate("podman pull app && systemctl restart app"), false);
 });
 
 test("formulaOf yields nothing for an update command that is not brew", () => {
