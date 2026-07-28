@@ -12,7 +12,10 @@ import type { Release, ToolConfig } from "./types.ts";
  */
 export async function installedVersion(tool: ToolConfig): Promise<string | null> {
   const [bin, ...args] = tool.version.cmd;
-  if (!bin) throw new Error(`${tool.name}: version.cmd is empty`);
+  if (!bin)
+    throw new Error(
+      `${tool.name}: version.cmd is empty — it is the argv that prints the version, e.g. ["gh", "--version"]`,
+    );
   let out: string;
   let probeFailed = false;
   try {

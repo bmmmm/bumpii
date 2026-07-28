@@ -143,9 +143,16 @@ export function parseItems(text: string): DigestItem[] {
   // re-prompting; find the outermost array rather than trusting the shape.
   const start = text.indexOf("[");
   const end = text.lastIndexOf("]");
-  if (start < 0 || end <= start) throw new Error(`no JSON array in engine output: ${text.slice(0, 200)}`);
+  if (start < 0 || end <= start)
+    throw new Error(
+      `no JSON array in engine output — the model answered in prose. Try a larger model with ` +
+        `--model, or --no-judge to keep the release list without a summary: ${text.slice(0, 200)}`,
+    );
   const parsed = JSON.parse(text.slice(start, end + 1)) as unknown;
-  if (!Array.isArray(parsed)) throw new Error("engine output was not an array");
+  if (!Array.isArray(parsed))
+    throw new Error(
+      "engine output parsed as JSON but not as an array — try a larger model with --model, or --no-judge",
+    );
 
   const items: DigestItem[] = [];
   for (const raw of parsed) {
@@ -178,10 +185,18 @@ async function askOpenAi(engine: Engine, text: string): Promise<string> {
     }),
     signal: AbortSignal.timeout(180_000),
   });
-  if (!res.ok) throw new Error(`engine HTTP ${res.status}: ${await res.text()}`);
+  if (!res.ok)
+    throw new Error(
+      `engine HTTP ${res.status} from ${base}/chat/completions — check OPENAI_BASE_URL and that ` +
+        `"${engine.model}" is one of the models it serves (/v1/models lists them): ${await res.text()}`,
+    );
   const body = (await res.json()) as { choices?: { message?: { content?: string } }[] };
   const out = body.choices?.[0]?.message?.content;
-  if (!out) throw new Error("engine returned no content");
+  if (!out)
+    throw new Error(
+      `engine accepted the request but returned an empty message — "${engine.model}" may not be loaded; ` +
+        "check /v1/models, or run with --no-judge",
+    );
   return out;
 }
 

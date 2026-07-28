@@ -322,7 +322,8 @@ async function main(): Promise<number> {
 
   const config = await loadConfig();
   const tools = args.only.length ? config.tools.filter((t) => args.only.includes(t.name)) : config.tools;
-  if (tools.length === 0) throw new Error(`no tools matched --only ${args.only.join(",")}`);
+  if (tools.length === 0)
+    throw new Error(`no tools matched --only ${args.only.join(",")} — see 'bumpii list' for the names`);
 
   const engine = args.noJudge
     ? { kind: "none" as const, model: "", label: "skipped (--no-judge)" }

@@ -137,7 +137,11 @@ export async function discoverFormula(formula: string): Promise<Discovery> {
   const f = await brewJson(formula);
   const versions = (f.versions ?? {}) as { stable?: string };
   const version = versions.stable;
-  if (!version) throw new Error(`${formula}: brew reports no stable version`);
+  if (!version)
+    throw new Error(
+      `${formula}: brew reports no stable version — a HEAD-only formula has nothing to compare against; ` +
+        "track its repo by hand instead",
+    );
 
   const urls = (f.urls ?? {}) as { stable?: { url?: string }; head?: { url?: string } };
   const source = sourceFromUrls([urls.stable?.url ?? "", urls.head?.url ?? "", (f.homepage as string) ?? ""]);

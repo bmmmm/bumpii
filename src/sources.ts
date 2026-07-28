@@ -53,7 +53,10 @@ export function parseSource(source: string): ForgeRef {
       );
     }
     const parts = u.pathname.split("/").filter(Boolean);
-    if (parts.length < 2) throw new Error(`source URL has no owner/repo path: ${source}`);
+    if (parts.length < 2)
+      throw new Error(
+        `source URL has no owner/repo path: ${source} — it needs both, as in https://git.example.com/team/app`,
+      );
     // owner/repo are the LAST two segments, not the first two. Anything before
     // them is the instance's own base path — a Forgejo behind a reverse proxy
     // at /git/ is an ordinary deployment, and taking the segments from the
@@ -169,7 +172,11 @@ export async function listReleases(ref: ForgeRef, limit = 30): Promise<ReleaseLi
       ? `${ref.api}/repos/${ref.repo}/releases?per_page=${limit}`
       : `${ref.api}/repos/${ref.repo}/releases?limit=${limit}`;
   const raw = (await getJson(url, ref)) as RawRelease[];
-  if (!Array.isArray(raw)) throw new Error(`unexpected release payload from ${url}`);
+  if (!Array.isArray(raw))
+    throw new Error(
+      `unexpected release payload from ${url} — it answered, but not with a release list; check that the ` +
+        "source points at a forge and not at a web page in front of one",
+    );
   return {
     // Capped on the raw page, before filtering: a full page of drafts still
     // means the forge had more to give.

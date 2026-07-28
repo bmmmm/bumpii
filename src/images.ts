@@ -99,7 +99,11 @@ export async function discoverImage(container: string): Promise<ImageDiscovery> 
     const detail = (e.stderr ?? "").trim().split("\n")[0] || e.message.split("\n")[0];
     throw new Error(`${container}: ${runtime} could not inspect it — ${detail}`);
   }
-  if (!image) throw new Error(`${container}: ${runtime} reports no image for it`);
+  if (!image)
+    throw new Error(
+      `${container}: ${runtime} reports no image for it — a container built from a bare rootfs cannot be ` +
+        "tracked by image; add it by hand with a source and an update command",
+    );
 
   const [labelSource, labelVersion] = await Promise.all([
     inspect(runtime, container, `{{index .Config.Labels "${LABEL_SOURCE}"}}`),
