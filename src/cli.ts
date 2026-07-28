@@ -167,6 +167,7 @@ async function main(): Promise<number> {
       }),
     );
     const found = [];
+    const drafts = [];
     // Reported in the order they were asked for, not the order they finished.
     for (const r of settled) {
       if (!r.ok) {
@@ -174,9 +175,16 @@ async function main(): Promise<number> {
         continue;
       }
       const d = r.value;
-      found.push(d);
       const from = "formula" in d ? d.formula : `${d.container} (${d.runtime})`;
       const how = "probe" in d ? d.probe : `image ${d.image}`;
+      // An entry with no source cannot be tracked, but everything else about
+      // it was worked out — so it is offered as a draft rather than dropped.
+      if ("needsSource" in d && d.needsSource) {
+        drafts.push(d);
+        process.stdout.write(`${from} → ${d.entry.name} ${d.version}\n  source: (not stated by the image)\n`);
+        continue;
+      }
+      found.push(d);
       process.stdout.write(
         `${from} → ${d.entry.name} ${d.version}\n` +
           `  source: ${d.source}\n` +
@@ -184,6 +192,22 @@ async function main(): Promise<number> {
           `  update: ${d.entry.update}\n`,
       );
     }
+
+    if (drafts.length > 0) {
+      // Printed as the finished JSON so the remaining work is one line, not a
+      // hand-built entry. Guessing the repo from the image path is what this
+      // avoids: ghcr.io/home-assistant/home-assistant is built from
+      // github.com/home-assistant/core, and a guess would look right.
+      process.stdout.write(
+        `\n${drafts.length} image(s) do not say which repo they were built from. ` +
+          `Roughly half of common images do not — bumpii will not guess, because a guess can land on a\n` +
+          `real but wrong repo and report someone else's release notes. Fill in "source" and paste into ${configPath()}:\n\n`,
+      );
+      for (const d of drafts) {
+        process.stdout.write(`${JSON.stringify({ ...d.entry, source: "github:OWNER/REPO" }, null, 2)}\n`);
+      }
+    }
+
     if (found.length === 0) return 2;
     // A container entry cannot have its update command guessed — pulling is
     // only half of it — so say so once rather than letting `--yes` later run

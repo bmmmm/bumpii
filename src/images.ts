@@ -20,10 +20,17 @@ export interface ImageDiscovery {
   container: string;
   image: string;
   version: string;
+  /** Empty when the image carries no source label; `needsSource` is then set. */
   source: string;
   entry: ToolConfig;
   /** Which runtime answered, so the generated entry can be sanity-checked. */
   runtime: string;
+  /**
+   * The image did not say which repo it was built from, so the entry is a
+   * draft: everything else is filled in, `source` is not, and it must not be
+   * written to the config until a human supplies it.
+   */
+  needsSource: boolean;
 }
 
 /** Labels the OCI image spec defines for exactly this question. */
@@ -69,7 +76,12 @@ async function inspect(runtime: string, target: string, format: string): Promise
 export function versionFrom(label: string, imageRef: string): string {
   if (label.trim()) return label.trim();
   const tag = imageRef.includes(":") ? (imageRef.split(":").pop() ?? "") : "";
-  return /[0-9]/.test(tag) ? tag : "";
+  // The numeric part only, and for the same reason the generated regex takes
+  // it: "17-alpine" would otherwise be shown here while every later run
+  // reports "17", and a version that changes between `add` and the first
+  // digest looks like a bug in whichever one you read second.
+  const numeric = /[0-9][0-9.]*/.exec(tag)?.[0] ?? "";
+  return numeric;
 }
 
 /** Build a ready-to-use tool entry from a running container. */
@@ -94,22 +106,22 @@ export async function discoverImage(container: string): Promise<ImageDiscovery> 
     inspect(runtime, container, `{{index .Config.Labels "${LABEL_VERSION}"}}`),
   ]);
 
-  if (!labelSource) {
-    throw new Error(
-      `${container}: its image carries no ${LABEL_SOURCE} label, so there is no repo to read release notes from — ` +
-        `add the entry by hand with a "source" of "github:owner/repo", or ask the image's author to set the label`,
-    );
-  }
-
   // Reuses the brew path's URL parser: the label is a plain repo URL, which is
   // the same shape sourceFromUrls already resolves.
-  const source = sourceFromUrls([labelSource]);
-  if (!source) {
-    throw new Error(
-      `${container}: ${LABEL_SOURCE} is "${labelSource}", which is not a forge URL bumpii can read — ` +
-        `add the entry by hand with a "source" of "github:owner/repo" or a full forge URL`,
-    );
-  }
+  //
+  // A missing or unreadable label is not fatal, because roughly half of widely
+  // used images carry no source label at all — postgres and nginx have none,
+  // grafana only a maintainer address. Refusing outright would leave the user
+  // to hand-write the fiddly part (the inspect argv and its regex) for the
+  // commonest case. So the entry is still built, with `source` left blank for
+  // a human to fill in.
+  //
+  // What it must not do is guess. ghcr.io/home-assistant/home-assistant is
+  // built from github.com/home-assistant/core — deriving the repo from the
+  // image path would land on a different, existing repo and quietly report
+  // someone else's release notes.
+  const source = labelSource ? (sourceFromUrls([labelSource]) ?? "") : "";
+  const needsSource = source === "";
 
   const version = versionFrom(labelVersion, image);
   if (!version) {
@@ -131,6 +143,7 @@ export async function discoverImage(container: string): Promise<ImageDiscovery> 
     version,
     source,
     runtime,
+    needsSource,
     entry: {
       name: container,
       source,

@@ -59,6 +59,14 @@ test("versionFrom falls back to the tag only when it carries digits", () => {
   assert.equal(versionFrom("", "ghcr.io/owner/app"), "");
 });
 
+test("versionFrom takes the number out of a decorated tag", () => {
+  // postgres:17-alpine is the live case. Returning "17-alpine" here while the
+  // generated regex reports "17" on every later run makes the version appear
+  // to change between `add` and the first digest.
+  assert.equal(versionFrom("", "postgres:17-alpine"), "17");
+  assert.equal(versionFrom("", "app:v3.2.5-rc1"), "3.2.5");
+});
+
 test("a container with the OCI labels yields a complete entry", async () => {
   await stubRuntime(COMPLETE);
   const d = await discoverImage("app");
@@ -100,9 +108,11 @@ esac
   assert.equal(await installedVersion(d.entry), "2.4.1");
 });
 
-test("an image without the source label is refused with what to do instead", async () => {
-  // Not every image sets it, and guessing a repo would produce an entry that
-  // 404s on every run.
+test("an image without the source label yields a draft, not a refusal", async () => {
+  // Measured against real images: postgres and nginx carry no source label at
+  // all, grafana only a maintainer address. Refusing would leave the fiddly
+  // part — the inspect argv and its regex — to be written by hand for the
+  // commonest case.
   await stubRuntime(`
 case "$1" in
   --version) echo "podman version 5.2.0"; exit 0 ;;
@@ -112,11 +122,14 @@ case "$3" in
   *) echo "<no value>" ;;
 esac
 `);
-  await assert.rejects(discoverImage("web"), /carries no org\.opencontainers\.image\.source label/);
-  await assert.rejects(discoverImage("web"), /add the entry by hand/);
+  const d = await discoverImage("web");
+  assert.equal(d.needsSource, true);
+  assert.equal(d.source, "");
+  assert.equal(d.version, "1.27", "everything else is still worked out");
+  assert.deepEqual(d.entry.version.cmd.slice(0, 2), ["podman", "inspect"]);
 });
 
-test("a source label that is not a forge URL is refused rather than guessed at", async () => {
+test("a source label that is not a forge URL also yields a draft", async () => {
   await stubRuntime(`
 case "$1" in
   --version) echo "podman version 5.2.0"; exit 0 ;;
@@ -127,7 +140,30 @@ case "$3" in
   "{{.Config.Image}}") echo "app:1.0.0" ;;
 esac
 `);
-  await assert.rejects(discoverImage("app"), /not a forge URL bumpii can read/);
+  const d = await discoverImage("app");
+  assert.equal(d.needsSource, true);
+  assert.equal(d.version, "1.0.0");
+});
+
+test("the repo is never derived from the image path", async () => {
+  // ghcr.io/home-assistant/home-assistant is built from
+  // github.com/home-assistant/core — verified against the real image. A guess
+  // off the path lands on a different, existing repo and would report someone
+  // else's release notes, which is worse than no answer.
+  await stubRuntime(`
+case "$1" in
+  --version) echo "podman version 5.2.0"; exit 0 ;;
+esac
+case "$3" in
+  *"image.source"*)  echo "https://github.com/home-assistant/core" ;;
+  *"image.version"*) echo "2024.1.0" ;;
+  "{{.Config.Image}}") echo "ghcr.io/home-assistant/home-assistant:2024.1.0" ;;
+esac
+`);
+  const d = await discoverImage("ha");
+  assert.equal(d.source, "github:home-assistant/core");
+  assert.notEqual(d.source, "github:home-assistant/home-assistant");
+  assert.equal(d.needsSource, false);
 });
 
 test("an image with no version anywhere is refused", async () => {

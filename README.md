@@ -109,13 +109,24 @@ tarball URL to extract a repo address from. podman and docker are driven
 identically here — same `inspect --format`, same labels — so whichever is on
 PATH answers.
 
-Two things it will not do. An image without the `source` label is reported and
-skipped rather than guessed at. And the `update` line is left as a comment for
-you to finish: pulling is only half an update, the container still has to be
-restarted onto the new image, and how depends on how you run it. Until you
-complete that line, `--yes` skips the entry and exits non-zero rather than
-running a comment and calling it a success — which is what `sh -c` would
-otherwise do, happily and with exit 0.
+**Roughly half of common images do not carry the label.** Measured: traefik,
+prometheus and home-assistant do; postgres, nginx and grafana have none at all
+— postgres carries no labels whatsoever, grafana only a maintainer address.
+For those, bumpii prints the finished entry with `source` left blank, so the
+fiddly part is done and you fill in one line.
+
+It will not guess the repo from the image path, and one example says why:
+`ghcr.io/home-assistant/home-assistant` is built from
+`github.com/home-assistant/core`. A guess off the path lands on a different
+repo that also exists, and you would be reading someone else's release notes
+without any sign that anything went wrong.
+
+The `update` line is likewise left as a comment for you to finish: pulling is
+only half an update, the container still has to be restarted onto the new
+image, and how depends on how you run it. Until you complete that line,
+`--yes` skips the entry and exits non-zero rather than running a comment and
+calling it a success — which is what `sh -c` would otherwise do, happily and
+with exit 0.
 
 One honest limitation: the "affects you" verdict is weaker here. It works by
 grepping your files for the commands a change touches, and a service usually
