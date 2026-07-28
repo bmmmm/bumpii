@@ -4,8 +4,8 @@
 
 # bumpii
 
-Read what actually changed in the CLI tools you use every day — judged against
-your own usage — then bump them.
+Read what actually changed in the CLI tools and containers you run — judged
+against your own usage — then bump them.
 
 Release notes are long, and most of them are not about you. `bumpii` collects
 every release between the version you have installed and the newest one,
@@ -48,8 +48,8 @@ sources directly, so there is no build either. `pnpm install` is only needed to
 work on the code (typescript, `@types/node` and biome, all dev-only).
 
 Optional, and only for what they enable: `brew` for `bumpii add`/`scan`,
-`grep` for the usage verdict (present everywhere), and an engine for the
-digest — see below.
+`podman` or `docker` for `bumpii add --image`, `grep` for the usage verdict
+(present everywhere), and an engine for the digest — see below.
 
 ## Adding tools
 
@@ -116,6 +116,13 @@ restarted onto the new image, and how depends on how you run it. Until you
 complete that line, `--yes` skips the entry and exits non-zero rather than
 running a comment and calling it a success — which is what `sh -c` would
 otherwise do, happily and with exit 0.
+
+One honest limitation: the "affects you" verdict is weaker here. It works by
+grepping your files for the commands a change touches, and a service usually
+has no commands that appear in your scripts — so expect "affects you: none"
+more often, and read it as "nothing to grep for" rather than "nothing that
+matters". The digest itself is unaffected: what changed, and whether any of it
+is a security or breaking change, is the same question either way.
 
 A container update is also exactly what
 [revertii](https://github.com/bmmmm/revertii) is for: it applies the change,

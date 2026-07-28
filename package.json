@@ -1,7 +1,7 @@
 {
   "name": "bumpii",
   "version": "0.1.0",
-  "description": "Read what actually changed in the CLI tools you use every day, judged against your own usage — then bump them.",
+  "description": "Read what actually changed in the CLI tools and containers you run, judged against your own usage — then bump them.",
   "type": "module",
   "license": "GPL-3.0-or-later",
   "packageManager": "pnpm@11.13.0",

@@ -52,6 +52,30 @@ test("installedVersion reports a tool that is not installed as null, not an erro
   assert.equal(v, null, "a tracked tool you have not installed yet is a normal state");
 });
 
+test("a probe that failed is not blamed on the regex", async () => {
+  // The live case: a container entry whose container was removed. docker exits
+  // non-zero with "no such object", and reporting that as a version.match
+  // problem starts a hunt in the config when the answer is that the thing is
+  // gone. A deleted container is this feature's equivalent of an uninstalled
+  // binary, and the message has to point there.
+  const bin = await fixture("gone", 'echo "error: no such object: gw" >&2; exit 125');
+  await assert.rejects(
+    installedVersion(tool([bin, "inspect", "gw"], "v?([0-9][0-9.]*)")),
+    /the version probe failed and printed no version — is it still installed\?/,
+  );
+  await assert.rejects(installedVersion(tool([bin, "inspect", "gw"], "v?([0-9][0-9.]*)")), /no such object/);
+});
+
+test("a probe that succeeded still blames the regex", async () => {
+  // The other half of the same decision: when the command worked and the
+  // pattern simply does not fit, the config really is where to look.
+  const bin = await fixture("talks", 'echo "talks version 1.2.3"');
+  await assert.rejects(
+    installedVersion(tool([bin, "--version"], "nothing like this ([0-9]+)")),
+    /version\.match .* did not match output/,
+  );
+});
+
 test("installedVersion separates a pattern that captures nothing from one that misses", async () => {
   const bin = await fixture("plain", 'echo "fixture version 3.1.0"');
   await assert.rejects(

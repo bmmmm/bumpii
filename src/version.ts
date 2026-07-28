@@ -26,6 +26,7 @@ export async function installedVersion(tool: ToolConfig): Promise<string | null>
   const [bin, ...args] = tool.version.cmd;
   if (!bin) throw new Error(`${tool.name}: version.cmd is empty`);
   let out: string;
+  let probeFailed = false;
   try {
     const r = await run(bin, args, { timeout: 10_000 });
     // Some CLIs print their version to stderr; `fj version` uses stdout, but
@@ -36,13 +37,21 @@ export async function installedVersion(tool: ToolConfig): Promise<string | null>
     if (e.code === "ENOENT") return null;
     // A non-zero exit can still have printed the version (some tools exit 1 on
     // `--version` variants), so try the output before giving up.
+    probeFailed = true;
     out = `${e.stdout ?? ""}\n${e.stderr ?? ""}`;
     if (!out.trim()) throw new Error(`${tool.name}: version probe failed: ${e.message}`);
   }
   const m = new RegExp(tool.version.match).exec(stripAnsi(out));
   if (!m) {
+    // Whether the probe itself failed decides where to send the reader. A
+    // container entry whose container was removed reports "no such object" and
+    // exits non-zero — blaming the regex there starts a hunt in the wrong file,
+    // when the actual answer is that the thing being probed is gone.
+    const first = out.trim().split("\n")[0];
     throw new Error(
-      `${tool.name}: version.match /${tool.version.match}/ did not match output: ${out.trim().split("\n")[0]}`,
+      probeFailed
+        ? `${tool.name}: the version probe failed and printed no version — is it still installed? (${bin}: ${first})`
+        : `${tool.name}: version.match /${tool.version.match}/ did not match output: ${first}`,
     );
   }
   // A pattern that matches but captures nothing is a different mistake from

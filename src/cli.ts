@@ -10,7 +10,7 @@ import type { DigestItem, ToolReport } from "./types.ts";
 import { findUsage, resolveUsagePaths } from "./usage.ts";
 import { installedVersion, isTruncated, latestComparable, releasesBehind } from "./version.ts";
 
-const HELP = `bumpii — what changed in the CLIs you use, judged against your own usage
+const HELP = `bumpii — what changed in the CLIs and containers you run, judged against your usage
 
   bumpii [options]        digest pending releases for every configured tool
   bumpii init             write a starter config
