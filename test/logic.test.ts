@@ -139,6 +139,24 @@ test("formulaOf skips options instead of reading one as the formula", () => {
   assert.deepEqual(formulaOf("brew upgrade jundot/omlx/omlx"), ["jundot/omlx/omlx"]);
 });
 
+test("parseArgs routes the entry-management subcommands", () => {
+  assert.equal(parseArgs(["list"]).cmd, "list");
+  assert.equal(parseArgs(["rm", "gh"]).cmd, "rm");
+  assert.deepEqual(parseArgs(["rm", "gh", "jq"]).rest, ["gh", "jq"]);
+
+  const set = parseArgs(["set", "pg", "update", "docker", "pull", "x"]);
+  assert.equal(set.cmd, "set");
+  assert.deepEqual(set.rest, ["pg", "update", "docker", "pull", "x"], "a multi-word value stays intact");
+});
+
+test("parseArgs reads --source as a value, not a flag", () => {
+  const a = parseArgs(["add", "--image", "pg", "--source", "github:postgres/postgres"]);
+  assert.equal(a.image, true);
+  assert.equal(a.source, "github:postgres/postgres");
+  assert.deepEqual(a.rest, ["pg"]);
+  assert.throws(() => parseArgs(["add", "--image", "pg", "--source"]), /--source needs a value/);
+});
+
 test("an unfinished update line is recognised as a placeholder", () => {
   // `sh -c` runs a comment and exits 0, so an entry left unfinished by
   // `add --image` would otherwise report an update that never happened.

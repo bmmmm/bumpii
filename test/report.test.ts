@@ -37,6 +37,20 @@ const rel = (version: string): Release => ({
   url: `https://example.com/${version}`,
 });
 
+test("an entry with no source is shown as waiting for one, not as an error", () => {
+  // `add --image` writes these when an image does not name its repo. It is one
+  // line from working, so an error colour would overstate it — and silence
+  // would let it sit there unnoticed forever.
+  const out = renderReport([report({ tool: { ...tool, source: "" }, installed: null, latest: null })], {
+    engine,
+    missingPaths: [],
+  });
+  assert.match(out, /needs a source/);
+  assert.match(out, /nothing is being watched until then/);
+  assert.doesNotMatch(out, /error/);
+  assert.doesNotMatch(out, /up to date/);
+});
+
 test("a forge with no comparable release is reported unknown, never up to date", () => {
   // A repo that only tags, or only publishes rolling pointers, gives bumpii
   // nothing it can order. Calling that "up to date" is the one wrong answer an

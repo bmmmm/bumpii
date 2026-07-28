@@ -112,8 +112,18 @@ PATH answers.
 **Roughly half of common images do not carry the label.** Measured: traefik,
 prometheus and home-assistant do; postgres, nginx and grafana have none at all
 — postgres carries no labels whatsoever, grafana only a maintainer address.
-For those, bumpii prints the finished entry with `source` left blank, so the
-fiddly part is done and you fill in one line.
+For those, three ways to supply the repo:
+
+```console
+$ bumpii add --image pg --source github:postgres/postgres   # hand it over
+$ bumpii add --image pg                                     # or leave it open
+$ bumpii set pg source github:postgres/postgres             # and fill it in later
+```
+
+An entry without a source is still written, because everything else about it
+is worked out and it is one line from working. It is not silently ignored
+either: `bumpii list` shows what is missing, and the report says "needs a
+source" rather than treating it as broken or, worse, as fine.
 
 It will not guess the repo from the image path, and one example says why:
 `ghcr.io/home-assistant/home-assistant` is built from
@@ -169,7 +179,27 @@ Or write entries by hand. `~/.config/bumpii/tools.json`:
 
 `bumpii add` rewrites this file, and it writes back the whole document: an
 entry you tuned by hand is never replaced, and any key bumpii does not know
-about survives untouched.
+about survives untouched. The same holds for `set` and `rm`.
+
+### Managing entries
+
+```console
+$ bumpii list                              # what is tracked, and what is incomplete
+gh                   github:cli/cli
+pg                   —                     needs: source, update
+
+$ bumpii set pg source github:postgres/postgres
+$ bumpii set pg update "docker pull postgres:17 && docker restart pg"
+$ bumpii rm pg
+no longer tracked: pg
+```
+
+`set` only touches `source` and `update` — the two fields an entry can be
+incomplete in. `version.cmd` is argv and `version.match` is a regex; setting
+either from a single string argument would just be a more convenient way to
+write a broken entry, so those stay with the file. `rm` on something that is
+not tracked is an error, not a silent success, because the usual cause is a
+typo you would otherwise never see.
 
 ## Use
 

@@ -52,6 +52,20 @@ export function renderReport(reports: ToolReport[], opts: RenderOptions): string
   for (const r of reports) {
     const name = bold(r.tool.name);
 
+    // Missing on purpose rather than broken: `add --image` writes these when
+    // an image does not name its repo. Everything else about the entry is
+    // ready, so this is one line away from working — an error colour would
+    // overstate it, and silence would lose it.
+    if (!r.tool.source) {
+      out.push(
+        `${name}  ${yellow("needs a source")}  ${dim("its image did not say which repo it was built from")}`,
+        dim(
+          `  set "source" for ${r.tool.name} to e.g. github:owner/repo — nothing is being watched until then`,
+        ),
+        "",
+      );
+      continue;
+    }
     if (r.error) {
       out.push(`${name}  ${red("error")}  ${r.error}`, "");
       continue;

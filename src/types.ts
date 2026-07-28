@@ -4,7 +4,11 @@
 export interface ToolConfig {
   /** Display name and default binary name, e.g. "gh". */
   name: string;
-  /** "github:owner/repo", "codeberg:owner/repo", or "https://host/owner/repo". */
+  /**
+   * "github:owner/repo", "codeberg:owner/repo", or "https://host/owner/repo".
+   * May be empty for an entry `add --image` could not complete, which the
+   * report then flags as needing one rather than treating as broken.
+   */
   source: string;
   /** How to ask the installed binary for its version. */
   version: {

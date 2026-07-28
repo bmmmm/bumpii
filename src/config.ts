@@ -41,10 +41,18 @@ function validate(cfg: unknown): Config {
     throw new Error("config: `usagePaths` must be an array of paths");
   }
   for (const [i, t] of c.tools.entries()) {
-    for (const field of ["name", "source", "update"] as const) {
+    for (const field of ["name", "update"] as const) {
       if (typeof t?.[field] !== "string" || !t[field]) {
         throw new Error(`config: tools[${i}].${field} is required`);
       }
+    }
+    // `source` may be empty, unlike the others. `add --image` writes entries
+    // for images that do not say which repo they came from, and an entry
+    // waiting for that one line is more useful than no entry: everything else
+    // about it is already worked out. The digest reports it as needing a
+    // source rather than treating it as a failure.
+    if (typeof t?.source !== "string") {
+      throw new Error(`config: tools[${i}].source must be a string (empty if not known yet)`);
     }
     if (!Array.isArray(t.version?.cmd) || t.version.cmd.length === 0) {
       throw new Error(`config: tools[${i}].version.cmd must be a non-empty argv array`);
@@ -116,12 +124,54 @@ export async function addTools(
   if (added.length === 0) return [];
   cfg.tools.sort((a, b) => a.name.localeCompare(b.name));
   doc.tools = cfg.tools;
-  // Write via a temp file + rename: a config torn by a crash mid-write is the
-  // kind of thing you only notice when the next run reports every tool gone.
+  await writeDocument(doc, path);
+  return added;
+}
+
+/** Fields safe to change from the CLI: the two an entry can be incomplete in. */
+export const EDITABLE_FIELDS = ["source", "update"] as const;
+export type EditableField = (typeof EDITABLE_FIELDS)[number];
+
+/**
+ * Drop entries by name. Returns the names actually removed, so a caller can
+ * tell "removed" from "was not there" — silently doing nothing is how you end
+ * up thinking a tool is untracked when a typo left it in place.
+ */
+export async function removeTools(names: string[], path = configPath()): Promise<string[]> {
+  const doc = await readDocument(path);
+  const cfg = validate(doc);
+  const wanted = new Set(names);
+  const kept = cfg.tools.filter((t) => !wanted.has(t.name));
+  const removed = cfg.tools.filter((t) => wanted.has(t.name)).map((t) => t.name);
+  if (removed.length === 0) return [];
+  doc.tools = kept;
+  await writeDocument(doc, path);
+  return removed;
+}
+
+/** Set one field on one entry. Throws when the tool is not tracked. */
+export async function setToolField(
+  name: string,
+  field: EditableField,
+  value: string,
+  path = configPath(),
+): Promise<void> {
+  const doc = await readDocument(path);
+  const cfg = validate(doc);
+  const tool = cfg.tools.find((t) => t.name === name);
+  if (!tool) {
+    throw new Error(`no tool named "${name}" in ${path} — see 'bumpii list'`);
+  }
+  tool[field] = value;
+  doc.tools = cfg.tools;
+  await writeDocument(doc, path);
+}
+
+/** Write via a temp file + rename, so a crash mid-write cannot tear the config. */
+async function writeDocument(doc: Record<string, unknown>, path: string): Promise<void> {
   const tmp = `${path}.tmp.${process.pid}`;
   await writeFile(tmp, `${JSON.stringify(doc, null, 2)}\n`, "utf8");
   await rename(tmp, path);
-  return added;
 }
 
 /** Write the default config. Never clobbers an existing one. */

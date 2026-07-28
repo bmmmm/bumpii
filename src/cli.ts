@@ -1,5 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-import { addTools, configPath, initConfig, loadConfig } from "./config.ts";
+import {
+  addTools,
+  configPath,
+  EDITABLE_FIELDS,
+  type EditableField,
+  initConfig,
+  loadConfig,
+  removeTools,
+  setToolField,
+} from "./config.ts";
 import { discoverFormula, untrackedFormulae } from "./discover.ts";
 import { run } from "./exec.ts";
 import { discoverImage } from "./images.ts";
@@ -16,11 +25,15 @@ const HELP = `bumpii — what changed in the CLIs and containers you run, judged
   bumpii init             write a starter config
   bumpii add <formula>…   derive entries from installed Homebrew formulae
   bumpii add --image <c>… derive entries from running containers
+  bumpii list             what is tracked, and what is still incomplete
+  bumpii set <n> <f> <v>  change one field: source or update
+  bumpii rm <name>…       stop tracking these
   bumpii scan             list installed formulae not yet tracked
   bumpii --yes            digest, then run each tool's update command
 
 Options:
   --image             with add: read the arguments as container names
+  --source <s>        with add: set the repo yourself, for one tool at a time
   --only <name,...>   restrict to these tools
   --model <id>        force a judge model instead of discovering one
   --json              machine-readable report
@@ -33,13 +46,15 @@ Engine: OPENAI_BASE_URL (oMLX/Ollama/vLLM) is preferred, else the \`claude\` CLI
 `;
 
 interface Args {
-  cmd: "digest" | "init" | "add" | "scan" | "help";
+  cmd: "digest" | "init" | "add" | "scan" | "list" | "set" | "rm" | "help";
   yes: boolean;
   json: boolean;
   noJudge: boolean;
   dryRun: boolean;
   /** With `add`: the positionals are container names, not brew formulae. */
   image: boolean;
+  /** With `add`: the repo, when the image does not state it. One tool only. */
+  source?: string;
   only: string[];
   /** Positional arguments after a subcommand, e.g. formula names for `add`. */
   rest: string[];
@@ -72,7 +87,10 @@ export function parseArgs(argv: string[]): Args {
   for (let i = 0; i < argv.length; i++) {
     const v = argv[i];
     if (v === undefined) continue;
-    if (!sawCmd && (v === "init" || v === "add" || v === "scan")) {
+    if (
+      !sawCmd &&
+      (v === "init" || v === "add" || v === "scan" || v === "list" || v === "set" || v === "rm")
+    ) {
       a.cmd = v;
       sawCmd = true;
     } else if (v === "-h" || v === "--help") a.cmd = "help";
@@ -81,6 +99,7 @@ export function parseArgs(argv: string[]): Args {
     else if (v === "--no-judge") a.noJudge = true;
     else if (v === "--dry-run" || v === "-n") a.dryRun = true;
     else if (v === "--image") a.image = true;
+    else if (v === "--source") a.source = takeValue(argv, ++i, v);
     else if (v === "--only") a.only = takeValue(argv, ++i, v).split(",").filter(Boolean);
     else if (v === "--model") a.model = takeValue(argv, ++i, v);
     else if (v.startsWith("-")) throw new Error(`unknown option: ${v}`);
@@ -129,6 +148,68 @@ async function main(): Promise<number> {
     return 0;
   }
 
+  if (args.cmd === "list") {
+    const cfg = await loadConfig();
+    if (cfg.tools.length === 0) {
+      process.stdout.write(`nothing tracked in ${configPath()} — try 'bumpii add' or 'bumpii scan'\n`);
+      return 0;
+    }
+    // The gaps are the point of this command: an entry can be written without
+    // a source or with an unfinished update line, and both are invisible until
+    // something goes wrong with them.
+    let gaps = 0;
+    for (const t of cfg.tools) {
+      const missing: string[] = [];
+      if (!t.source) missing.push("source");
+      if (isPlaceholderUpdate(t.update)) missing.push("update");
+      if (missing.length > 0) gaps++;
+      process.stdout.write(
+        `${t.name.padEnd(20)} ${(t.source || "—").padEnd(38)}` +
+          `${missing.length > 0 ? `needs: ${missing.join(", ")}` : ""}\n`,
+      );
+    }
+    if (gaps > 0) {
+      process.stdout.write(
+        `\n${gaps} entr${gaps === 1 ? "y" : "ies"} incomplete — bumpii set <name> <field> <value>\n`,
+      );
+    }
+    return 0;
+  }
+
+  if (args.cmd === "set") {
+    const [name, field, ...valueParts] = args.rest;
+    const value = valueParts.join(" ");
+    if (!name || !field || !value) {
+      throw new Error(
+        `set needs a tool, a field and a value: bumpii set <name> <${EDITABLE_FIELDS.join("|")}> <value>`,
+      );
+    }
+    if (!(EDITABLE_FIELDS as readonly string[]).includes(field)) {
+      // version.cmd is argv and version.match is a regex; setting either from
+      // a single string argument would be a way to write a broken entry more
+      // conveniently than editing the file.
+      throw new Error(
+        `cannot set "${field}" — only ${EDITABLE_FIELDS.join(" and ")} are settable here; edit ${configPath()} for the rest`,
+      );
+    }
+    await setToolField(name, field as EditableField, value);
+    process.stdout.write(`${name}: ${field} = ${value}\n`);
+    return 0;
+  }
+
+  if (args.cmd === "rm") {
+    if (args.rest.length === 0) throw new Error("rm: name at least one tool — see 'bumpii list'");
+    const removed = await removeTools(args.rest);
+    if (removed.length === 0) {
+      // Saying nothing here would read as success and leave a typo in place.
+      throw new Error(`none of those are tracked: ${args.rest.join(", ")} — see 'bumpii list'`);
+    }
+    process.stdout.write(`no longer tracked: ${removed.join(", ")}\n`);
+    const missed = args.rest.filter((n) => !removed.includes(n));
+    if (missed.length > 0) process.stderr.write(`not tracked, ignored: ${missed.join(", ")}\n`);
+    return 0;
+  }
+
   if (args.cmd === "scan") {
     const cfg = await loadConfig();
     // Key by the formula each entry upgrades, not by its binary name.
@@ -153,6 +234,17 @@ async function main(): Promise<number> {
           : "add: name at least one Homebrew formula (or use --image for containers)",
       );
     }
+    // One source cannot be right for several tools, and applying it to all of
+    // them would attach one repo's release notes to every one of them.
+    if (args.source && args.rest.length > 1) {
+      throw new Error(
+        `--source names one repo, but ${args.rest.length} tools were given — add them one at a time`,
+      );
+    }
+    if (args.source && !args.image) {
+      throw new Error("--source only applies to --image; a formula's repo comes from brew");
+    }
+
     // Concurrently: each entry costs an inspect or a brew call, and on the
     // brew path up to five version probes able to sit out their own timeout.
     const settled = await Promise.all(
@@ -167,7 +259,7 @@ async function main(): Promise<number> {
       }),
     );
     const found = [];
-    const drafts = [];
+    let incomplete = 0;
     // Reported in the order they were asked for, not the order they finished.
     for (const r of settled) {
       if (!r.ok) {
@@ -177,35 +269,33 @@ async function main(): Promise<number> {
       const d = r.value;
       const from = "formula" in d ? d.formula : `${d.container} (${d.runtime})`;
       const how = "probe" in d ? d.probe : `image ${d.image}`;
-      // An entry with no source cannot be tracked, but everything else about
-      // it was worked out — so it is offered as a draft rather than dropped.
-      if ("needsSource" in d && d.needsSource) {
-        drafts.push(d);
-        process.stdout.write(`${from} → ${d.entry.name} ${d.version}\n  source: (not stated by the image)\n`);
-        continue;
-      }
+
+      // --source supplies what the image did not state. Written in as given,
+      // so a wrong one is visibly the caller's choice rather than a guess.
+      if (args.source && "needsSource" in d && d.needsSource) d.entry.source = args.source;
+      if (!d.entry.source) incomplete++;
+
       found.push(d);
       process.stdout.write(
         `${from} → ${d.entry.name} ${d.version}\n` +
-          `  source: ${d.source}\n` +
+          `  source: ${d.entry.source || "(not stated by the image — fill it in)"}\n` +
           `  probe:  ${how}\n` +
           `  update: ${d.entry.update}\n`,
       );
     }
 
-    if (drafts.length > 0) {
-      // Printed as the finished JSON so the remaining work is one line, not a
-      // hand-built entry. Guessing the repo from the image path is what this
-      // avoids: ghcr.io/home-assistant/home-assistant is built from
-      // github.com/home-assistant/core, and a guess would look right.
+    // Written even without a source: everything else about the entry is
+    // worked out, so it is one line away from working, and an entry sitting
+    // in the config with a visible gap beats a JSON block scrolled off the
+    // terminal. The digest reports it as needing a source rather than failing.
+    if (incomplete > 0) {
       process.stdout.write(
-        `\n${drafts.length} image(s) do not say which repo they were built from. ` +
-          `Roughly half of common images do not — bumpii will not guess, because a guess can land on a\n` +
-          `real but wrong repo and report someone else's release notes. Fill in "source" and paste into ${configPath()}:\n\n`,
+        `\n${incomplete} entr${incomplete === 1 ? "y is" : "ies are"} missing a "source" — ` +
+          `the image did not say which repo it was built from, and bumpii will not guess\n` +
+          `(ghcr.io/home-assistant/home-assistant is built from github.com/home-assistant/core: a guess\n` +
+          `off the image path lands on a real but different repo). Set it in ${configPath()},\n` +
+          `or re-run with --source github:owner/repo for a single container.\n`,
       );
-      for (const d of drafts) {
-        process.stdout.write(`${JSON.stringify({ ...d.entry, source: "github:OWNER/REPO" }, null, 2)}\n`);
-      }
     }
 
     if (found.length === 0) return 2;
@@ -247,6 +337,9 @@ async function main(): Promise<number> {
   const reports: ToolReport[] = await Promise.all(
     tools.map(async (tool): Promise<ToolReport> => {
       const base: ToolReport = { tool, installed: null, latest: null, behind: [], items: [], hits: [] };
+      // No source means there is nothing to ask, so no forge is contacted and
+      // no version probed — render.ts reports it as waiting for one line.
+      if (!tool.source) return base;
       try {
         const [installed, list] = await Promise.all([
           installedVersion(tool),

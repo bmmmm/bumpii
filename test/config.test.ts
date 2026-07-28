@@ -6,7 +6,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { addTools, loadConfig } from "../src/config.ts";
+import { addTools, loadConfig, removeTools, setToolField } from "../src/config.ts";
 import type { ToolConfig } from "../src/types.ts";
 
 const gh: ToolConfig = {
@@ -64,6 +64,55 @@ test("add never replaces a tool you tuned by hand", async () => {
   assert.deepEqual(await addTools([gh], p), [], "an existing name is skipped, not overwritten");
   const after = JSON.parse(await readFile(p, "utf8"));
   assert.equal(after.tools[0].update, "brew upgrade --fetch-HEAD gh");
+});
+
+test("an entry may carry an empty source, but not a missing one", async () => {
+  // `add --image` writes these for images that do not name their repo: one
+  // line away from working beats not being written at all.
+  const ok = await configFile({ tools: [{ ...gh, source: "" }] });
+  const cfg = await loadConfig(ok);
+  assert.equal(cfg.tools[0]?.source, "");
+
+  const bad = await configFile({ tools: [{ ...gh, source: 42 }] });
+  await assert.rejects(loadConfig(bad), /source must be a string/);
+});
+
+test("rm removes what it names and says what it removed", async () => {
+  const p = await configFile({ $schema: "https://example.com/x", usagePaths: [], tools: [gh, jq] });
+  assert.deepEqual(await removeTools(["gh"], p), ["gh"]);
+
+  const after = JSON.parse(await readFile(p, "utf8"));
+  assert.deepEqual(
+    after.tools.map((t: ToolConfig) => t.name),
+    ["jq"],
+  );
+  assert.equal(after.$schema, "https://example.com/x", "removal preserves the rest of the document");
+});
+
+test("rm reports nothing removed rather than claiming success", async () => {
+  // Silence here reads as "done" and leaves a typo in place.
+  const p = await configFile({ tools: [gh] });
+  assert.deepEqual(await removeTools(["typo"], p), []);
+  const after = JSON.parse(await readFile(p, "utf8"));
+  assert.equal(after.tools.length, 1, "nothing is touched when nothing matched");
+});
+
+test("set changes one field and leaves the rest of the document alone", async () => {
+  const p = await configFile({ $schema: "https://example.com/x", tools: [{ ...gh, source: "" }] });
+  await setToolField("gh", "source", "github:cli/cli", p);
+  await setToolField("gh", "update", "docker pull x && docker restart y", p);
+
+  const after = JSON.parse(await readFile(p, "utf8"));
+  assert.equal(after.tools[0].source, "github:cli/cli");
+  assert.equal(after.tools[0].update, "docker pull x && docker restart y");
+  assert.equal(after.$schema, "https://example.com/x");
+  assert.deepEqual(after.tools[0].version.cmd, gh.version.cmd, "untouched fields stay untouched");
+});
+
+test("set on an unknown tool says so instead of writing a new one", async () => {
+  const p = await configFile({ tools: [gh] });
+  await assert.rejects(setToolField("nope", "source", "github:a/b", p), /no tool named "nope"/);
+  await assert.rejects(setToolField("nope", "source", "github:a/b", p), /bumpii list/);
 });
 
 test("a broken version.match is caught at load, naming the field", async () => {
