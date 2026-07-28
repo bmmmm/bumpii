@@ -37,3 +37,19 @@ export function run(file: string, args: string[], opts: ExecFileOptions = {}): P
     child.stdin?.end();
   });
 }
+
+/**
+ * Strip ANSI SGR sequences from output before matching against it. Some CLIs
+ * colour their version even when stdout is not a TTY (`tea --version` prints
+ * the number in bold), and those bytes would otherwise have to appear verbatim
+ * in every `version.match` regex — working today and breaking the moment the
+ * tool stops colouring, in a way that reads as "not installed".
+ *
+ * Here rather than in version.ts because it belongs to whatever produced the
+ * output, not to one thing read out of it: `discover.ts` needs it for probe
+ * lines that carry no version at all.
+ */
+export function stripAnsi(s: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: ESC is the point — this matches the escape byte a CLI actually emits.
+  return s.replace(/\x1b\[[0-9;]*m/g, "");
+}

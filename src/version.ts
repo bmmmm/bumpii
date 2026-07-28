@@ -1,18 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-import { type ExecError, run } from "./exec.ts";
+import { type ExecError, run, stripAnsi } from "./exec.ts";
 import type { Release, ToolConfig } from "./types.ts";
-
-/**
- * Strip ANSI SGR sequences before matching. Some CLIs colour their version
- * output even when stdout is not a TTY (`tea --version` prints the number in
- * bold), and those bytes would otherwise have to appear verbatim in every
- * `version.match` regex — working today and breaking the moment the tool stops
- * colouring, in a way that reads as "not installed".
- */
-export function stripAnsi(s: string): string {
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: ESC is the point — this matches the escape byte a CLI actually emits.
-  return s.replace(/\x1b\[[0-9;]*m/g, "");
-}
 
 /**
  * Ask the installed binary for its version. Returns null when the tool is not

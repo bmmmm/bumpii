@@ -9,9 +9,9 @@
 // would silently make the tool look "not installed" forever; matching the
 // known version is what makes the generated entry trustworthy.
 import { readdir } from "node:fs/promises";
-import { type ExecError, run } from "./exec.ts";
+import { type ExecError, run, stripAnsi } from "./exec.ts";
+import { sourceFromUrls } from "./sources.ts";
 import type { ToolConfig } from "./types.ts";
-import { stripAnsi } from "./version.ts";
 
 export interface Discovery {
   formula: string;
@@ -42,30 +42,6 @@ let cachedPrefix: Promise<string> | null = null;
 function brewPrefix(): Promise<string> {
   cachedPrefix ??= run("brew", ["--prefix"], { timeout: 30_000 }).then((r) => r.stdout.trim());
   return cachedPrefix;
-}
-
-/**
- * Map a forge URL to a bumpii source string. github.com and codeberg.org get
- * their shorthands; anything else Forgejo/Gitea-shaped keeps its full URL,
- * which parseSource turns into that host's /api/v1.
- */
-export function sourceFromUrls(urls: string[]): string | null {
-  const text = urls.filter(Boolean).join(" ");
-  const gh = /github\.com\/([^/\s]+\/[^/\s]+?)(?:\.git|\/archive|\/releases|[\s/]|$)/.exec(text);
-  if (gh?.[1]) return `github:${gh[1]}`;
-  const cb = /codeberg\.org\/([^/\s]+\/[^/\s]+?)(?:\.git|\/archive|\/releases|[\s/]|$)/.exec(text);
-  if (cb?.[1]) return `codeberg:${cb[1]}`;
-  // gitea.com and self-hosted Forgejo/Gitea instances speak the same API — but
-  // only accept hosts that plausibly ARE one. Plenty of formulae ship from a
-  // plain tarball mirror whose path plausibly looks like owner/repo
-  // (ftp.gnu.org/gnu/wget/…), and turning that into an /api/v1 source would
-  // produce an entry that 404s on every run. Returning null instead sends the
-  // user to the "add it by hand" message, which is recoverable.
-  const other = /https?:\/\/([^/\s]+)\/([^/\s]+\/[^/\s]+?)(?:\.git|\/archive|\/releases|[\s/]|$)/.exec(text);
-  const host = other?.[1] ?? "";
-  const forgeLike = /^git\./.test(host) || /(gitea|forgejo|codeberg)/.test(host);
-  if (other?.[2] && forgeLike) return `https://${host}/${other[2]}`;
-  return null;
 }
 
 /** Binaries the formula installs, from its opt prefix (no `brew ls` — that
@@ -99,7 +75,7 @@ export async function confirmProbe(
       out = `${e.stdout ?? ""}\n${e.stderr ?? ""}`;
     }
     // Strip colour before deriving the regex, or the escape bytes end up as
-    // literals in it (see stripAnsi in version.ts, which strips at match time).
+    // literals in it (see stripAnsi in exec.ts, which strips at match time).
     const line = stripAnsi(out)
       .split("\n")
       .find((l) => l.includes(known));

@@ -2,8 +2,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parseArgs } from "../src/cli.ts";
-import { sourceFromUrls } from "../src/discover.ts";
-import { stripAnsi } from "../src/version.ts";
+import { stripAnsi } from "../src/exec.ts";
+import { sourceFromUrls } from "../src/sources.ts";
 
 test("sourceFromUrls maps the shorthand forges", () => {
   assert.equal(

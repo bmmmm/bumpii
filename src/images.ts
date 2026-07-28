@@ -12,8 +12,8 @@
 // --format` arguments and read the same labels, because both implement the
 // same spec. Whichever is on PATH is used.
 
-import { sourceFromUrls } from "./discover.ts";
 import { type ExecError, run } from "./exec.ts";
+import { sourceFromUrls } from "./sources.ts";
 import type { ToolConfig } from "./types.ts";
 
 export interface ImageDiscovery {

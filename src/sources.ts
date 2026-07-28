@@ -118,6 +118,35 @@ function toRelease(r: RawRelease, ref: ForgeRef): Release {
   };
 }
 
+/**
+ * Map a forge URL to a bumpii source string. github.com and codeberg.org get
+ * their shorthands; anything else Forgejo/Gitea-shaped keeps its full URL,
+ * which parseSource turns into that host's /api/v1.
+ *
+ * The inverse of parseSource, so it lives beside it: every kind of discovery
+ * arrives at a source this way — a formula's brew URLs, an image's OCI label,
+ * whatever comes next — and none of them should have to import another
+ * discovery module to do it.
+ */
+export function sourceFromUrls(urls: string[]): string | null {
+  const text = urls.filter(Boolean).join(" ");
+  const gh = /github\.com\/([^/\s]+\/[^/\s]+?)(?:\.git|\/archive|\/releases|[\s/]|$)/.exec(text);
+  if (gh?.[1]) return `github:${gh[1]}`;
+  const cb = /codeberg\.org\/([^/\s]+\/[^/\s]+?)(?:\.git|\/archive|\/releases|[\s/]|$)/.exec(text);
+  if (cb?.[1]) return `codeberg:${cb[1]}`;
+  // gitea.com and self-hosted Forgejo/Gitea instances speak the same API — but
+  // only accept hosts that plausibly ARE one. Plenty of formulae ship from a
+  // plain tarball mirror whose path plausibly looks like owner/repo
+  // (ftp.gnu.org/gnu/wget/…), and turning that into an /api/v1 source would
+  // produce an entry that 404s on every run. Returning null instead sends the
+  // user to the "add it by hand" message, which is recoverable.
+  const other = /https?:\/\/([^/\s]+)\/([^/\s]+\/[^/\s]+?)(?:\.git|\/archive|\/releases|[\s/]|$)/.exec(text);
+  const host = other?.[1] ?? "";
+  const forgeLike = /^git\./.test(host) || /(gitea|forgejo|codeberg)/.test(host);
+  if (other?.[2] && forgeLike) return `https://${host}/${other[2]}`;
+  return null;
+}
+
 export interface ReleaseList {
   releases: Release[];
   /**
