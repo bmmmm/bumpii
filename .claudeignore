@@ -1,4 +1,7 @@
 .env
+*credentials*
+*secret*
+*token*
 *.pem
 *.key
 *.p12
@@ -9,3 +12,5 @@ id_*
 node_modules/
 dist/
 .DS_Store
+*.png
+*.gif
