@@ -57,6 +57,25 @@ test("a forge under a base path keeps it, and owner/repo stay the last two segme
   });
 });
 
+test("a GitLab URL is refused rather than parsed as Forgejo", async () => {
+  // It used to become https://gitlab.com/api/v1, which 404s with a message
+  // about typos and missing tokens — the URL was fine, the API is simply a
+  // different one. GitLab is /api/v4 with different field names.
+  assert.throws(() => parseSource("https://gitlab.com/owner/repo"), /looks like GitLab/);
+  assert.throws(() => parseSource("https://gitlab.example.com/team/app"), /does not speak/);
+  assert.throws(() => parseSource("https://gitlab.com/owner/repo"), /track this one by hand/);
+});
+
+test("a host merely containing 'gitlab' in a path is unaffected", () => {
+  // The check is on the hostname, so a Forgejo instance serving a repo called
+  // "gitlab-migration" keeps working.
+  assert.deepEqual(parseSource("https://git.example.com/team/gitlab-migration"), {
+    kind: "forgejo",
+    api: "https://git.example.com/api/v1",
+    repo: "team/gitlab-migration",
+  });
+});
+
 test("listReleases drops drafts and prereleases", async () => {
   // A prerelease is not something `brew upgrade` would ever hand you, so its
   // notes would describe changes you cannot get.

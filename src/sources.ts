@@ -41,6 +41,17 @@ export function parseSource(source: string): ForgeRef {
   }
   if (source.startsWith("https://") || source.startsWith("http://")) {
     const u = new URL(source);
+    // The URL form means Forgejo/Gitea, and nothing else speaks that API. A
+    // GitLab URL used to be accepted and turned into /api/v1, which 404s with
+    // a message about typos and tokens — sending the reader to check the
+    // spelling of a URL that was spelled correctly. GitLab is /api/v4 with
+    // different field names; refusing is honest, silently mis-parsing is not.
+    if (/(^|\.)gitlab\./i.test(u.hostname)) {
+      throw new Error(
+        `${source} looks like GitLab, whose API bumpii does not speak (it talks GitHub and Forgejo/Gitea) — ` +
+          `track this one by hand, or open an issue if you need GitLab support`,
+      );
+    }
     const parts = u.pathname.split("/").filter(Boolean);
     if (parts.length < 2) throw new Error(`source URL has no owner/repo path: ${source}`);
     // owner/repo are the LAST two segments, not the first two. Anything before
