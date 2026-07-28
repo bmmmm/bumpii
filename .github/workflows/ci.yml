@@ -43,4 +43,19 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: pnpm lint
-      - run: pnpm test
+      # Not `pnpm test` alone: the CLI tests that need a loopback port skip
+      # themselves where binding one is not permitted (a sandboxed Mac), and
+      # `node --test` exits 0 on a skip. Here they must actually run — a skip
+      # would quietly stop covering every exit code the digest path decides.
+      - name: Test, and fail if anything skipped
+        run: |
+          set +e
+          out=$(pnpm test 2>&1)
+          rc=$?
+          printf '%s\n' "$out"
+          [ "$rc" -eq 0 ] || exit "$rc"
+          skipped=$(sed -n 's/^ℹ skipped //p' <<<"$out" | tail -1)
+          if [ "${skipped:-0}" != 0 ]; then
+            echo "::error::$skipped test(s) skipped in CI, where they must run" >&2
+            exit 1
+          fi
