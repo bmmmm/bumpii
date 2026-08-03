@@ -285,6 +285,23 @@ Node's `fetch` ignores `HTTP_PROXY` unless told otherwise, which shows up as a
 bare `fetch failed` while `curl` works fine. The launcher sets
 `NODE_USE_ENV_PROXY=1` when a proxy is configured, so this should just work.
 
+## Rate limits
+
+Every run fetches releases fresh — no cache, no conditional requests — so an
+unauthenticated forge caps how much this scales. GitHub's anonymous limit is
+60 requests/hour, one per tracked tool per run: fine for a handful of tools
+run on a cron, tight if you track two dozen and also iterate on the config by
+hand. Set a token to raise it:
+
+```console
+$ export GITHUB_TOKEN=…      # or GH_TOKEN — for github: sources
+$ export CODEBERG_TOKEN=…    # for codeberg: sources
+$ export FORGEJO_TOKEN=…     # for any other https:// Forgejo/Gitea source
+```
+
+Each token is only ever sent to the host it belongs to (`sources.ts`) — a
+GitHub token never reaches a self-hosted Forgejo, and vice versa.
+
 ## Development
 
 ```console

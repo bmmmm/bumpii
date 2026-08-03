@@ -13,11 +13,21 @@ import { discoverFormula, untrackedFormulae } from "./discover.ts";
 import { run } from "./exec.ts";
 import { discoverImage } from "./images.ts";
 import { digest, resolveEngine } from "./judge.ts";
+import { limiter } from "./limit.ts";
 import { renderReport } from "./render.ts";
 import { listReleases, parseSource } from "./sources.ts";
 import type { DigestItem, ToolReport } from "./types.ts";
 import { findUsage, resolveUsagePaths } from "./usage.ts";
 import { installedVersion, isTruncated, latestComparable, releasesBehind } from "./version.ts";
+
+/**
+ * How many tools' releases may be judged at once.
+ *
+ * Low enough that a local single-model server (oMLX, Ollama) is not asked to
+ * hold this many requests in flight at once, high enough that a hosted engine
+ * still overlaps several tools instead of running the whole digest serially.
+ */
+const JUDGE_CONCURRENCY = 3;
 
 const HELP = `bumpii — what changed in the CLIs and containers you run, judged against your usage
 
@@ -333,6 +343,13 @@ async function main(): Promise<number> {
   // every grep come back empty and every tool report "affects you: none".
   const usage = await resolveUsagePaths(config.usagePaths);
 
+  // Fetching stays fully concurrent — it is a GET per tool, and the forges
+  // rate-limit that themselves. Judging does not: a stampede of concurrent
+  // calls at a local single-model server (the OpenAI-compatible path this
+  // tool prefers) queues inside the server rather than in this process, each
+  // one still burning its own 180s timeout while it waits its turn.
+  const limitJudge = limiter(JUDGE_CONCURRENCY);
+
   // Tools are independent — one unreachable forge should not delay the rest,
   // and must not sink the run either (hence the per-tool error field).
   const reports: ToolReport[] = await Promise.all(
@@ -355,7 +372,7 @@ async function main(): Promise<number> {
         let items: DigestItem[] = [];
         let digestError: string | undefined;
         try {
-          items = await digest(engine, tool.name, behind);
+          items = await limitJudge(() => digest(engine, tool.name, behind));
         } catch (err) {
           digestError = err instanceof Error ? err.message : String(err);
         }
