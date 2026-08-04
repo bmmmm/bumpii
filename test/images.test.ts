@@ -8,7 +8,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { discoverImage, versionFrom } from "../src/images.ts";
+import { discoverImage, runningContainers, untrackedContainers, versionFrom } from "../src/images.ts";
 
 let dir: string | null = null;
 const realPath = process.env.PATH;
@@ -178,6 +178,92 @@ case "$3" in
 esac
 `);
   await assert.rejects(discoverImage("app"), /carries a version number/);
+});
+
+/** A runtime with three containers running, one of them multi-named. */
+const PS = `
+case "$1" in
+  --version) echo "podman version 5.2.0"; exit 0 ;;
+  ps)
+    printf 'grafana\\tdocker.io/grafana/grafana:11.4.0\\n'
+    printf 'pg,postgres-main\\tpostgres:17-alpine\\n'
+    printf 'web\\tnginx:1.27\\n'
+    exit 0 ;;
+esac
+`;
+
+test("runningContainers reports each container's names and image", async () => {
+  await stubRuntime(PS);
+  const running = await runningContainers("podman");
+  assert.deepEqual(
+    running.map((c) => c.name),
+    ["grafana", "pg", "web"],
+  );
+  assert.deepEqual(running[1]?.names, ["pg", "postgres-main"], "a comma-separated pair is two names");
+  assert.equal(running[0]?.image, "docker.io/grafana/grafana:11.4.0");
+});
+
+test("runningContainers survives the bracketed name list podman has printed", async () => {
+  // The field is not reliably one token across runtimes and versions. Reading
+  // "[pg]" as the name would offer to add a container under a name its own
+  // runtime does not answer to.
+  await stubRuntime(`
+case "$1" in
+  --version) echo "podman version 5.2.0"; exit 0 ;;
+  ps) printf '[pg web]\\tpostgres:17\\n'; exit 0 ;;
+esac
+`);
+  const running = await runningContainers("podman");
+  assert.deepEqual(running[0]?.names, ["pg", "web"]);
+  assert.equal(running[0]?.name, "pg");
+});
+
+test("untrackedContainers subtracts what the config already tracks", async () => {
+  await stubRuntime(PS);
+  const r = await untrackedContainers(new Set(["grafana"]));
+  assert.equal(r.runtime, "podman");
+  assert.equal(r.running, 3, "the total is reported separately, so 'none running' stays distinguishable");
+  assert.deepEqual(
+    r.untracked.map((c) => c.name),
+    ["pg", "web"],
+  );
+});
+
+test("a container is tracked when any of its names is", async () => {
+  // The config records whichever name `add --image` was given; both resolve at
+  // the runtime, so matching only the first would re-offer a tracked container.
+  await stubRuntime(PS);
+  const r = await untrackedContainers(new Set(["postgres-main"]));
+  assert.deepEqual(
+    r.untracked.map((c) => c.name),
+    ["grafana", "web"],
+  );
+});
+
+test("a runtime that cannot reach its daemon says so, not 'command failed'", async () => {
+  // The live case: a rootless or sandboxed daemon refuses the socket. Node's
+  // wrapper would report the argv and hide the reason, which reads as a bug in
+  // bumpii rather than a permission to fix.
+  await stubRuntime(`
+case "$1" in
+  --version) echo "podman version 5.2.0"; exit 0 ;;
+  ps) echo "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock" >&2; exit 1 ;;
+esac
+`);
+  await assert.rejects(runningContainers("podman"), /could not list running containers/);
+  await assert.rejects(runningContainers("podman"), /permission denied/);
+});
+
+test("nothing running is not the same answer as everything tracked", async () => {
+  await stubRuntime(`
+case "$1" in
+  --version) echo "podman version 5.2.0"; exit 0 ;;
+  ps) exit 0 ;;
+esac
+`);
+  const r = await untrackedContainers(new Set());
+  assert.equal(r.running, 0);
+  assert.deepEqual(r.untracked, []);
 });
 
 test("a container the runtime does not know names itself in the error", async () => {

@@ -60,6 +60,7 @@ Optional, and only for what they enable: `brew` for `bumpii add`/`scan`,
 | `bumpii add <formula>…` | derive entries from installed Homebrew formulae |
 | `bumpii add --image <container>…` | derive entries from running containers |
 | `bumpii scan` | installed formulae not yet tracked |
+| `bumpii scan --image` | running containers not yet tracked |
 | `bumpii list` | what is tracked, and what is still incomplete |
 | `bumpii set <name> <field> <value>` | change one field: `source` or `update` |
 | `bumpii rm <name>…` | stop tracking these |
@@ -118,6 +119,26 @@ gateway (podman) → gateway 2.4.1
   probe:  image ghcr.io/owner/gateway:2.4.1
   update: # complete this: pull ghcr.io/owner/gateway:2.4.1 and restart gateway
 ```
+
+`scan --image` is the container half of `scan` — what is running that you are
+not watching:
+
+```console
+$ bumpii scan --image
+2 running container(s) not tracked (podman):
+  grafana   docker.io/grafana/grafana:11.4.0
+  pg        postgres:17-alpine
+
+add the ones whose release notes you want:
+  bumpii add --image grafana pg
+```
+
+It matches on the container name, not the image: two containers can run the
+same image, so the name is the only key an entry can have. An entry you
+renamed by hand still counts as tracking its container, because the name is
+also read off the `inspect` command the entry probes with. The inverse case —
+an entry whose container no longer exists — needs no separate command; it
+reports itself at digest time.
 
 This path is more reliable than the Homebrew one, because it does not have to
 guess. `org.opencontainers.image.source` is part of the OCI image spec and its

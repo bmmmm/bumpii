@@ -51,7 +51,79 @@ export async function detectRuntime(): Promise<string> {
       if ((err as ExecError).code !== "ENOENT") throw err;
     }
   }
-  throw new Error("neither podman nor docker is on PATH — bumpii add --image needs one of them");
+  throw new Error("neither podman nor docker is on PATH — bumpii needs one of them for --image");
+}
+
+export interface RunningContainer {
+  /** The name an entry would be keyed on. */
+  name: string;
+  /** Every name the runtime answers to for it — podman allows more than one. */
+  names: string[];
+  image: string;
+}
+
+/**
+ * Running containers, by name and image.
+ *
+ * `ps` without `-a`: a stopped container has no version to compare and no
+ * release worth reading, and listing one would be an invitation to track
+ * something that is not running.
+ *
+ * The name field is not reliably a single token — docker separates several
+ * with a comma, podman has printed them as a bracketed list — so it is split
+ * rather than taken whole. Getting that wrong would mean offering to add a
+ * container under a name its own runtime does not answer to.
+ */
+export async function runningContainers(runtime: string): Promise<RunningContainer[]> {
+  let stdout: string;
+  try {
+    ({ stdout } = await run(runtime, ["ps", "--format", "{{.Names}}\t{{.Image}}"], {
+      timeout: 30_000,
+    }));
+  } catch (err) {
+    // The runtime's own stderr, for the same reason discoverImage keeps it: a
+    // socket the user cannot reach ("permission denied ... docker.sock", the
+    // usual symptom of a rootless daemon or a sandbox) is a different problem
+    // from a runtime that is not running, and Node's "Command failed" wrapper
+    // hides which one it is behind the argv.
+    const e = err as ExecError;
+    const detail = (e.stderr ?? "").trim().split("\n")[0] || e.message.split("\n")[0];
+    throw new Error(`${runtime} could not list running containers — ${detail}`);
+  }
+  const out: RunningContainer[] = [];
+  for (const line of stdout.split("\n")) {
+    const [rawNames = "", image = ""] = line.split("\t");
+    const names = rawNames
+      .replace(/^\[|\]$/g, "")
+      .split(/[,\s]+/)
+      .filter(Boolean);
+    const first = names[0];
+    if (!first) continue;
+    out.push({ name: first, names, image: image.trim() });
+  }
+  return out;
+}
+
+/**
+ * Running containers with no entry in the config.
+ *
+ * The container half's answer to `scan`, and it cannot be derived from the
+ * image the way the brew path derives a formula from an update command: two
+ * containers can run the same image, so the name is the only key.
+ *
+ * A container counts as tracked when ANY of its names is — the config records
+ * whichever name was passed to `add --image`, and both resolve at the runtime.
+ */
+export async function untrackedContainers(
+  trackedNames: Set<string>,
+): Promise<{ runtime: string; running: number; untracked: RunningContainer[] }> {
+  const runtime = await detectRuntime();
+  const running = await runningContainers(runtime);
+  return {
+    runtime,
+    running: running.length,
+    untracked: running.filter((c) => !c.names.some((n) => trackedNames.has(n))),
+  };
 }
 
 async function inspect(runtime: string, target: string, format: string): Promise<string> {

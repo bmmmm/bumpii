@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { formulaOf, isPlaceholderUpdate, parseArgs } from "../src/cli.ts";
+import { containerOf, formulaOf, isPlaceholderUpdate, parseArgs } from "../src/cli.ts";
 import { bare, parseSource } from "../src/sources.ts";
-import type { Release } from "../src/types.ts";
+import type { Release, ToolConfig } from "../src/types.ts";
 import {
   compareVersions,
   isComparable,
@@ -169,6 +169,33 @@ test("an unfinished update line is recognised as a placeholder", () => {
 test("formulaOf yields nothing for an update command that is not brew", () => {
   assert.deepEqual(formulaOf("cargo install ripgrep"), []);
   assert.deepEqual(formulaOf("brew upgrade"), [], "a bare upgrade names no formula");
+});
+
+/** An entry whose only interesting part here is the version probe. */
+const probing = (cmd: string[]): ToolConfig => ({
+  name: "entry",
+  source: "",
+  version: { cmd, match: "v?([0-9][0-9.]*)" },
+  update: "true",
+});
+
+test("containerOf reads the container off a runtime inspect probe", () => {
+  // `scan --image` matches on this as well as the entry name: an entry renamed
+  // by hand still inspects the real container, and matching only on the key
+  // would keep offering that container as untracked.
+  const tmpl = '{{index .Config.Labels "org.opencontainers.image.version"}}';
+  assert.deepEqual(containerOf(probing(["podman", "inspect", "--format", tmpl, "grafana"])), ["grafana"]);
+  assert.deepEqual(containerOf(probing(["docker", "inspect", "--format", "{{.Config.Image}}", "pg"])), [
+    "pg",
+  ]);
+});
+
+test("containerOf yields nothing for a probe that inspects no container", () => {
+  assert.deepEqual(containerOf(probing(["gh", "--version"])), [], "not a runtime at all");
+  assert.deepEqual(containerOf(probing(["podman", "images"])), [], "a runtime, but not inspect");
+  // Taking the trailing Go template for a container name would put an
+  // expression into the tracked set and quietly stop matching anything.
+  assert.deepEqual(containerOf(probing(["podman", "inspect", "--format", "{{.Config.Image}}"])), []);
 });
 
 test("isTruncated fires only when the page ran out before your version did", () => {

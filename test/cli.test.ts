@@ -7,7 +7,7 @@
 // is silent by construction: cron sees success and says nothing.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -135,6 +135,97 @@ test("set writes a multi-word value as one value", async () => {
 
   const cfg = JSON.parse(await readFile(path, "utf8"));
   assert.equal(cfg.tools[0].update, "podman pull app && restart");
+});
+
+const runtimeDirs: string[] = [];
+after(async () => {
+  await Promise.all(runtimeDirs.map((d) => rm(d, { recursive: true, force: true })));
+});
+
+/**
+ * A PATH holding nothing but what the launcher needs, plus — when `ps` is
+ * given — a fake podman answering it.
+ *
+ * Hermetic on purpose. Prepending the fixture to the real PATH would work for
+ * the stubbed cases but not for the one that asserts NO runtime is found: a
+ * machine or CI runner with docker in /usr/bin would answer there, and the
+ * test would mean something different depending on where it ran.
+ */
+async function runtimePath(ps?: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "bumpii-rt-"));
+  runtimeDirs.push(dir);
+  // bin/bumpii is POSIX sh: it resolves its own path through dirname, then
+  // execs node. Those two are the whole of what it takes off PATH.
+  await symlink(process.execPath, join(dir, "node"));
+  await symlink("/usr/bin/dirname", join(dir, "dirname"));
+  if (ps !== undefined) {
+    const p = join(dir, "podman");
+    await writeFile(
+      p,
+      `#!/bin/sh\ncase "$1" in\n  --version) echo "podman version 5.2.0"; exit 0 ;;\n  ps) ${ps}; exit 0 ;;\nesac\nexit 1\n`,
+    );
+    await chmod(p, 0o755);
+  }
+  return dir;
+}
+
+/** The entry `add --image` writes for a container, in the shape scan matches on. */
+const containerTool = (name: string) => ({
+  name,
+  source: "github:o/r",
+  version: {
+    cmd: ["podman", "inspect", "--format", "{{.Config.Image}}", name],
+    match: ":v?([0-9][0-9.]*)",
+  },
+  update: "true",
+});
+
+test("scan --image lists the running containers that have no entry", async () => {
+  const home = await freshHome();
+  await writeConfig(home, [containerTool("grafana")]);
+  const dir = await runtimePath(`printf 'grafana\\tgrafana:11.4.0\\n'; printf 'pg\\tpostgres:17-alpine\\n'`);
+  const r = await runCli(["scan", "--image"], home, { PATH: dir });
+
+  assert.equal(r.code, 0);
+  assert.match(r.stdout, /1 running container\(s\) not tracked \(podman\)/);
+  assert.match(r.stdout, /^\s+pg\s+postgres:17-alpine$/m, "the image is shown, so it can be recognised");
+  assert.doesNotMatch(r.stdout, /grafana/, "the tracked one must not be offered again");
+  assert.match(r.stdout, /bumpii add --image pg/, "and the command that would add it");
+});
+
+test("scan --image matches on the container the entry inspects, not just its key", async () => {
+  // The config key is whatever `add --image` was given, and an entry renamed by
+  // hand still probes the real container. Matching on the key alone would keep
+  // offering a container that is already tracked.
+  const home = await freshHome();
+  const renamed = { ...containerTool("pg"), name: "database" };
+  await writeConfig(home, [renamed]);
+  const dir = await runtimePath(`printf 'pg\\tpostgres:17-alpine\\n'`);
+  const r = await runCli(["scan", "--image"], home, { PATH: dir });
+
+  assert.equal(r.code, 0);
+  assert.match(r.stdout, /every running container is already tracked/);
+});
+
+test("scan --image separates nothing running from everything tracked", async () => {
+  const home = await freshHome();
+  await writeConfig(home, [containerTool("grafana")]);
+  const dir = await runtimePath("true");
+  const r = await runCli(["scan", "--image"], home, { PATH: dir });
+
+  assert.equal(r.code, 0);
+  // "everything tracked" against an empty runtime would read as a confirmation
+  // that the config covers the machine, which is the opposite of what it means.
+  assert.match(r.stdout, /no containers are running \(podman\)/);
+});
+
+test("scan --image without a runtime says which ones it looked for", async () => {
+  const home = await freshHome();
+  await writeConfig(home, [containerTool("grafana")]);
+  const r = await runCli(["scan", "--image"], home, { PATH: await runtimePath() });
+
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /neither podman nor docker is on PATH/);
 });
 
 test("an unknown option exits 2 and names it, rather than running a default digest", async () => {

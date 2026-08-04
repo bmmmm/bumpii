@@ -11,12 +11,12 @@ import {
 } from "./config.ts";
 import { discoverFormula, untrackedFormulae } from "./discover.ts";
 import { run } from "./exec.ts";
-import { discoverImage } from "./images.ts";
+import { discoverImage, untrackedContainers } from "./images.ts";
 import { digest, resolveEngine } from "./judge.ts";
 import { limiter } from "./limit.ts";
 import { renderReport } from "./render.ts";
 import { listReleases, parseSource } from "./sources.ts";
-import type { DigestItem, ToolReport } from "./types.ts";
+import type { DigestItem, ToolConfig, ToolReport } from "./types.ts";
 import { findUsage, resolveUsagePaths } from "./usage.ts";
 import { installedVersion, isTruncated, latestComparable, releasesBehind } from "./version.ts";
 
@@ -39,10 +39,12 @@ const HELP = `bumpii — what changed in the CLIs and containers you run, judged
   bumpii set <n> <f> <v>  change one field: source or update
   bumpii rm <name>…       stop tracking these
   bumpii scan             list installed formulae not yet tracked
+  bumpii scan --image     list running containers not yet tracked
   bumpii --yes            digest, then run each tool's update command
 
 Options:
   --image             with add: read the arguments as container names
+                      with scan: list containers instead of formulae
   --source <s>        with add: set the repo yourself, for one tool at a time
   --only <name,...>   restrict to these tools
   --model <id>        force a judge model instead of discovering one
@@ -145,6 +147,26 @@ export function isPlaceholderUpdate(update: string): boolean {
   return update.trim().startsWith("#");
 }
 
+/**
+ * The container an entry reads its version out of, if it reads one.
+ *
+ * `scan --image` needs this for the same reason the brew path needs
+ * `formulaOf`: the config key is whatever `add --image` was given, and an
+ * entry renamed by hand would otherwise have its container offered again as
+ * untracked. The name sits at the end of the argv `add --image` writes
+ * (`podman inspect --format <template> <container>`), which is also where both
+ * runtimes expect it. Returns an empty list for entries that are not container
+ * probes, so callers can spread it.
+ */
+export function containerOf(tool: ToolConfig): string[] {
+  const cmd = tool.version.cmd;
+  if ((cmd[0] !== "podman" && cmd[0] !== "docker") || cmd[1] !== "inspect") return [];
+  const target = cmd.at(-1);
+  // A bare `inspect --format <template>` names no container; taking the
+  // template for one would track a Go expression and stop offering nothing.
+  return target && !target.startsWith("{{") ? [target] : [];
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
 
@@ -217,6 +239,33 @@ async function main(): Promise<number> {
     process.stdout.write(`no longer tracked: ${removed.join(", ")}\n`);
     const missed = args.rest.filter((n) => !removed.includes(n));
     if (missed.length > 0) process.stderr.write(`not tracked, ignored: ${missed.join(", ")}\n`);
+    return 0;
+  }
+
+  if (args.cmd === "scan" && args.image) {
+    const cfg = await loadConfig();
+    // Key by every name an entry answers to: the config key, plus the container
+    // its version probe inspects — those differ once an entry is renamed.
+    const tracked = new Set(cfg.tools.flatMap((t) => [t.name, ...containerOf(t)]));
+    const { runtime, running, untracked } = await untrackedContainers(tracked);
+    if (running === 0) {
+      // Not the same answer as "all tracked", and saying so names the runtime
+      // that was asked — the machine may well have containers under the other.
+      process.stdout.write(`no containers are running (${runtime})\n`);
+      return 0;
+    }
+    if (untracked.length === 0) {
+      process.stdout.write(`every running container is already tracked (${runtime})\n`);
+      return 0;
+    }
+    const width = Math.max(...untracked.map((c) => c.name.length));
+    const suggest = untracked.slice(0, 4).map((c) => c.name);
+    process.stdout.write(
+      `${untracked.length} running container(s) not tracked (${runtime}):\n` +
+        untracked.map((c) => `  ${c.name.padEnd(width)}  ${c.image}\n`).join("") +
+        `\nadd the ones whose release notes you want:\n` +
+        `  bumpii add --image ${suggest.join(" ")}\n`,
+    );
     return 0;
   }
 
