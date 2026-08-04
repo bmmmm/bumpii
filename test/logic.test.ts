@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { containerOf, formulaOf, isPlaceholderUpdate, parseArgs } from "../src/cli.ts";
+import { containerOf, formulaOf, isPlaceholderUpdate, parseArgs, parseWindow } from "../src/cli.ts";
 import { bare, parseSource } from "../src/sources.ts";
 import type { Release, ToolConfig } from "../src/types.ts";
 import {
@@ -188,6 +188,33 @@ test("containerOf reads the container off a runtime inspect probe", () => {
   assert.deepEqual(containerOf(probing(["docker", "inspect", "--format", "{{.Config.Image}}", "pg"])), [
     "pg",
   ]);
+});
+
+test("parseWindow reads days and weeks, and defaults the unit to days", () => {
+  assert.equal(parseWindow("14d"), 14);
+  assert.equal(parseWindow("3w"), 21);
+  assert.equal(parseWindow("30"), 30, "a bare number is days");
+  assert.equal(parseWindow(" 7d "), 7);
+});
+
+test("parseWindow refuses a window that would silently mean something else", () => {
+  // "0d" is a window nothing can fall into, and a unit that is not understood
+  // must not quietly be read as days: `--since 6h` meaning six days would be a
+  // wrong answer with no sign that anything went wrong.
+  assert.throws(() => parseWindow("0"), /positive window/);
+  assert.throws(() => parseWindow("6h"), /positive window/);
+  assert.throws(() => parseWindow("-3d"), /positive window/);
+  assert.throws(() => parseWindow("last tuesday"), /positive window/);
+});
+
+test("parseArgs takes the scan modes and their window", () => {
+  const a = parseArgs(["scan", "--new", "--since", "3w", "--deps"]);
+  assert.equal(a.cmd, "scan");
+  assert.equal(a.onlyNew, true);
+  assert.equal(a.sinceDays, 21);
+  assert.equal(a.deps, true);
+  assert.equal(parseArgs(["scan", "--unref"]).unreferenced, true);
+  assert.equal(parseArgs(["scan"]).sinceDays, 14, "the default window is stated in the help");
 });
 
 test("containerOf yields nothing for a probe that inspects no container", () => {

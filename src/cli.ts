@@ -9,7 +9,7 @@ import {
   removeTools,
   setToolField,
 } from "./config.ts";
-import { discoverFormula, untrackedFormulae } from "./discover.ts";
+import { binariesOf, discoverFormula, installedFormulae, leaves, untrackedFormulae } from "./discover.ts";
 import { run } from "./exec.ts";
 import { discoverImage, untrackedContainers } from "./images.ts";
 import { digest, resolveEngine } from "./judge.ts";
@@ -17,7 +17,7 @@ import { limiter } from "./limit.ts";
 import { renderReport } from "./render.ts";
 import { listReleases, parseSource } from "./sources.ts";
 import type { DigestItem, ToolConfig, ToolReport } from "./types.ts";
-import { findUsage, resolveUsagePaths } from "./usage.ts";
+import { findUsage, mentioned, resolveUsagePaths } from "./usage.ts";
 import { installedVersion, isTruncated, latestComparable, releasesBehind } from "./version.ts";
 
 /**
@@ -40,11 +40,17 @@ const HELP = `bumpii — what changed in the CLIs and containers you run, judged
   bumpii rm <name>…       stop tracking these
   bumpii scan             list installed formulae not yet tracked
   bumpii scan --image     list running containers not yet tracked
+  bumpii scan --new       list what was installed recently
+  bumpii scan --unref     list formulae no file of yours names
   bumpii --yes            digest, then run each tool's update command
 
 Options:
   --image             with add: read the arguments as container names
                       with scan: list containers instead of formulae
+  --new               with scan: what arrived recently, not what is untracked
+  --unref             with scan: leaves nothing in usagePaths mentions
+  --since <14d|3w>    with scan --new: how far back to look (default 14d)
+  --deps              with scan --new: list dependencies too, not just requests
   --source <s>        with add: set the repo yourself, for one tool at a time
   --only <name,...>   restrict to these tools
   --model <id>        force a judge model instead of discovering one
@@ -65,6 +71,14 @@ interface Args {
   dryRun: boolean;
   /** With `add`: the positionals are container names, not brew formulae. */
   image: boolean;
+  /** With `scan`: what showed up recently, rather than what is untracked. */
+  onlyNew: boolean;
+  /** With `scan`: leaves that no file in usagePaths names. */
+  unreferenced: boolean;
+  /** With `scan --new`: how far back "recently" reaches, in days. */
+  sinceDays: number;
+  /** With `scan --new`: list the dependencies too, not only what you asked for. */
+  deps: boolean;
   /** With `add`: the repo, when the image does not state it. One tool only. */
   source?: string;
   only: string[];
@@ -84,6 +98,26 @@ function takeValue(argv: string[], i: number, opt: string): string {
   return v;
 }
 
+/** The default window for `scan --new`, in days. */
+const SINCE_DEFAULT = 14;
+
+/**
+ * Read a window like "14d", "3w" or a bare number of days.
+ *
+ * Deliberately a duration rather than a stored "last run" timestamp: nothing
+ * else in this tool keeps state, and a remembered timestamp would make the
+ * same command answer differently depending on whether an earlier run was
+ * interrupted — with no way to see that from the output.
+ */
+export function parseWindow(spec: string): number {
+  const m = /^([0-9]+)\s*([dw])?$/.exec(spec.trim());
+  const n = m?.[1] ? Number.parseInt(m[1], 10) : Number.NaN;
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`--since takes a positive window like 14d, 3w or 30 (days) — got "${spec}"`);
+  }
+  return m?.[2] === "w" ? n * 7 : n;
+}
+
 export function parseArgs(argv: string[]): Args {
   const a: Args = {
     cmd: "digest",
@@ -92,6 +126,10 @@ export function parseArgs(argv: string[]): Args {
     noJudge: false,
     dryRun: false,
     image: false,
+    onlyNew: false,
+    unreferenced: false,
+    sinceDays: SINCE_DEFAULT,
+    deps: false,
     only: [],
     rest: [],
   };
@@ -111,6 +149,10 @@ export function parseArgs(argv: string[]): Args {
     else if (v === "--no-judge") a.noJudge = true;
     else if (v === "--dry-run" || v === "-n") a.dryRun = true;
     else if (v === "--image") a.image = true;
+    else if (v === "--new") a.onlyNew = true;
+    else if (v === "--unref") a.unreferenced = true;
+    else if (v === "--deps") a.deps = true;
+    else if (v === "--since") a.sinceDays = parseWindow(takeValue(argv, ++i, v));
     else if (v === "--source") a.source = takeValue(argv, ++i, v);
     else if (v === "--only") a.only = takeValue(argv, ++i, v).split(",").filter(Boolean);
     else if (v === "--model") a.model = takeValue(argv, ++i, v);
@@ -239,6 +281,136 @@ async function main(): Promise<number> {
     process.stdout.write(`no longer tracked: ${removed.join(", ")}\n`);
     const missed = args.rest.filter((n) => !removed.includes(n));
     if (missed.length > 0) process.stderr.write(`not tracked, ignored: ${missed.join(", ")}\n`);
+    return 0;
+  }
+
+  if (args.cmd === "scan") {
+    // Each asks a different question of a different source; running two at
+    // once would print two reports under one heading.
+    const modes = [args.image && "--image", args.onlyNew && "--new", args.unreferenced && "--unref"].filter(
+      (m): m is string => typeof m === "string",
+    );
+    if (modes.length > 1) {
+      throw new Error(`scan takes one of --image, --new or --unref at a time — got ${modes.join(" ")}`);
+    }
+  }
+
+  if (args.cmd === "scan" && args.onlyNew) {
+    const cfg = await loadConfig();
+    const cutoff = Date.now() / 1000 - args.sinceDays * 86_400;
+    const fresh = (await installedFormulae())
+      .filter((f) => f.installedAt !== null && f.installedAt >= cutoff)
+      .sort((a, b) => (b.installedAt ?? 0) - (a.installedAt ?? 0));
+
+    if (fresh.length === 0) {
+      process.stdout.write(
+        `nothing installed in the last ${args.sinceDays} days — --since 90d to widen the window\n`,
+      );
+      return 0;
+    }
+
+    // Split on brew's own record of why each formula is here. A single
+    // `brew install php@8.1` drags in seventy dependencies, and listing them
+    // all buries the one line that answers the question — measured on a real
+    // machine: 77 formulae in the window, 76 of them dependencies.
+    const requested = fresh.filter((f) => f.onRequest);
+    const deps = fresh.filter((f) => !f.onRequest);
+    const shown = args.deps ? fresh : requested;
+    const depNote =
+      deps.length > 0 && !args.deps
+        ? `\n${deps.length} dependenc${deps.length === 1 ? "y" : "ies"} came in behind them — --deps to list those too\n`
+        : "";
+
+    if (shown.length === 0) {
+      process.stdout.write(
+        `nothing you asked for in the last ${args.sinceDays} days${depNote || "\n"}`.replace(/^\n/, ""),
+      );
+      return 0;
+    }
+
+    const width = Math.max(...shown.map((f) => f.name.length));
+    const vWidth = Math.max(...shown.map((f) => f.version.length));
+    process.stdout.write(
+      `${shown.length} formula(e) ${args.deps ? "" : "you asked for, "}installed or upgraded in the last ${args.sinceDays} days:\n` +
+        shown
+          .map((f) => {
+            const when = new Date((f.installedAt ?? 0) * 1000).toISOString().slice(0, 10);
+            // The reason column only carries information when both kinds are
+            // on screen; without --deps every row would read "requested".
+            const why = args.deps ? `  ${f.onRequest ? "requested" : "dependency"}` : "";
+            return `  ${f.name.padEnd(width)}  ${f.version.padEnd(vWidth)}  ${when}${why}\n`;
+          })
+          .join("") +
+        depNote,
+    );
+
+    // brew keeps one time per install and an upgrade overwrites it, so a
+    // formula you have had for years reads the same as one that arrived
+    // yesterday. Said out loud rather than papered over: "new" is what this
+    // data can support, and claiming a first-install date it does not hold
+    // would be the same kind of quiet wrong answer as a guessed repo.
+    process.stdout.write(
+      `\nbrew records one time per install, so an upgrade is indistinguishable from a\n` +
+        `first install — this is what changed on the machine, not what is new to it.\n`,
+    );
+
+    // Which of them you could start reading release notes for — the same
+    // formula-keyed match `scan` uses, so an entry already tracked under a
+    // different binary name is not offered again. Dependencies are never
+    // offered: nobody wants a digest of libpng's release notes.
+    const tracked = new Set(cfg.tools.flatMap((t) => [t.name, ...formulaOf(t.update)]));
+    const addable = requested.filter((f) => !tracked.has(f.name)).map((f) => f.name);
+    if (addable.length > 0) {
+      process.stdout.write(`\nnot tracked yet:\n  bumpii add ${addable.slice(0, 4).join(" ")}\n`);
+    }
+    return 0;
+  }
+
+  if (args.cmd === "scan" && args.unreferenced) {
+    const cfg = await loadConfig();
+    const usage = await resolveUsagePaths(cfg.usagePaths);
+    if (usage.roots.length === 0) {
+      // With nothing to search, every formula comes back unreferenced — the
+      // confident wrong answer this command is built not to give.
+      throw new Error(
+        cfg.usagePaths.length === 0
+          ? `no usagePaths in ${configPath()} — there is nothing to search, so "nothing names it" would be true of everything`
+          : `none of the usagePaths exist (${usage.missing.join(", ")}) — every formula would read as unreferenced`,
+      );
+    }
+
+    const leafNames = await leaves();
+    const receipts = new Map((await installedFormulae()).map((f) => [f.name, f]));
+    // A formula is often not called by its own name — forgejo-cli ships `fj` —
+    // so the binaries it installs are searched for too. Grepping the formula
+    // name alone would report it as unmentioned while every script calls it.
+    const candidates = await Promise.all(
+      leafNames.map(async (formula) => {
+        const short = formula.split("/").pop() ?? formula;
+        return { formula, needles: [...new Set([formula, short, ...(await binariesOf(short))])] };
+      }),
+    );
+    const found = await mentioned(usage.roots, [...new Set(candidates.flatMap((c) => c.needles))]);
+    const unref = candidates.filter((c) => !c.needles.some((n) => found.has(n)));
+
+    if (unref.length === 0) {
+      process.stdout.write(`every one of the ${leafNames.length} leaves is named somewhere in your files\n`);
+      return 0;
+    }
+    const width = Math.max(...unref.map((c) => c.formula.length));
+    process.stdout.write(
+      `${unref.length} of ${leafNames.length} leaves are named in nothing you wrote:\n` +
+        unref
+          .map(
+            (c) =>
+              `  ${c.formula.padEnd(width)}  ${receipts.get(c.formula)?.onRequest ? "requested" : "dependency"}\n`,
+          )
+          .join("") +
+        `\nsearched: ${cfg.usagePaths.join(" ")}\n` +
+        `this is not "you never use it" — only that no file in those paths names it,\n` +
+        `and nothing here can see an interactive shell. A leaf marked "dependency"\n` +
+        `came in behind something else and now has nothing depending on it.\n`,
+    );
     return 0;
   }
 

@@ -142,6 +142,49 @@ after(async () => {
   await Promise.all(runtimeDirs.map((d) => rm(d, { recursive: true, force: true })));
 });
 
+/** A PATH with the launcher's own dependencies on it and nothing else. */
+async function hermeticBin(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "bumpii-rt-"));
+  runtimeDirs.push(dir);
+  // bin/bumpii is POSIX sh: it resolves its own path through dirname, then
+  // execs node. grep is for the commands that search the user's files.
+  await symlink(process.execPath, join(dir, "node"));
+  await symlink("/usr/bin/dirname", join(dir, "dirname"));
+  await symlink("/usr/bin/grep", join(dir, "grep"));
+  return dir;
+}
+
+/** A fake brew answering the two questions the scan commands ask it. */
+async function stubBrewPath(opts: { leaves?: string[]; formulae?: unknown[] }): Promise<string> {
+  const dir = await hermeticBin();
+  const p = join(dir, "brew");
+  // printf rather than a here-document: sh writes one to a temp file, which a
+  // sandboxed test run is not always allowed to create — and the failure comes
+  // back as "brew info failed", which reads as a bug in the code under test.
+  const json = JSON.stringify({ formulae: opts.formulae ?? [] });
+  await writeFile(
+    p,
+    `#!/bin/sh\ncase "$1 $2" in\n` +
+      `  "leaves ") printf '%s\\n' ${(opts.leaves ?? []).map((l) => `'${l}'`).join(" ") || "''"} ;;\n` +
+      `  *) printf '%s' '${json}' ;;\n` +
+      `esac\n`,
+  );
+  await chmod(p, 0o755);
+  return dir;
+}
+
+/** A receipt as brew reports it, dated relative to now so windows are stable. */
+const receipt = (name: string, daysAgo: number, onRequest = true) => ({
+  name,
+  installed: [
+    {
+      version: "1.0.0",
+      time: Math.floor(Date.now() / 1000) - daysAgo * 86_400,
+      installed_on_request: onRequest,
+    },
+  ],
+});
+
 /**
  * A PATH holding nothing but what the launcher needs, plus — when `ps` is
  * given — a fake podman answering it.
@@ -152,12 +195,7 @@ after(async () => {
  * test would mean something different depending on where it ran.
  */
 async function runtimePath(ps?: string): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "bumpii-rt-"));
-  runtimeDirs.push(dir);
-  // bin/bumpii is POSIX sh: it resolves its own path through dirname, then
-  // execs node. Those two are the whole of what it takes off PATH.
-  await symlink(process.execPath, join(dir, "node"));
-  await symlink("/usr/bin/dirname", join(dir, "dirname"));
+  const dir = await hermeticBin();
   if (ps !== undefined) {
     const p = join(dir, "podman");
     await writeFile(
@@ -226,6 +264,126 @@ test("scan --image without a runtime says which ones it looked for", async () =>
 
   assert.equal(r.code, 2);
   assert.match(r.stderr, /neither podman nor docker is on PATH/);
+});
+
+test("scan --new separates what you asked for from what came in behind it", async () => {
+  // The live case that shaped this: one `brew install php@8.1` put 77 formulae
+  // in the window, 76 of them dependencies. Listing all of them buries the one
+  // line that answers the question.
+  const home = await freshHome();
+  await writeConfig(home, [tool({ source: "github:o/r" })]);
+  const dir = await stubBrewPath({
+    formulae: [
+      receipt("php@8.1", 1),
+      receipt("libpng", 1, false),
+      receipt("krb5", 2, false),
+      receipt("gh", 400),
+    ],
+  });
+  const r = await runCli(["scan", "--new"], home, { PATH: dir });
+
+  assert.equal(r.code, 0);
+  assert.match(r.stdout, /1 formula\(e\) you asked for/);
+  assert.match(r.stdout, /php@8\.1/);
+  assert.doesNotMatch(r.stdout, /libpng/, "a dependency is counted, not listed");
+  assert.match(r.stdout, /2 dependencies came in behind them — --deps/);
+  assert.doesNotMatch(r.stdout, /\bgh\b\s+1\.0\.0/, "and nothing outside the window");
+  // The claim the receipts can actually support, said rather than implied.
+  assert.match(r.stdout, /an upgrade is indistinguishable from a\nfirst install/);
+  assert.match(r.stdout, /bumpii add php@8\.1/);
+});
+
+test("scan --deps lists the dependencies and says why each row is there", async () => {
+  const home = await freshHome();
+  await writeConfig(home, [tool({ source: "github:o/r" })]);
+  const dir = await stubBrewPath({ formulae: [receipt("php@8.1", 1), receipt("libpng", 1, false)] });
+  const r = await runCli(["scan", "--new", "--deps"], home, { PATH: dir });
+
+  assert.equal(r.code, 0);
+  assert.match(r.stdout, /libpng\s+1\.0\.0\s+\d{4}-\d{2}-\d{2}\s+dependency/);
+  assert.match(r.stdout, /php@8\.1\s+1\.0\.0\s+\d{4}-\d{2}-\d{2}\s+requested/);
+});
+
+test("scan --new honours the window instead of reporting everything", async () => {
+  const home = await freshHome();
+  await writeConfig(home, [tool({ source: "github:o/r" })]);
+  const dir = await stubBrewPath({ formulae: [receipt("recent", 3), receipt("older", 40)] });
+
+  const narrow = await runCli(["scan", "--new", "--since", "7d"], home, { PATH: dir });
+  assert.match(narrow.stdout, /recent/);
+  assert.doesNotMatch(narrow.stdout, /older/);
+
+  const wide = await runCli(["scan", "--new", "--since", "9w"], home, { PATH: dir });
+  assert.match(wide.stdout, /older/, "9w is 63 days, which reaches the 40-day-old install");
+});
+
+test("scan --new with an empty window says so instead of printing a bare heading", async () => {
+  const home = await freshHome();
+  await writeConfig(home, [tool({ source: "github:o/r" })]);
+  const dir = await stubBrewPath({ formulae: [receipt("gh", 400)] });
+  const r = await runCli(["scan", "--new"], home, { PATH: dir });
+
+  assert.equal(r.code, 0);
+  assert.match(r.stdout, /nothing installed in the last 14 days/);
+  assert.match(r.stdout, /--since/, "and how to look further back");
+});
+
+test("scan --unref names the leaves no file of yours mentions", async () => {
+  const home = await freshHome();
+  const files = await mkdtemp(join(tmpdir(), "bumpii-files-"));
+  await writeFile(join(files, "backup.sh"), "#!/bin/sh\nrestic backup /data\n");
+  await writeConfig(home, [tool({ source: "github:o/r" })], [files]);
+  const dir = await stubBrewPath({
+    leaves: ["restic", "mpv", "libpng"],
+    formulae: [receipt("restic", 5), receipt("mpv", 5), receipt("libpng", 5, false)],
+  });
+  const r = await runCli(["scan", "--unref"], home, { PATH: dir });
+
+  assert.equal(r.code, 0);
+  assert.match(r.stdout, /2 of 3 leaves are named in nothing you wrote/);
+  assert.match(r.stdout, /mpv\s+requested/);
+  assert.match(
+    r.stdout,
+    /libpng\s+dependency/,
+    "a leaf nothing depends on any more is the strongest candidate",
+  );
+  assert.doesNotMatch(r.stdout, /^\s+restic/m, "a formula the scripts call is not unreferenced");
+  // The claim is bounded on purpose — this is the command that could most
+  // easily be read as "you never use it".
+  assert.match(r.stdout, /this is not "you never use it"/);
+  assert.match(r.stdout, /searched: /, "and which paths that verdict rests on");
+});
+
+test("scan --unref refuses to answer when there is nowhere to search", async () => {
+  // With no usagePaths every formula comes back unreferenced — a full page of
+  // confident wrong answers, and the failure mode this command must not have.
+  const home = await freshHome();
+  await writeConfig(home, [tool({ source: "github:o/r" })], []);
+  const dir = await stubBrewPath({ leaves: ["mpv"], formulae: [receipt("mpv", 5)] });
+  const r = await runCli(["scan", "--unref"], home, { PATH: dir });
+
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /nothing to search/);
+  assert.doesNotMatch(r.stdout, /mpv/);
+});
+
+test("scan --unref says which configured paths were missing, not just that none worked", async () => {
+  const home = await freshHome();
+  await writeConfig(home, [tool({ source: "github:o/r" })], ["/nope/not/here"]);
+  const dir = await stubBrewPath({ leaves: ["mpv"], formulae: [receipt("mpv", 5)] });
+  const r = await runCli(["scan", "--unref"], home, { PATH: dir });
+
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /\/nope\/not\/here/);
+});
+
+test("scan takes one mode at a time rather than printing two reports at once", async () => {
+  const home = await freshHome();
+  await writeConfig(home, [tool({ source: "github:o/r" })]);
+  const r = await runCli(["scan", "--new", "--unref"], home, { PATH: await hermeticBin() });
+
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /one of --image, --new or --unref/);
 });
 
 test("an unknown option exits 2 and names it, rather than running a default digest", async () => {

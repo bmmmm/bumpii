@@ -46,7 +46,7 @@ function brewPrefix(): Promise<string> {
 
 /** Binaries the formula installs, from its opt prefix (no `brew ls` — that
  * reads a cache path some sandboxes deny). */
-async function binariesOf(formula: string): Promise<string[]> {
+export async function binariesOf(formula: string): Promise<string[]> {
   const prefix = await brewPrefix();
   try {
     return await readdir(`${prefix}/opt/${formula}/bin`);
@@ -114,22 +114,79 @@ export async function confirmProbe(
  * enough (forgejo-cli ships `fj`) that matching on the key would keep
  * re-suggesting tools already tracked.
  */
-export async function untrackedFormulae(trackedNames: Set<string>): Promise<string[]> {
-  let leaves: string[];
+export async function leaves(): Promise<string[]> {
   try {
     const { stdout } = await run("brew", ["leaves"], { timeout: 60_000 });
-    leaves = stdout
+    return stdout
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean);
   } catch (err) {
     throw new Error(`brew leaves failed: ${(err as Error).message}`);
   }
+}
+
+export async function untrackedFormulae(trackedNames: Set<string>): Promise<string[]> {
+  const leafNames = await leaves();
   // Tap-qualified names ("jundot/omlx/omlx") upgrade under their full name but
   // list under it too, so compare on the last path segment as well.
   const short = (s: string) => s.split("/").pop() ?? s;
   const tracked = new Set([...trackedNames, ...[...trackedNames].map(short)]);
-  return leaves.filter((f) => !tracked.has(f) && !tracked.has(short(f)));
+  return leafNames.filter((f) => !tracked.has(f) && !tracked.has(short(f)));
+}
+
+export interface InstalledFormula {
+  name: string;
+  version: string;
+  /** Unix seconds from brew's install receipt; null when it carries no time. */
+  installedAt: number | null;
+  /**
+   * Whether you asked for this formula, as opposed to it arriving as something
+   * else's dependency. brew records it per install, and it answers a different
+   * question from "is anything still depending on it".
+   */
+  onRequest: boolean;
+}
+
+/**
+ * Every installed formula, with when it arrived and whether it was asked for.
+ *
+ * One `brew info --json=v2 --installed` rather than a call per formula: it
+ * takes some seconds and a lot of JSON, which is why nothing on the digest
+ * path uses it — `scan --new` and `scan --unref` are commands you run when you
+ * are asking, not on a schedule.
+ *
+ * A formula with no receipt time is kept with `installedAt: null` instead of
+ * being dropped: it exists on the machine, and `--new` filtering it out is
+ * correct, while `--unref` silently ignoring it would understate the answer.
+ */
+export async function installedFormulae(): Promise<InstalledFormula[]> {
+  let raw: string;
+  try {
+    ({ stdout: raw } = await run("brew", ["info", "--json=v2", "--installed"], { timeout: 300_000 }));
+  } catch (err) {
+    throw new Error(`brew info --installed failed: ${(err as Error).message}`);
+  }
+  const parsed = JSON.parse(raw) as {
+    formulae?: {
+      name?: string;
+      installed?: { version?: string; time?: number; installed_on_request?: boolean }[];
+    }[];
+  };
+  const out: InstalledFormula[] = [];
+  for (const f of parsed.formulae ?? []) {
+    // The newest receipt: brew keeps every kept-back version in the array, and
+    // the last one is the install that is current.
+    const receipt = f.installed?.at(-1);
+    if (!f.name || !receipt) continue;
+    out.push({
+      name: f.name,
+      version: receipt.version ?? "",
+      installedAt: typeof receipt.time === "number" ? receipt.time : null,
+      onRequest: receipt.installed_on_request === true,
+    });
+  }
+  return out;
 }
 
 /** Build a ready-to-use tool entry for an installed formula. */

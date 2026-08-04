@@ -61,6 +61,8 @@ Optional, and only for what they enable: `brew` for `bumpii add`/`scan`,
 | `bumpii add --image <container>…` | derive entries from running containers |
 | `bumpii scan` | installed formulae not yet tracked |
 | `bumpii scan --image` | running containers not yet tracked |
+| `bumpii scan --new` | what was installed or upgraded recently |
+| `bumpii scan --unref` | formulae no file in `usagePaths` names |
 | `bumpii list` | what is tracked, and what is still incomplete |
 | `bumpii set <name> <field> <value>` | change one field: `source` or `update` |
 | `bumpii rm <name>…` | stop tracking these |
@@ -107,6 +109,64 @@ and an entry built from it would 404 on every run.
 
 `scan` lists `brew leaves` — what you asked for, not the dependencies dragged
 in behind them.
+
+### What arrived, and what nothing calls
+
+Two more questions the same data answers, and both are `scan` with a flag.
+
+`--new` is what changed on the machine recently:
+
+```console
+$ bumpii scan --new
+1 formula(e) you asked for, installed or upgraded in the last 14 days:
+  php@8.1  8.1.34  2026-08-04
+
+51 dependencies came in behind them — --deps to list those too
+
+brew records one time per install, so an upgrade is indistinguishable from a
+first install — this is what changed on the machine, not what is new to it.
+
+not tracked yet:
+  bumpii add php@8.1
+```
+
+The window is a duration (`--since 30d`, `--since 3w`, default 14 days), not a
+remembered "last run": nothing else here keeps state, and a stored timestamp
+would make the same command answer differently depending on whether an earlier
+run was interrupted, with nothing in the output to say so. What you asked for
+and what came in behind it are separated because they have to be — one
+`brew install php@8.1` put 77 formulae in the window on the machine this was
+built on, 76 of them dependencies.
+
+`--unref` is the honest half of the "unused" question:
+
+```console
+$ bumpii scan --unref
+2 of 46 leaves are named in nothing you wrote:
+  mpv     requested
+  libpng  dependency
+
+searched: ~/.claude/skills ~/ops/scripts ~/dotfiles
+this is not "you never use it" — only that no file in those paths names it,
+and nothing here can see an interactive shell.
+```
+
+**It does not claim a tool is unused, and the wording is the feature.** There
+is no way to know whether you ever ran a binary without reading your shell
+history, which this tool will not do. What it can say is checkable: it greps
+the same `usagePaths` the report greps, for each leaf's own name and for every
+binary that leaf installs — `forgejo-cli` ships `fj`, and searching only the
+formula name would report it as unmentioned while every script calls it.
+
+Matching is substring, not word-boundary, on purpose: "jq" inside "jquery"
+counts as a mention. That over-reports a name as used, and over-reporting is
+the safe direction when the claim being made is the absence. With no usable
+`usagePaths` the command refuses to run at all rather than report everything
+as unreferenced.
+
+The `requested`/`dependency` column is brew's own record of why each formula
+is there. A leaf marked `dependency` came in behind something else and now has
+nothing depending on it — the strongest candidate on the list.
 
 ### Containers
 

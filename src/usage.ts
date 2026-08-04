@@ -62,6 +62,52 @@ export function toNeedles(commands: string[]): string[] {
 }
 
 /**
+ * Which of these names appear anywhere in the user's own files.
+ *
+ * The same grep the report runs, asked the other way round — and it is what
+ * `scan --unref` is allowed to claim: a name that appears nowhere means no
+ * script of yours calls it, which is not the same statement as "you never use
+ * it". Nothing here can see an interactive shell, and the tool does not read
+ * shell history to pretend otherwise.
+ *
+ * Deliberately substring, not word-boundary (`grep -w`): matching "jq" inside
+ * "jquery" over-reports the name as mentioned, and that is the safe direction.
+ * The claim being made is the absence one, so a false "mentioned" costs a
+ * candidate while a false "unmentioned" would be exactly the confident wrong
+ * answer this tool exists not to give.
+ *
+ * `-o` prints the matched strings rather than the lines holding them: a name
+ * as common as "tree" would otherwise return most of a dotfiles repo, and only
+ * which names matched is wanted here.
+ */
+export async function mentioned(roots: string[], names: string[]): Promise<Set<string>> {
+  if (names.length === 0 || roots.length === 0) return new Set();
+  let stdout: string;
+  try {
+    const r = await run(
+      "grep",
+      [
+        "-rohI", // recursive, matched part only, no filenames, skip binaries
+        "-F",
+        ...names.flatMap((n) => ["-e", n]),
+        "--exclude-dir=.git",
+        "--exclude-dir=node_modules",
+        ...roots,
+      ],
+      { timeout: 120_000, maxBuffer: 32 * 1024 * 1024 },
+    );
+    stdout = r.stdout;
+  } catch (err) {
+    // Exit 1 is "no matches", a result rather than a failure — and here it is
+    // the interesting one: nothing you have is named in anything you wrote.
+    const e = err as ExecError;
+    if (e.code === 1 || e.code === "1") return new Set();
+    stdout = e.stdout ?? "";
+  }
+  return new Set(stdout.split("\n").filter(Boolean));
+}
+
+/**
  * Grep the user's own files for each extracted command string.
  *
  * Fixed-string search (`grep -F`), not regex: the needles come from release

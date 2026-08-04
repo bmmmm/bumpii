@@ -8,7 +8,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { findUsage, resolveUsagePaths, toNeedles } from "../src/usage.ts";
+import { findUsage, mentioned, resolveUsagePaths, toNeedles } from "../src/usage.ts";
 
 test("toNeedles drops commands too broad to mean anything", () => {
   // "gh pr" appears in half of anyone's scripts; reporting "affects you" on it
@@ -82,4 +82,43 @@ test("findUsage treats a needle as a fixed string, not a pattern", async () => {
 
 test("findUsage returns nothing when there is nowhere to search", async () => {
   assert.deepEqual(await findUsage([], ["gh pr view"]), []);
+});
+
+test("mentioned reports which names appear, and says nothing about the rest", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "bumpii-usage-"));
+  try {
+    await writeFile(join(dir, "deploy.sh"), "#!/bin/sh\nrestic backup /data | jq .\n");
+    const found = await mentioned([dir], ["restic", "jq", "mpv", "yt-dlp"]);
+    assert.deepEqual([...found].sort(), ["jq", "restic"]);
+    assert.equal(found.has("mpv"), false, "the absence is the whole point of the command");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("mentioned matches a substring, which is the safe direction to be wrong in", async () => {
+  // "jq" inside "jquery" counts as mentioned. That over-reports a name as used
+  // — costing a candidate — where word-boundary matching would under-report it
+  // and produce the confident wrong answer the command exists to avoid.
+  const dir = await mkdtemp(join(tmpdir(), "bumpii-usage-"));
+  try {
+    await writeFile(join(dir, "page.html"), "<script src=jquery.min.js></script>\n");
+    const found = await mentioned([dir], ["jq"]);
+    assert.equal(found.has("jq"), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("mentioned returns an empty set rather than every name when nothing matches", async () => {
+  // grep exits 1 on no matches. Reading that as a failure and falling back to
+  // "all names found" would make the command answer "everything is used".
+  const dir = await mkdtemp(join(tmpdir(), "bumpii-usage-"));
+  try {
+    await writeFile(join(dir, "a.sh"), "echo hello\n");
+    assert.equal((await mentioned([dir], ["restic", "mpv"])).size, 0);
+    assert.equal((await mentioned([], ["restic"])).size, 0, "nowhere to search is not a match either");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
