@@ -63,12 +63,13 @@ export interface Overview {
   /** Tracked, brew-managed, nothing pending — checked, and genuinely current. */
   current: { name: string; installed: string; refs: number }[];
   /**
-   * Tracked but outside brew's reach — container entries, anything installed by
-   * hand. Named rather than dropped: brew said nothing about these, and folding
-   * them into "up to date" would be the confident wrong answer this tool exists
-   * to avoid. `bumpii` itself is what checks them.
+   * Tracked, but nothing here checked them. Either brew does not manage them at
+   * all (container entries, anything installed by hand) or it does and they are
+   * not installed — brew is equally silent about both, and folding that silence
+   * into "up to date" would be the confident wrong answer this tool exists to
+   * avoid. `bumpii` itself is what checks the first kind.
    */
-  unchecked: { name: string; refs: number }[];
+  unchecked: { name: string; refs: number; reason: "not-brew" | "not-installed" }[];
   missingUsagePaths: string[];
   engine: Engine;
 }
@@ -84,8 +85,17 @@ function formulaOf(update: string): string | null {
   return formula ?? null;
 }
 
-/** Every name a tracked tool answers to, for matching against brew's output. */
-function namesOf(tool: ToolConfig): string[] {
+/**
+ * Every name a tracked tool answers to, for matching against brew's output and
+ * for counting references.
+ *
+ * Both uses need all of them. brew reports `forgejo-cli`; every script calls
+ * `fj`. Counting references under brew's name alone measured the wrong string —
+ * 1 file instead of 19 on one real machine — and a zero there does not merely
+ * mis-rank the entry, it prints "no file in your usagePaths names these" about
+ * a tool named in nineteen of them.
+ */
+export function namesOf(tool: ToolConfig): string[] {
   const formula = formulaOf(tool.update);
   const short = (s: string) => s.split("/").pop() ?? s;
   return [...new Set([tool.name, ...(formula ? [formula, short(formula)] : [])])];
@@ -119,23 +129,38 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
   const trackedBy = new Map<string, ToolConfig>();
   for (const t of config.tools) for (const n of namesOf(t)) trackedBy.set(n, t);
 
-  // Counted for the tracked tools too, not only the outdated ones: the
-  // "up to date" line carries the same number, and leaving it off there would
-  // make the ranking look like it only exists for things that are behind.
-  const countNames = [...new Set([...wanted.map((p) => p.name), ...config.tools.map((t) => t.name)])];
+  // Every name anything here answers to, not just the one brew prints. A tool
+  // is rarely called by its formula name — brew reports `forgejo-cli`, every
+  // script says `fj` — and counting only what brew printed put the second most
+  // referenced tool on one real machine at 1 instead of 19, which is the
+  // difference between "digest this" and "no file of yours names it".
+  const countNames = [
+    ...new Set([
+      ...wanted.map((p) => p.name),
+      ...config.tools.flatMap((t) => namesOf(t)),
+      ...config.tools.map((t) => t.name),
+    ]),
+  ];
   const refs = await referenceCounts(usage.roots, countNames);
 
-  // Only packages your files name can produce a verdict, so only those are
-  // worth a `brew info` to find their repo.
-  const referenced = wanted.filter((p) => (refs.get(p.name) ?? 0) > 0);
-  const sources = await resolveSources(referenced.map((p) => p.name));
+  /** The strongest count among the names this package answers to. */
+  const refsFor = (pkg: OutdatedPackage): number => {
+    const tool = trackedBy.get(pkg.name);
+    const names = tool ? [...namesOf(tool), pkg.name] : [pkg.name];
+    return Math.max(...names.map((n) => refs.get(n) ?? 0));
+  };
+
+  // Resolved for everything pending, not only for what is referenced: the
+  // unreferenced list is deliberately unjudged, but it still promises a link,
+  // and a link is the one thing that is useful without any judgement at all.
+  const sources = await resolveSources(wanted.map((p) => p.name));
 
   const limitJudge = limiter(opts.concurrency);
 
   const entries: OverviewEntry[] = await Promise.all(
     wanted.map(async (pkg): Promise<OverviewEntry> => {
       const tool = trackedBy.get(pkg.name);
-      const count = refs.get(pkg.name) ?? 0;
+      const count = refsFor(pkg);
       // A tracked entry's own source wins: it may have been corrected by hand
       // precisely because brew's URLs point somewhere unhelpful.
       const source = tool?.source || sources[pkg.name] || null;
@@ -200,17 +225,26 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
       return f ? [f] : [];
     }),
   );
-  const current = brewManaged.map((t) => {
+  const refsForTool = (t: ToolConfig) => Math.max(...namesOf(t).map((n) => refs.get(n) ?? 0));
+
+  // "Not in the outdated list" has two causes, and only one of them is good
+  // news. brew stays just as silent about a formula that is not installed at
+  // all, so requiring a version from `brew list` is what separates "checked,
+  // current" from "brew had nothing to say" — without it, a tool you never
+  // installed renders under "up to date" with a bare "?" as the only hint.
+  const current: Overview["current"] = [];
+  const unchecked: Overview["unchecked"] = [];
+  for (const t of quiet) {
     const formula = formulaOf(t.update);
-    return {
-      name: t.name,
-      installed: (formula ? installedVersions.get(formula) : undefined) ?? "",
-      refs: refs.get(t.name) ?? 0,
-    };
-  });
-  const unchecked = quiet
-    .filter((t) => formulaOf(t.update) === null)
-    .map((t) => ({ name: t.name, refs: refs.get(t.name) ?? 0 }));
+    const installed = formula ? installedVersions.get(formula) : undefined;
+    if (!formula) {
+      unchecked.push({ name: t.name, refs: refsForTool(t), reason: "not-brew" });
+    } else if (!installed) {
+      unchecked.push({ name: t.name, refs: refsForTool(t), reason: "not-installed" });
+    } else {
+      current.push({ name: t.name, installed, refs: refsForTool(t) });
+    }
+  }
 
   // Most-referenced first inside each bucket: the ranking is the point, and
   // alphabetical order would bury the tool you live in under a font.

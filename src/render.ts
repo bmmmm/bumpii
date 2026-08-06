@@ -278,8 +278,11 @@ export function renderOverview(o: Overview): string {
   section("referenced, but its forge could not be read", of("unreachable"), o.engine, out);
 
   if (o.current.length > 0) {
-    out.push(bold("referenced, up to date"));
-    out.push(`  ${o.current.map((t) => `${t.name} ${t.installed || dim("?")}`).join(dim(" · "))}`, "");
+    // "tracked", not "referenced": every entry here was checked and is current,
+    // but plenty of them are named in no file of yours, and calling those
+    // referenced would assert the opposite of what the ref count says.
+    out.push(bold("tracked, up to date"));
+    out.push(`  ${o.current.map((t) => `${t.name} ${t.installed}`).join(dim(" · "))}`, "");
   }
 
   const quiet = of("no-signal");
@@ -310,11 +313,23 @@ export function renderOverview(o: Overview): string {
     out.push("");
   }
 
-  if (o.unchecked.length > 0) {
+  // The two reasons brew stayed silent are different problems with different
+  // answers, so they do not share a line.
+  const notBrew = o.unchecked.filter((t) => t.reason === "not-brew");
+  const notInstalled = o.unchecked.filter((t) => t.reason === "not-installed");
+  if (notBrew.length > 0) {
     out.push(
       bold("tracked, not covered here"),
-      `  ${o.unchecked.map((t) => t.name).join(dim(" · "))}`,
+      `  ${notBrew.map((t) => t.name).join(dim(" · "))}`,
       dim("  brew does not manage these — run bumpii to check them"),
+      "",
+    );
+  }
+  if (notInstalled.length > 0) {
+    out.push(
+      bold("tracked, not installed"),
+      `  ${notInstalled.map((t) => t.name).join(dim(" · "))}`,
+      dim("  brew manages these but does not have them — nothing was checked, and nothing is up to date"),
       "",
     );
   }

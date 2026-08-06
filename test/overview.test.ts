@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import type { Engine } from "../src/judge.ts";
-import type { Overview, OverviewEntry } from "../src/overview.ts";
+import { namesOf, type Overview, type OverviewEntry } from "../src/overview.ts";
 import { renderOverview } from "../src/render.ts";
 import { referenceCounts } from "../src/usage.ts";
 
@@ -75,6 +75,47 @@ test("reference counts survive a filename containing a colon", async () => {
   assert.equal((await referenceCounts([d], ["gh"])).get("gh"), 1);
 });
 
+test("a tool answers to its binary name and its formula name alike", () => {
+  // The shipped default config: keyed on the binary, upgraded by the formula.
+  // Losing either name is what let brew's `forgejo-cli` be counted while every
+  // script says `fj`.
+  const got = namesOf({
+    name: "fj",
+    source: "codeberg:forgejo-contrib/forgejo-cli",
+    version: { cmd: ["fj", "version"], match: "fj v?([0-9][0-9.]*)" },
+    update: "brew upgrade forgejo-cli",
+  });
+  assert.deepEqual(got.sort(), ["fj", "forgejo-cli"]);
+});
+
+test("a tap-qualified formula also answers to its last segment", () => {
+  const got = namesOf({
+    name: "thing",
+    source: "github:o/r",
+    version: { cmd: ["thing", "--version"], match: "([0-9.]+)" },
+    update: "brew upgrade someone/tap/thing",
+  });
+  assert.ok(got.includes("someone/tap/thing"), "the full tap-qualified name");
+  assert.ok(got.includes("thing"), "and the short name brew prints");
+});
+
+test("reference counts are taken across every name a tool answers to", async () => {
+  // The bug this guards, end to end: brew says `forgejo-cli`, the files say
+  // `fj`, and taking brew's name alone reports the tool as unreferenced.
+  const d = await scratch();
+  for (const n of ["a", "b", "c"]) await writeFile(join(d, `${n}.sh`), "fj pr list\n", "utf8");
+  const tool = {
+    name: "fj",
+    source: "codeberg:forgejo-contrib/forgejo-cli",
+    version: { cmd: ["fj", "version"], match: "fj v?([0-9][0-9.]*)" },
+    update: "brew upgrade forgejo-cli",
+  };
+  const counts = await referenceCounts([d], namesOf(tool));
+  assert.equal(counts.get("forgejo-cli"), 0, "brew's name appears nowhere");
+  const best = Math.max(...namesOf(tool).map((n) => counts.get(n) ?? 0));
+  assert.equal(best, 3, "but the tool is named in three files under its binary name");
+});
+
 test("an empty overview says nothing is outdated, not nothing is known", () => {
   const text = renderOverview(overview({}));
   assert.match(text, /nothing outdated/);
@@ -94,6 +135,18 @@ test("unreferenced packages are listed but never described as judged", () => {
   assert.match(text, /no file in your usagePaths names these/);
 });
 
+test("an unreferenced entry still gets the link the heading promises", () => {
+  // The heading says "version and link only", so a resolvable source has to
+  // produce one. Sources used to be looked up for referenced packages alone,
+  // which made that promise false for exactly the entries it describes.
+  const text = renderOverview(
+    overview({
+      entries: [entry({ name: "harfbuzz", refs: 0, source: "github:harfbuzz/harfbuzz" })],
+    }),
+  );
+  assert.match(text, /https:\/\/github\.com\/harfbuzz\/harfbuzz\/releases/);
+});
+
 test("a referenced package with no forge repo says so instead of guessing", () => {
   const text = renderOverview(
     overview({
@@ -108,17 +161,28 @@ test("tracked but not brew-managed is kept apart from up to date", () => {
   const text = renderOverview(
     overview({
       current: [{ name: "gh", installed: "2.97.0", refs: 34 }],
-      unchecked: [{ name: "home-assistant", refs: 2 }],
+      unchecked: [{ name: "home-assistant", refs: 2, reason: "not-brew" }],
     }),
   );
-  assert.match(text, /referenced, up to date/);
+  assert.match(text, /tracked, up to date/);
   assert.match(text, /gh 2\.97\.0/);
   // The container entry must not appear under "up to date": brew never checked
   // it, and saying it is current would be a claim nothing supports.
   assert.match(text, /tracked, not covered here/);
   assert.match(text, /brew does not manage these/);
-  const upToDate = text.slice(text.indexOf("referenced, up to date"), text.indexOf("tracked, not covered"));
+  const upToDate = text.slice(text.indexOf("tracked, up to date"), text.indexOf("tracked, not covered"));
   assert.doesNotMatch(upToDate, /home-assistant/);
+});
+
+test("a tracked formula brew does not have installed is not called up to date", () => {
+  // brew is equally silent about "current" and "never installed", and only one
+  // of those is up to date.
+  const text = renderOverview(
+    overview({ unchecked: [{ name: "ripgrep", refs: 3, reason: "not-installed" }] }),
+  );
+  assert.match(text, /tracked, not installed/);
+  assert.match(text, /nothing was checked, and nothing is up to date/);
+  assert.doesNotMatch(text, /up to date\n\s+ripgrep/);
 });
 
 test("a pinned package is marked, so its update line is not read as a no-op", () => {

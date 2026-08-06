@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { compareUrl, readSourceCache, resolveSources } from "../src/outdated.ts";
+import { compareUrl, readSourceCache, resolveSources, toPackages } from "../src/outdated.ts";
 
 const dirs: string[] = [];
 async function scratch(): Promise<string> {
@@ -41,20 +41,50 @@ const OUTDATED_FIXTURE = `{
   ]
 }`;
 
-test("brew outdated JSON parses into packages, casks included", async () => {
-  // The field names, their types and the nesting are what the parser depends
-  // on, and all three are verbatim from a real run — only the package names and
-  // versions are stand-ins, so a fixture in a public repo does not double as an
-  // inventory of the machine it was captured on. The shape was checked against
-  // the live brew as well; a green fixture alone proves nothing.
-  const d = JSON.parse(OUTDATED_FIXTURE) as {
-    formulae: { name: string; installed_versions: string[]; current_version: string }[];
-    casks: { name: string; installed_versions: string[]; current_version: string }[];
-  };
-  // The one field that is easy to get wrong: an array even for a single
-  // version, and the newest entry is the last, not the first.
-  assert.equal(d.formulae[0]?.installed_versions.at(-1), "2.96.0");
-  assert.equal(d.casks[0]?.current_version, "2.7.0");
+test("brew outdated JSON parses into packages, casks included", () => {
+  // Driven through the real parser, not re-implemented in the test: asserting
+  // on `JSON.parse(fixture).formulae[0].installed_versions.at(-1)` here would
+  // stay green while toPackages itself took `[0]`, which is the exact rule its
+  // comment exists to protect.
+  const d = JSON.parse(OUTDATED_FIXTURE) as { formulae: unknown[]; casks: unknown[] };
+  const got = [
+    ...toPackages(d.formulae as Parameters<typeof toPackages>[0], "formula"),
+    ...toPackages(d.casks as Parameters<typeof toPackages>[0], "cask"),
+  ];
+  assert.deepEqual(got, [
+    { name: "gh", installed: "2.96.0", latest: "2.97.0", kind: "formula", pinned: false },
+    { name: "some-cask", installed: "2.6.1", latest: "2.7.0", kind: "cask", pinned: false },
+  ]);
+});
+
+test("the newest kept version is the one compared against, not the oldest", () => {
+  // brew lists every kept-back version, oldest first. Taking the head would
+  // report a package as further behind than it is.
+  const got = toPackages(
+    [{ name: "x", installed_versions: ["1.0.0", "1.4.0"], current_version: "2.0.0" }],
+    "formula",
+  );
+  assert.equal(got[0]?.installed, "1.4.0");
+});
+
+test("an entry missing a version is dropped, not turned into an empty comparison", () => {
+  const got = toPackages(
+    [
+      { name: "no-current", installed_versions: ["1.0.0"] },
+      { name: "no-installed", current_version: "2.0.0" },
+      { installed_versions: ["1.0.0"], current_version: "2.0.0" },
+    ],
+    "formula",
+  );
+  assert.deepEqual(got, []);
+});
+
+test("pinned survives the parse, since brew lists pinned packages it will not move", () => {
+  const got = toPackages(
+    [{ name: "x", installed_versions: ["1.0.0"], current_version: "2.0.0", pinned: true }],
+    "formula",
+  );
+  assert.equal(got[0]?.pinned, true);
 });
 
 test("compareUrl builds a diff link from the tags, not the versions", () => {

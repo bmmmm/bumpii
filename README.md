@@ -98,7 +98,7 @@ referenced, but bumpii found no repo to read
      no forge repo in its brew URLs — nothing to read, and bumpii will not guess one
      name it yourself: bumpii add node --source github:owner/repo
 
-referenced, up to date
+tracked, up to date
   jq 1.8.2 · fj 0.6.0 · shellcheck 0.11.0
 
 no signal (12)
@@ -106,6 +106,7 @@ no signal (12)
   fzf       0.74.1 → 0.74.2
     https://github.com/junegunn/fzf/releases
   harfbuzz  14.2.1 → 14.3.0
+    https://github.com/harfbuzz/harfbuzz/releases
   …
 
 23 pending · 2 digested · 12 unreferenced · 8 current
@@ -125,11 +126,21 @@ treatment as `gh` — so `tools.json` decides what `bumpii` watches, not what
 `overview` can tell you. `worth tracking` at the end names the ones that
 earned an entry.
 
-Two states are deliberately not folded into "up to date". A package whose brew
-URLs name no forge (node ships from nodejs.org) says so instead of having a
-repo guessed for it, and tracked entries brew does not manage — containers,
-anything installed by hand — are listed apart under `tracked, not covered
-here`, because brew never checked them and `bumpii` is what does.
+Three states are deliberately kept out of "up to date", because each means
+bumpii could not check rather than checked and found nothing. A package whose
+brew URLs name no forge (node ships from nodejs.org) says so instead of having
+a repo guessed for it. Tracked entries brew does not manage — containers,
+anything installed by hand — are listed under `tracked, not covered here`,
+because brew never checked them and `bumpii` is what does. And a tracked
+formula brew does not have installed goes under `tracked, not installed`: brew
+is exactly as silent about that as about a current one, so the two have to be
+told apart by asking `brew list`, not by its silence.
+
+Reference counts are taken across every name a tool answers to, not just the
+one brew prints. `forgejo-cli` ships `fj`, and counting brew's name alone found
+that tool in one file instead of nineteen — which is not merely a mis-ranking,
+it is `no file in your usagePaths names these` printed about something named in
+nineteen of them.
 
 Compare links are built from the tags the forge really published, never from
 the version numbers: jq tags `jq-1.8.2` and gh tags `v2.97.0`, so a constructed

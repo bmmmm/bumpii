@@ -559,6 +559,13 @@ async function main(): Promise<number> {
 
   if (args.cmd === "overview") {
     const config = await loadConfig();
+    // Positionals mean nothing here, and silently ignoring them would print the
+    // whole report as though the question had been answered.
+    if (args.rest.length > 0) {
+      throw new Error(
+        `overview takes no arguments — did you mean --only ${args.rest.join(",")}? (or 'bumpii add ${args.rest.join(" ")}')`,
+      );
+    }
     const engine = args.noJudge
       ? { kind: "none" as const, model: "", label: "skipped (--no-judge)" }
       : await resolveEngine({ model: args.model });
@@ -567,6 +574,15 @@ async function main(): Promise<number> {
       only: args.only,
       concurrency: JUDGE_CONCURRENCY,
     });
+    // A typo in --only must not read as "nothing is outdated". Checked after
+    // the build rather than against the config, because overview ranges over
+    // everything brew has pending, not only what is tracked.
+    if (args.only.length > 0 && overview.entries.length === 0) {
+      throw new Error(
+        `nothing pending matched --only ${args.only.join(",")} — those packages are either current or ` +
+          `not installed; run 'bumpii overview' without --only to see what is`,
+      );
+    }
     process.stdout.write(args.json ? `${JSON.stringify(overview, null, 2)}\n` : renderOverview(overview));
     // Same contract as the digest: non-zero when something is pending, so a
     // scheduled run can act on it without parsing the report.

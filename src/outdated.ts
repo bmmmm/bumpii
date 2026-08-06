@@ -33,7 +33,8 @@ interface RawOutdated {
   pinned?: boolean;
 }
 
-function toPackages(raw: RawOutdated[] | undefined, kind: OutdatedPackage["kind"]): OutdatedPackage[] {
+/** Exported so a test can drive the real parser rather than re-implement it. */
+export function toPackages(raw: RawOutdated[] | undefined, kind: OutdatedPackage["kind"]): OutdatedPackage[] {
   const out: OutdatedPackage[] = [];
   for (const r of raw ?? []) {
     // The newest installed version, not the first: brew keeps every kept-back
@@ -67,8 +68,27 @@ export async function brewOutdated(): Promise<OutdatedPackage[]> {
   } catch (err) {
     throw new Error(`brew outdated failed: ${(err as Error).message}`);
   }
-  const d = JSON.parse(stdout) as { formulae?: RawOutdated[]; casks?: RawOutdated[] };
+  const d = parseBrewJson<{ formulae?: RawOutdated[]; casks?: RawOutdated[] }>(stdout, "brew outdated");
   return [...toPackages(d.formulae, "formula"), ...toPackages(d.casks, "cask")];
+}
+
+/**
+ * Parse brew's JSON, naming brew when it is not JSON at all.
+ *
+ * `Unexpected token 'W', "Warning: s"...` names neither the command that
+ * produced it nor anything to do about it — and brew putting a warning or a
+ * migration notice on stdout is the ordinary way this happens.
+ */
+function parseBrewJson<T>(stdout: string, what: string): T {
+  try {
+    return JSON.parse(stdout) as T;
+  } catch {
+    const first = stdout.trim().split("\n")[0] ?? "(no output)";
+    throw new Error(
+      `${what} did not return JSON — run it yourself to see what it printed instead ` +
+        `(first line: ${first.slice(0, 120)})`,
+    );
+  }
 }
 
 /**
@@ -176,10 +196,19 @@ export async function brewSources(names: string[]): Promise<SourceCache> {
   let stdout: string;
   try {
     ({ stdout } = await run("brew", ["info", "--json=v2", ...names], { timeout: 300_000 }));
-  } catch (err) {
-    throw new Error(`brew info failed for ${names.length} package(s): ${(err as Error).message}`);
+  } catch {
+    // brew exits non-zero for the whole batch as soon as one name is unknown,
+    // and it writes nothing at all — so the names it does know are lost with
+    // it. A formula from a tap that has since gone away is enough to trigger
+    // this, and losing the entire report over one dead name is the opposite of
+    // what `add` does ("one unresolvable name must not sink the rest").
+    // Retried one at a time, and only on this path, so the cost lands on the
+    // rare failure rather than on every run.
+    if (names.length === 1) return {};
+    const each = await Promise.all(names.map((n) => brewSources([n])));
+    return Object.assign({}, ...each) as SourceCache;
   }
-  const d = JSON.parse(stdout) as { formulae?: RawInfoFormula[]; casks?: RawInfoCask[] };
+  const d = parseBrewJson<{ formulae?: RawInfoFormula[]; casks?: RawInfoCask[] }>(stdout, "brew info");
   const out: SourceCache = {};
   for (const f of d.formulae ?? []) {
     if (!f.name) continue;
