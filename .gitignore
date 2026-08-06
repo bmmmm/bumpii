@@ -4,3 +4,15 @@ tmp/
 package-lock.json
 yarn.lock
 .DS_Store
+
+# bumpii's own output and state. A report is the sensitive one: `hits[].file`
+# holds absolute paths into your own scripts, so a committed --json run
+# publishes the layout of your machine and the inventory it was judged against.
+# The config carries the same thing more directly — your usagePaths and every
+# tool you track. None of it belongs in a repo, this one or anyone else's.
+tools.json
+sources.json
+bumpii.json
+bumpii-*.json
+*.bumpii.json
+.bumpii/

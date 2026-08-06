@@ -389,6 +389,23 @@ able to say it did not work. The `1` is there so a scheduled run can act on it:
 0 9 * * 1  bumpii --json > ~/tmp/bumpii.json || notify "tool updates pending"
 ```
 
+**Keep the report and the config out of your repos.** A `--json` run carries
+`hits[].file` — absolute paths into your own scripts — so committing one
+publishes both the layout of your machine and the tool inventory it was judged
+against. `tools.json` says the same thing more directly, in its `usagePaths`
+and its list of everything you watch. Neither is written into a working tree by
+default (the config and the resolved-source cache live under
+`~/.config/bumpii/`), but a redirect like the one above is one `cd` away from
+landing in a project, so this repo's `.gitignore` names them and yours should
+too:
+
+```gitignore
+tools.json
+sources.json
+bumpii.json
+bumpii-*.json
+```
+
 Two states are deliberately not folded into "up to date", because both mean
 bumpii could not check rather than checked and found nothing:
 
