@@ -88,9 +88,54 @@ function authHeaders(ref: ForgeRef): Record<string, string> {
   return h;
 }
 
+/**
+ * Turn a rate-limit refusal into the one sentence that resolves it.
+ *
+ * GitHub answers an exhausted limit with 403 (or 429) and says so only in the
+ * headers; the status line alone reads like a permissions problem, and sends
+ * the reader to check a source that is spelled correctly. The reset time is
+ * printed because the other half of the answer is "or just wait".
+ */
+function rateLimitMessage(res: Response, ref: ForgeRef): string | null {
+  if (res.status !== 403 && res.status !== 429) return null;
+  const remaining = res.headers.get("x-ratelimit-remaining");
+  const retryAfter = res.headers.get("retry-after");
+  if (remaining !== "0" && !retryAfter) return null;
+
+  const reset = Number(res.headers.get("x-ratelimit-reset"));
+  const at = Number.isFinite(reset) && reset > 0 ? new Date(reset * 1000).toTimeString().slice(0, 5) : null;
+  const envVar =
+    ref.kind === "github"
+      ? "GITHUB_TOKEN"
+      : ref.api.startsWith("https://codeberg.org")
+        ? "CODEBERG_TOKEN"
+        : "FORGEJO_TOKEN";
+  const authed = Boolean(authHeaders(ref).authorization);
+  return (
+    `rate limit exhausted at ${new URL(ref.api).host}${at ? `, resets at ${at}` : ""} — ` +
+    (authed
+      ? `${envVar} is set, so this is that token's own limit; run fewer tools at once or wait`
+      : `set ${envVar} to raise it (anonymous callers get 60 requests/hour)`)
+  );
+}
+
+/**
+ * Fetch a release list.
+ *
+ * Deliberately unconditional. An ETag cache was built here and measured
+ * against the real API before being taken out again, because both halves of
+ * its case turned out to be wrong: a 304 costs a rate-limit unit exactly like
+ * a 200 (`remaining` fell by one for each, measured on cli/cli), and GitHub's
+ * validator for `/releases` does not survive the gap between two runs — an
+ * ETag ten minutes old was answered 200 while one fetched seconds earlier was
+ * answered 304. For the cron-shaped use this tool is built around, a stored
+ * validator would miss every time and buy a cache file for nothing.
+ */
 async function getJson(url: string, ref: ForgeRef): Promise<unknown> {
   const res = await fetch(url, { headers: authHeaders(ref) });
   if (!res.ok) {
+    const limited = rateLimitMessage(res, ref);
+    if (limited) throw new Error(limited);
     // 404 on a private repo without a token reads identically to a typo, so
     // say which of the two it might be rather than just echoing the status.
     const hint = res.status === 404 ? " (typo in the source, or private and no token set?)" : "";
@@ -166,7 +211,8 @@ export interface ReleaseList {
  * a prerelease is not something `brew upgrade` would ever hand you, so showing
  * its notes would describe changes you cannot get.
  */
-export async function listReleases(ref: ForgeRef, limit = 30): Promise<ReleaseList> {
+export async function listReleases(ref: ForgeRef, opts: { limit?: number } = {}): Promise<ReleaseList> {
+  const { limit = 30 } = opts;
   const url =
     ref.kind === "github"
       ? `${ref.api}/repos/${ref.repo}/releases?per_page=${limit}`

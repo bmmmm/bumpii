@@ -10,8 +10,17 @@ interface Call {
   headers: Record<string, string>;
 }
 
-/** Replace global fetch with one that answers `body`, recording what it was asked. */
-function stubFetch(body: unknown, status = 200): { calls: Call[]; restore: () => void } {
+/**
+ * Replace global fetch with one that answers `body`, recording what it was
+ * asked. Response headers are a real `Headers`, because the code under test
+ * reads the rate-limit fields off them — a plain object would pass here and
+ * throw against the runtime.
+ */
+function stubFetch(
+  body: unknown,
+  status = 200,
+  headers: Record<string, string> = {},
+): { calls: Call[]; restore: () => void } {
   const real = globalThis.fetch;
   const calls: Call[] = [];
   globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
@@ -20,6 +29,7 @@ function stubFetch(body: unknown, status = 200): { calls: Call[]; restore: () =>
       ok: status >= 200 && status < 300,
       status,
       statusText: status === 404 ? "Not Found" : "OK",
+      headers: new Headers(headers),
       json: async () => body,
       text: async () => JSON.stringify(body),
     };
@@ -99,8 +109,8 @@ test("listReleases drops drafts and prereleases", async () => {
 test("listReleases reports a full page as capped", async () => {
   const stub = stubFetch(Array.from({ length: 5 }, (_, i) => release(`v${i}.0.0`)));
   try {
-    assert.equal((await listReleases(parseSource("github:o/r"), 5)).capped, true);
-    assert.equal((await listReleases(parseSource("github:o/r"), 10)).capped, false);
+    assert.equal((await listReleases(parseSource("github:o/r"), { limit: 5 })).capped, true);
+    assert.equal((await listReleases(parseSource("github:o/r"), { limit: 10 })).capped, false);
   } finally {
     stub.restore();
   }
@@ -115,7 +125,7 @@ test("listReleases counts the page before filtering it", async () => {
     release("v1.0.0", { prerelease: true }),
   ]);
   try {
-    const list = await listReleases(parseSource("github:o/r"), 3);
+    const list = await listReleases(parseSource("github:o/r"), { limit: 3 });
     assert.equal(list.releases.length, 1);
     assert.equal(list.capped, true);
   } finally {
@@ -153,10 +163,50 @@ test("a GitHub token never travels to a self-hosted forge", async () => {
 test("each forge shape gets its own paging parameter", async () => {
   const stub = stubFetch([]);
   try {
-    await listReleases(parseSource("github:o/r"), 7);
-    await listReleases(parseSource("codeberg:o/r"), 7);
+    await listReleases(parseSource("github:o/r"), { limit: 7 });
+    await listReleases(parseSource("codeberg:o/r"), { limit: 7 });
     assert.match(stub.calls[0]?.url ?? "", /per_page=7/);
     assert.match(stub.calls[1]?.url ?? "", /limit=7/);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("an exhausted rate limit says so, and names the variable that lifts it", async () => {
+  // GitHub answers 403 and puts the reason only in the headers; the status
+  // line alone sends the reader to check a source that is spelled correctly.
+  const stub = stubFetch([], 403, {
+    "x-ratelimit-remaining": "0",
+    "x-ratelimit-reset": "1800000000",
+  });
+  const prev = process.env.GITHUB_TOKEN;
+  delete process.env.GITHUB_TOKEN;
+  const prevGh = process.env.GH_TOKEN;
+  delete process.env.GH_TOKEN;
+  try {
+    await assert.rejects(listReleases(parseSource("github:o/r")), (err: Error) => {
+      assert.match(err.message, /rate limit exhausted at api\.github\.com/);
+      assert.match(err.message, /GITHUB_TOKEN/, "the fix belongs in the message");
+      assert.match(err.message, /resets at \d\d:\d\d/);
+      return true;
+    });
+  } finally {
+    stub.restore();
+    if (prev !== undefined) process.env.GITHUB_TOKEN = prev;
+    if (prevGh !== undefined) process.env.GH_TOKEN = prevGh;
+  }
+});
+
+test("a 403 that is not about the rate limit keeps its own message", async () => {
+  // Not every refusal is a quota: reading "set GITHUB_TOKEN" when one is
+  // already set and the repo is simply forbidden would be a wrong instruction.
+  const stub = stubFetch([], 403, { "x-ratelimit-remaining": "58" });
+  try {
+    await assert.rejects(listReleases(parseSource("github:o/r")), (err: Error) => {
+      assert.doesNotMatch(err.message, /rate limit/);
+      assert.match(err.message, /403/);
+      return true;
+    });
   } finally {
     stub.restore();
   }
