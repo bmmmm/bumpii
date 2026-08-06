@@ -8,7 +8,14 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { commandsFromNotes, findUsage, mentioned, resolveUsagePaths, toNeedles } from "../src/usage.ts";
+import {
+  commandsFromNotes,
+  findUsage,
+  findUsageAcross,
+  mentioned,
+  resolveUsagePaths,
+  toNeedles,
+} from "../src/usage.ts";
 
 // Verbatim from the gh 2.97.0 release notes (cli/cli), abridged. Kept real
 // because the whole question here is whether the extractor survives prose
@@ -123,6 +130,65 @@ test("findUsage attributes each match to the needle that produced it", async () 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("findUsageAcross keeps each tool's hits to its own needles", async () => {
+  // One grep now serves every tool in a run, so the split back into per-tool
+  // hits is done in JS and is exactly where a batched search can go wrong:
+  // silently handing tool A the matches of tool B would read as "affects you"
+  // about a file that names something else entirely.
+  const dir = await mkdtemp(join(tmpdir(), "bumpii-usage-"));
+  try {
+    await mkdir(join(dir, "scripts"));
+    await writeFile(join(dir, "scripts", "deploy.sh"), "gh pr view --json number\n");
+    await writeFile(join(dir, "scripts", "sync.sh"), "tea pulls list --state open\n");
+
+    const [gh, tea, jq] = await findUsageAcross(
+      [dir],
+      [["gh pr view --json"], ["tea pulls list --state"], ["jq --slurp --raw"]],
+    );
+
+    assert.deepEqual(
+      gh?.map((h) => h.command),
+      ["gh pr view --json"],
+    );
+    assert.match(gh?.[0]?.file ?? "", /deploy\.sh$/);
+    assert.deepEqual(
+      tea?.map((h) => h.command),
+      ["tea pulls list --state"],
+    );
+    assert.match(tea?.[0]?.file ?? "", /sync\.sh$/);
+    assert.deepEqual(jq, [], "a tool whose commands appear nowhere gets an empty list, not someone else's");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("findUsageAcross gives a shared needle to every tool that asked for it", async () => {
+  // Separate greps would have handed the same line to both tools, and batching
+  // must not quietly make it exclusive to whichever group is listed first.
+  const dir = await mkdtemp(join(tmpdir(), "bumpii-usage-"));
+  try {
+    await writeFile(join(dir, "release.sh"), "gh auth status --hostname github.com\n");
+
+    const groups = await findUsageAcross(
+      [dir],
+      [["gh auth status --hostname"], ["gh auth status --hostname"]],
+    );
+
+    assert.equal(groups.length, 2);
+    assert.equal(groups[0]?.length, 1);
+    assert.deepEqual(groups[0], groups[1], "both tools asked, both are answered");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("findUsageAcross returns one list per group even with nothing to search", async () => {
+  // The positional contract is what the callers index into; a short array here
+  // would silently drop the last tool's hits rather than fail.
+  assert.deepEqual(await findUsageAcross([], [["gh pr view --json"], ["tea pulls list"]]), [[], []]);
+  assert.deepEqual(await findUsageAcross(["/nonexistent"], []), []);
 });
 
 test("findUsage treats a needle as a fixed string, not a pattern", async () => {

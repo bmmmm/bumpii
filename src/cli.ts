@@ -18,7 +18,7 @@ import { buildOverview } from "./overview.ts";
 import { renderOverview, renderReport } from "./render.ts";
 import { listReleases, parseSource } from "./sources.ts";
 import type { DigestItem, ToolConfig, ToolReport } from "./types.ts";
-import { commandsFromNotes, findUsage, mentioned, resolveUsagePaths } from "./usage.ts";
+import { commandsFromNotes, findUsageAcross, mentioned, resolveUsagePaths } from "./usage.ts";
 import { installedVersion, isTruncated, latestComparable, releasesBehind } from "./version.ts";
 
 /**
@@ -618,12 +618,17 @@ async function main(): Promise<number> {
 
   // Tools are independent — one unreachable forge should not delay the rest,
   // and must not sink the run either (hence the per-tool error field).
-  const reports: ToolReport[] = await Promise.all(
-    tools.map(async (tool): Promise<ToolReport> => {
+  //
+  // Two passes: fetch and judge per tool, then ONE grep for every command they
+  // extracted between them. Grepping inside the map re-walked the usagePaths
+  // for each tool, which is the same trees read once per tracked tool to
+  // answer a single question about all of them.
+  const built: { report: ToolReport; commands: string[] }[] = await Promise.all(
+    tools.map(async (tool): Promise<{ report: ToolReport; commands: string[] }> => {
       const base: ToolReport = { tool, installed: null, latest: null, behind: [], items: [], hits: [] };
       // No source means there is nothing to ask, so no forge is contacted and
       // no version probed — render.ts reports it as waiting for one line.
-      if (!tool.source) return base;
+      if (!tool.source) return { report: base, commands: [] };
       try {
         const [installed, list] = await Promise.all([
           installedVersion(tool),
@@ -648,28 +653,35 @@ async function main(): Promise<number> {
         // without an engine — which is the configuration this tool has to keep
         // working in, not a degraded one.
         const mechanical = items.length === 0 && behind.length > 0;
-        const hits = await findUsage(
-          usage.roots,
-          mechanical
+        return {
+          report: {
+            ...base,
+            mechanical,
+            installed,
+            latest: latestComparable(list.releases),
+            behind,
+            truncated: isTruncated(list.releases, behind, list.capped),
+            items,
+            digestError,
+          },
+          commands: mechanical
             ? behind.flatMap((r) => commandsFromNotes(tool.name, r.notes))
             : items.flatMap((i) => i.commands),
-        );
-        return {
-          ...base,
-          mechanical,
-          installed,
-          latest: latestComparable(list.releases),
-          behind,
-          truncated: isTruncated(list.releases, behind, list.capped),
-          items,
-          hits,
-          digestError,
         };
       } catch (err) {
-        return { ...base, error: err instanceof Error ? err.message : String(err) };
+        return {
+          report: { ...base, error: err instanceof Error ? err.message : String(err) },
+          commands: [],
+        };
       }
     }),
   );
+
+  const usageHits = await findUsageAcross(
+    usage.roots,
+    built.map((b) => b.commands),
+  );
+  const reports: ToolReport[] = built.map((b, i) => ({ ...b.report, hits: usageHits[i] ?? [] }));
 
   if (args.json) {
     // The whole engine, not just its label: a scheduled run that acts on this

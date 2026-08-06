@@ -207,7 +207,7 @@ export async function referenceCounts(roots: string[], names: string[]): Promise
 }
 
 /**
- * Grep the user's own files for each extracted command string.
+ * Grep the user's own files for the commands of several tools at once.
  *
  * Fixed-string search (`grep -F`), not regex: the needles come from release
  * notes, where `gh pr view --json` or `foo[bar]` are ordinary text but would
@@ -215,14 +215,26 @@ export async function referenceCounts(roots: string[], names: string[]): Promise
  * useful answer too — that is what lets the report say "affects you: none"
  * with something behind it.
  *
- * All needles go into a single grep via repeated `-e`, rather than one grep
- * per needle: a digest of two dozen changes would otherwise walk the whole of
- * ~/dotfiles some fifty times over, per tool. `-e` also means a needle that
- * starts with a dash ("--json") can never be read as an option.
+ * Every needle of every tool goes into ONE grep via repeated `-e`. Batching
+ * across needles was always here; batching across tools is what this signature
+ * adds, and it is the same saving one level up: the report walks ~/dotfiles
+ * once per run rather than once per outdated package, which on a machine with
+ * 23 of them pending was 23 full traversals of the same trees for one answer.
+ * `-e` also means a needle that starts with a dash ("--json") can never be
+ * read as an option.
+ *
+ * Results come back positionally, one list per input group, and a needle two
+ * tools happen to share lands in both — exactly as separate greps would have
+ * left it.
  */
-export async function findUsage(roots: string[], commands: string[]): Promise<UsageHit[]> {
-  const needles = toNeedles(commands);
-  if (needles.length === 0 || roots.length === 0) return [];
+export async function findUsageAcross(
+  roots: string[],
+  groups: readonly (readonly string[])[],
+): Promise<UsageHit[][]> {
+  const perGroup = groups.map((g) => toNeedles([...g]));
+  const needles = [...new Set(perGroup.flat())];
+  const empty = groups.map((): UsageHit[] => []);
+  if (needles.length === 0 || roots.length === 0) return empty;
 
   let stdout: string;
   try {
@@ -245,11 +257,11 @@ export async function findUsage(roots: string[], commands: string[]): Promise<Us
     // remaining exit 2 (an unreadable file mid-walk) still leaves the matches
     // it did find on stdout, and those are worth keeping.
     const e = err as ExecError;
-    if (e.code === 1 || e.code === "1") return [];
+    if (e.code === 1 || e.code === "1") return empty;
     stdout = e.stdout ?? "";
   }
 
-  const hits: UsageHit[] = [];
+  const all: UsageHit[] = [];
   for (const line of stdout.split("\n")) {
     const m = /^(.*?):(\d+):(.*)$/.exec(line);
     if (!m?.[1] || !m[2]) continue;
@@ -258,9 +270,20 @@ export async function findUsage(roots: string[], commands: string[]): Promise<Us
     // fact — and a line may genuinely contain more than one.
     for (const needle of needles) {
       if (text?.includes(needle)) {
-        hits.push({ command: needle, file, line: Number.parseInt(lineNo, 10) });
+        all.push({ command: needle, file, line: Number.parseInt(lineNo, 10) });
       }
     }
   }
-  return hits;
+  // Split by filtering the shared list rather than by grouping on the needle,
+  // so each group keeps the order grep produced. Grouping would reorder hits by
+  // command, which is what the report prints them in.
+  return perGroup.map((ns) => {
+    const want = new Set(ns);
+    return all.filter((h) => want.has(h.command));
+  });
+}
+
+/** The one-tool form of {@link findUsageAcross}. */
+export async function findUsage(roots: string[], commands: string[]): Promise<UsageHit[]> {
+  return (await findUsageAcross(roots, [commands]))[0] ?? [];
 }

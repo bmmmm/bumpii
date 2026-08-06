@@ -20,7 +20,7 @@ import {
 } from "./outdated.ts";
 import { listReleases, parseSource } from "./sources.ts";
 import type { Config, DigestItem, Release, ToolConfig, UsageHit } from "./types.ts";
-import { commandsFromNotes, findUsage, referenceCounts, resolveUsagePaths } from "./usage.ts";
+import { commandsFromNotes, findUsageAcross, referenceCounts, resolveUsagePaths } from "./usage.ts";
 import { isComparable, isTruncated, releasesBehind } from "./version.ts";
 
 /** Why an entry ended up where it did. Each bucket renders differently. */
@@ -225,8 +225,12 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
 
   const limitJudge = limiter(opts.concurrency);
 
-  const entries: OverviewEntry[] = await Promise.all(
-    wanted.map(async (pkg): Promise<OverviewEntry> => {
+  // Built in two passes: everything each entry can say on its own first, then
+  // ONE grep for the commands all of them extracted. Grepping inside the map
+  // walked the usagePaths once per pending package — the same trees, for one
+  // question, as many times as brew had news.
+  const built: { entry: OverviewEntry; commands: string[] }[] = await Promise.all(
+    wanted.map(async (pkg): Promise<{ entry: OverviewEntry; commands: string[] }> => {
       const tool = trackedBy.get(pkg.name);
       const count = refsFor(pkg);
       // A tracked entry's own source wins: it may have been corrected by hand
@@ -251,8 +255,12 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
         mechanical: false,
         compare: null,
       };
-      if (count === 0) return base;
-      if (!source) return { ...base, bucket: bucketFor({ refs: count, source, itemCount: 0 }) };
+      if (count === 0) return { entry: base, commands: [] };
+      if (!source)
+        return {
+          entry: { ...base, bucket: bucketFor({ refs: count, source, itemCount: 0 }) },
+          commands: [],
+        };
 
       try {
         const list = await listReleases(parseSource(source));
@@ -281,28 +289,38 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
         const commands = mechanical
           ? behind.flatMap((r) => commandsFromNotes(pkg.name, r.notes))
           : items.flatMap((i) => i.commands);
-        const hits = await findUsage(usage.roots, commands);
         return {
-          ...base,
-          bucket: bucketFor({ refs: count, source, itemCount: items.length }),
-          mechanical,
-          behind,
-          published,
-          truncated,
-          items,
-          hits,
-          compare,
-          error,
+          entry: {
+            ...base,
+            bucket: bucketFor({ refs: count, source, itemCount: items.length }),
+            mechanical,
+            behind,
+            published,
+            truncated,
+            items,
+            compare,
+            error,
+          },
+          commands,
         };
       } catch (err) {
         return {
-          ...base,
-          bucket: bucketFor({ refs: count, source, unreachable: true, itemCount: 0 }),
-          error: err instanceof Error ? err.message : String(err),
+          entry: {
+            ...base,
+            bucket: bucketFor({ refs: count, source, unreachable: true, itemCount: 0 }),
+            error: err instanceof Error ? err.message : String(err),
+          },
+          commands: [],
         };
       }
     }),
   );
+
+  const hits = await findUsageAcross(
+    usage.roots,
+    built.map((b) => b.commands),
+  );
+  const entries: OverviewEntry[] = built.map((b, i) => ({ ...b.entry, hits: hits[i] ?? [] }));
 
   // Tracked and not in brew's outdated list. Split on whether brew was in a
   // position to say so at all: an entry whose update command is not a brew one
