@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { parseArgs } from "../src/cli.ts";
-import { installedFormulae } from "../src/discover.ts";
+import { brewJsonMany, installedFormulae } from "../src/discover.ts";
 import { stripAnsi } from "../src/exec.ts";
 import { sourceFromUrls } from "../src/sources.ts";
 
@@ -84,6 +84,15 @@ async function stubBrew(json: unknown): Promise<void> {
   process.env.PATH = `${brewDir}:${realPath}`;
 }
 
+/** A brew that refuses the batch the way the real one does: no stdout, exit 1. */
+async function stubFailingBrew(): Promise<void> {
+  brewDir ??= await mkdtemp(join(tmpdir(), "bumpii-brew-"));
+  const p = join(brewDir, "brew");
+  await writeFile(p, "#!/bin/sh\necho 'Error: No available formula' >&2\nexit 1\n");
+  await chmod(p, 0o755);
+  process.env.PATH = `${brewDir}:${realPath}`;
+}
+
 after(async () => {
   process.env.PATH = realPath;
   if (brewDir) await rm(brewDir, { recursive: true, force: true });
@@ -143,4 +152,32 @@ test("a receipt without a time is kept, with no time invented for it", async () 
 test("a formula brew lists without any install receipt is skipped", async () => {
   await stubBrew({ formulae: [{ name: "gh", installed: [] }, { name: "nameless" }] });
   assert.deepEqual(await installedFormulae(), []);
+});
+
+// ── one brew for a whole batch ───────────────────────────────────────────────
+
+test("brewJsonMany indexes a tapped formula under both names brew answers to", async () => {
+  // Shape captured from `brew info --json=v2 jq jundot/omlx/omlx` on Homebrew
+  // 6.0.15: a tapped formula is asked for by its full name and comes back with
+  // the short one in `name` and the full one only in `full_name`. Keying on
+  // either alone leaves half the batch unfound, and the caller then silently
+  // re-fetches every tapped formula it asked for — the saving, undone.
+  await stubBrew({
+    formulae: [
+      { name: "jq", full_name: "jq", versions: { stable: "1.8.2" } },
+      { name: "omlx", full_name: "jundot/omlx/omlx", versions: { stable: "0.5.7" } },
+    ],
+  });
+  const got = await brewJsonMany(["jq", "jundot/omlx/omlx"]);
+  assert.equal(got.get("jundot/omlx/omlx")?.name, "omlx", "the name it was asked for must resolve");
+  assert.equal(got.get("omlx")?.full_name, "jundot/omlx/omlx", "and so must the short one");
+  assert.equal(got.get("jq")?.name, "jq");
+});
+
+test("brewJsonMany answers empty rather than throwing when brew refuses", async () => {
+  // brew fails the whole batch over one unknown name and writes nothing at all.
+  // An empty map sends discoverFormula to its own fetch, which raises the error
+  // naming the formula; throwing here would take the good names down with it.
+  await stubFailingBrew();
+  assert.deepEqual(await brewJsonMany(["good", "bogus"]), new Map());
 });

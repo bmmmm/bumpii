@@ -9,7 +9,14 @@ import {
   removeTools,
   setToolField,
 } from "./config.ts";
-import { binariesOf, discoverFormula, installedFormulae, leaves, untrackedFormulae } from "./discover.ts";
+import {
+  binariesOf,
+  brewJsonMany,
+  discoverFormula,
+  installedFormulae,
+  leaves,
+  untrackedFormulae,
+} from "./discover.ts";
 import { run } from "./exec.ts";
 import { discoverImage, untrackedContainers } from "./images.ts";
 import { digest, resolveEngine } from "./judge.ts";
@@ -482,13 +489,20 @@ async function main(): Promise<number> {
       );
     }
 
+    // What brew knows about all of them, in one call rather than one per name:
+    // brew starting is what costs, not the length of the list. The container
+    // path has no equivalent — an inspect is per container by nature.
+    const brewKnown = args.image ? undefined : await brewJsonMany(args.rest);
+
     // Concurrently: each entry costs an inspect or a brew call, and on the
     // brew path up to five version probes able to sit out their own timeout.
     const settled = await Promise.all(
       args.rest.map(async (name) => {
         try {
           // One unresolvable name must not sink the rest of the batch.
-          const d = args.image ? await discoverImage(name) : await discoverFormula(name, args.source);
+          const d = args.image
+            ? await discoverImage(name)
+            : await discoverFormula(name, args.source, brewKnown);
           return { ok: true as const, value: d };
         } catch (err) {
           return { ok: false as const, message: (err as Error).message };

@@ -36,6 +36,49 @@ async function brewJson(formula: string): Promise<Record<string, unknown>> {
   return f;
 }
 
+/**
+ * The same lookup for a whole batch, in one brew instead of one each.
+ *
+ * `add` spawns a discovery per name concurrently, and each used to open its own
+ * `brew info` — measured at 1.30s for ten formulae against 0.54s for the single
+ * call, because what dominates is brew starting, not the number of names it is
+ * given. brewSources in outdated.ts already batches for exactly this reason;
+ * this is that saving on the path that writes the entries.
+ *
+ * Indexed under BOTH names brew answers to. A tap-qualified formula is asked
+ * for as `jundot/omlx/omlx` but comes back with `name: omlx` and the full form
+ * only in `full_name` (verified against Homebrew 6.0.15), so keying on one of
+ * them would leave the caller re-fetching every tapped formula it asked for.
+ */
+export async function brewJsonMany(formulae: string[]): Promise<Map<string, Record<string, unknown>>> {
+  const out = new Map<string, Record<string, unknown>>();
+  if (formulae.length === 0) return out;
+
+  let stdout: string;
+  try {
+    ({ stdout } = await run("brew", ["info", "--json=v2", ...formulae], { timeout: 300_000 }));
+  } catch {
+    // brew fails the whole batch as soon as one name is unknown, and writes
+    // nothing — so the names it does know would be lost with it. One bad name
+    // must not sink the rest of an `add`, which is the same trade brewSources
+    // makes: retry singly, so the cost lands on the rare failure. An empty map
+    // is a valid answer here; discoverFormula falls back to its own fetch and
+    // raises the error that names the formula.
+    if (formulae.length === 1) return out;
+    const each = await Promise.all(formulae.map((f) => brewJsonMany([f])));
+    for (const m of each) for (const [k, v] of m) out.set(k, v);
+    return out;
+  }
+
+  const d = JSON.parse(stdout) as { formulae?: Record<string, unknown>[] };
+  for (const f of d.formulae ?? []) {
+    for (const key of [f.name, f.full_name]) {
+      if (typeof key === "string" && key) out.set(key, f);
+    }
+  }
+  return out;
+}
+
 // The prefix cannot change while the process runs, and `add` resolves it once
 // per formula — memoised so a batch spawns one brew, not one per argument.
 let cachedPrefix: Promise<string> | null = null;
@@ -199,8 +242,14 @@ export async function installedFormulae(): Promise<InstalledFormula[]> {
  * override is the way that answer gets in — written down as the caller's
  * choice rather than derived.
  */
-export async function discoverFormula(formula: string, sourceOverride?: string): Promise<Discovery> {
-  const f = await brewJson(formula);
+export async function discoverFormula(
+  formula: string,
+  sourceOverride?: string,
+  known?: Map<string, Record<string, unknown>>,
+): Promise<Discovery> {
+  // Falls back to its own fetch when the batch did not cover this name, so a
+  // caller that has no batch — or a batch that failed — still works unchanged.
+  const f = known?.get(formula) ?? (await brewJson(formula));
   const versions = (f.versions ?? {}) as { stable?: string };
   const version = versions.stable;
   if (!version)
