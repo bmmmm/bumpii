@@ -156,7 +156,18 @@ export function versionFrom(label: string, imageRef: string): string {
   return numeric;
 }
 
-/** Build a ready-to-use tool entry from a running container. */
+/**
+ * Build a ready-to-use tool entry from a running container.
+ *
+ * Deliberately not batched, unlike the brew path. Two savings were measured
+ * and both come to nothing here: detecting the runtime per container rather
+ * than once costs 0.06s a call, and folding the three inspects below into one
+ * tab-separated template saves two process starts per container — on a command
+ * you run once per container, against a runtime this machine cannot currently
+ * start to verify the template against. A batched `--format` would also have to
+ * be trusted to keep empty fields in place, which is the kind of thing that
+ * must be checked against the real podman and docker, not assumed.
+ */
 export async function discoverImage(container: string): Promise<ImageDiscovery> {
   const runtime = await detectRuntime();
 
