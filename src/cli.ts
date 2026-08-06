@@ -18,7 +18,7 @@ import { buildOverview } from "./overview.ts";
 import { renderOverview, renderReport } from "./render.ts";
 import { listReleases, parseSource } from "./sources.ts";
 import type { DigestItem, ToolConfig, ToolReport } from "./types.ts";
-import { findUsage, mentioned, resolveUsagePaths } from "./usage.ts";
+import { commandsFromNotes, findUsage, mentioned, resolveUsagePaths } from "./usage.ts";
 import { installedVersion, isTruncated, latestComparable, releasesBehind } from "./version.ts";
 
 /**
@@ -643,12 +643,20 @@ async function main(): Promise<number> {
           digestError = err instanceof Error ? err.message : String(err);
         }
 
+        // No items means no extracted commands, so without this the whole
+        // "affects you" half of the report disappears for anyone running
+        // without an engine — which is the configuration this tool has to keep
+        // working in, not a degraded one.
+        const mechanical = items.length === 0 && behind.length > 0;
         const hits = await findUsage(
           usage.roots,
-          items.flatMap((i) => i.commands),
+          mechanical
+            ? behind.flatMap((r) => commandsFromNotes(tool.name, r.notes))
+            : items.flatMap((i) => i.commands),
         );
         return {
           ...base,
+          mechanical,
           installed,
           latest: latestComparable(list.releases),
           behind,

@@ -108,6 +108,43 @@ export async function mentioned(roots: string[], names: string[]): Promise<Set<s
 }
 
 /**
+ * CLI surface named in release notes, found without a model.
+ *
+ * The digest asks an engine which commands a change touches; this is the same
+ * question answered mechanically, for people who have no engine at all. It is
+ * deliberately cruder — it cannot tell a change from a heading — so what it
+ * feeds is never described as a verdict, only as "these strings appear in both
+ * the notes and your files", which is a claim it can actually support.
+ *
+ * Inline code spans are the whole source. Release notes across every project
+ * mark up commands and flags with backticks, and a fenced block is usually a
+ * whole example rather than the surface that changed.
+ *
+ * A span is kept only when it names the tool as a word. That drops `--json` on
+ * its own — which would match half of anyone's scripts — and, on gh's real
+ * 2.97.0 notes, drops `github_pat_*`, `ghs_*` and `ghu_*` while keeping
+ * `gh attestation verify` and `gh auth status`. Over-reporting relevance is the
+ * one direction this tool must not err in: a line that cries wolf trains you to
+ * skip it, and then the real one goes unread too.
+ */
+export function commandsFromNotes(tool: string, notes: string): string[] {
+  const word = new RegExp(
+    `(^|[^A-Za-z0-9_-])${tool.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^A-Za-z0-9_-]|$)`,
+  );
+  const out = new Set<string>();
+  for (const m of notes.matchAll(/`([^`\n]{2,120})`/g)) {
+    const span = m[1]?.trim().replace(/\s+/g, " ");
+    // Trailing punctuation belongs to the sentence, not the command, and would
+    // be grepped verbatim.
+    const cleaned = span?.replace(/[.,;:!?)\]]+$/, "").trim();
+    if (cleaned && word.test(cleaned)) out.add(cleaned);
+  }
+  // The same specificity bar the model's output has to clear, applied here too:
+  // three tokens or a flag. "gh api" is a group, not a surface.
+  return toNeedles([...out]);
+}
+
+/**
  * How many of your files name each of these, one file counted once per name.
  *
  * Word-boundary (`grep -w`), and deliberately the opposite call from

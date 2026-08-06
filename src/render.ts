@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import type { Engine } from "./judge.ts";
 import type { Overview, OverviewEntry } from "./overview.ts";
-import type { ItemKind, ToolReport } from "./types.ts";
+import type { ItemKind, ToolReport, UsageHit } from "./types.ts";
 
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
 const c = (code: string, s: string) => (useColor ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -120,7 +120,8 @@ export function renderReport(reports: ToolReport[], opts: RenderOptions): string
 
     if (r.items.length === 0) {
       out.push(dim(`  ${noDigestReason(r.digestError, opts.engine)}; raw notes:`));
-      for (const rel of r.behind) out.push(dim(`    ${rel.version}  ${rel.url}`));
+      for (const rel of r.behind) out.push(dim(`    ${rel.version}  ${link(rel.url, rel.url)}`));
+      if (r.mechanical) out.push(...mechanicalHits(r.hits, "  "));
       out.push(`  ${dim("→")} ${r.tool.update}`, "");
       continue;
     }
@@ -164,6 +165,37 @@ export function renderReport(reports: ToolReport[], opts: RenderOptions): string
   }
   out.push(dim(`engine: ${opts.engine.label}`), "");
   return out.join("\n");
+}
+
+/**
+ * Commands found in the notes that also appear in your files, with no engine
+ * behind the finding.
+ *
+ * Worded as "mentions", never as "affects you": nothing here knows which change
+ * a string belongs to, or whether the note was announcing a fix or a heading.
+ * What it does know is checkable — the string is in the notes and in that file —
+ * and saying exactly that much is what separates it from a guess.
+ */
+function mechanicalHits(hits: UsageHit[], indent: string): string[] {
+  if (hits.length === 0) return [];
+  const byCommand = new Map<string, Set<string>>();
+  for (const h of hits) {
+    let files = byCommand.get(h.command);
+    if (!files) {
+      files = new Set();
+      byCommand.set(h.command, files);
+    }
+    files.add(h.file);
+  }
+  const out: string[] = [
+    `${indent}${yellow("mentions commands you call")}${dim(", though nothing judged which change:")}`,
+  ];
+  for (const [command, files] of byCommand) {
+    const shown = [...files].slice(0, 2).join(", ");
+    const more = files.size > 2 ? dim(` +${files.size - 2} more`) : "";
+    out.push(`${indent}  ${command}${dim(" — ")}${shown}${more}`);
+  }
+  return out;
 }
 
 /** Tree connectors, so a section reads as one block rather than as loose lines. */
@@ -223,6 +255,7 @@ function renderEntry(e: OverviewEntry, engine: Engine, prefix: string, cont: str
       ),
     );
     for (const rel of e.behind) body(dim(`  ${rel.version}  ${link(rel.url, rel.url)}`));
+    if (e.mechanical) for (const line of mechanicalHits(e.hits, "")) body(line);
     body(`${dim("→")} ${e.update}`);
     return;
   }

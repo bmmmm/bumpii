@@ -466,11 +466,47 @@ $ bumpii
 ```
 
 No model is hardcoded — `/v1/models` is asked what it serves, and `--model`
-overrides. Without `OPENAI_BASE_URL`, the `claude` CLI is used if present.
-Without either, `bumpii` degrades to `--no-judge` behaviour and says so:
-pending releases and their URLs, no digest. The engine is always named in the
-footer, because a summary is worth exactly as much as your trust in who wrote
-it.
+overrides. Without `OPENAI_BASE_URL`, the `claude` CLI is used if present. The
+engine is always named in the footer, because a summary is worth exactly as
+much as your trust in who wrote it.
+
+### Without any engine at all
+
+`bumpii` is useful with no model anywhere, and that is not an afterthought.
+Everything mechanical still works — what is outdated, which of it your own
+files name, the compare and release links, the exit codes — and instead of a
+digest you get the notes' own URLs plus this:
+
+```console
+$ bumpii
+gh 2.95.0 → 2.97.0  2 releases behind
+  no digest — none (no engine reachable); raw notes:
+    2.96.0  https://github.com/cli/cli/releases/tag/v2.96.0
+    2.97.0  https://github.com/cli/cli/releases/tag/v2.97.0
+  mentions commands you call, though nothing judged which change:
+    gh auth status — ~/ops/scripts/release.sh, ~/ops/scripts/setup.sh +8 more
+    gh pr diff — ~/ops/scripts/merge.sh, ~/ops/scripts/review.sh +2 more
+  → brew upgrade gh
+```
+
+Those command strings are read straight out of the notes' inline code spans —
+no model involved — and grepped against your files exactly as the digested
+verdict is. A span is kept only when it names the tool as a word and clears the
+same specificity bar the model's output has to: on gh's real 2.97.0 notes that
+keeps `gh auth status` and `gh attestation verify` while dropping `gh api` (a
+group, not a surface) and `github_pat_*`, `ghs_*`, `ghu_*` (token formats that
+merely contain "gh").
+
+**The wording is the point.** It says *mentions*, not *affects you*: nothing
+here knows which change a string belongs to, so the claim stops exactly where
+the evidence does. What it can support is that the string is in the notes and
+in that file — which, in the run above, is how a machine with no LLM finds that
+the 2.97.0 token-leak fix is about the one gh command it calls ten times over.
+
+A local model is still worth the ten minutes: `ollama serve` or LM Studio, one
+`OPENAI_BASE_URL`, and the digest runs offline, free, and on your own hardware.
+`--no-judge` takes this same path deliberately when you have an engine and do
+not want to spend it.
 
 ## Behind a proxy
 

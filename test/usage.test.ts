@@ -8,7 +8,66 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { findUsage, mentioned, resolveUsagePaths, toNeedles } from "../src/usage.ts";
+import { commandsFromNotes, findUsage, mentioned, resolveUsagePaths, toNeedles } from "../src/usage.ts";
+
+// Verbatim from the gh 2.97.0 release notes (cli/cli), abridged. Kept real
+// because the whole question here is whether the extractor survives prose
+// written by people: the token-format examples below (`github_pat_*`, `ghs_*`)
+// sit in the same sentence as a genuine command, and a substring match would
+// take all three.
+const GH_NOTES = `## Security
+
+Several commands (including \`gh gist view\`, \`gh api\`, \`gh pr diff\`, and
+\`gh release download --output -\`) printed externally controlled content
+without neutralizing terminal escape sequences.
+
+\`gh auth status\` (without \`--show-token\`) could print a portion of the
+authentication token in plaintext for token types whose format contains an
+underscore after the prefix, such as \`github_pat_*\`, \`ghs_*\`, and \`ghu_*\`.
+
+\`gh attestation verify\` built the certificate matcher from \`--signer-repo\`
+without escaping regex metacharacters.`;
+
+test("commands are read out of real release notes without a model", () => {
+  const got = commandsFromNotes("gh", GH_NOTES);
+  // The surfaces a reader would act on.
+  assert.ok(got.includes("gh auth status"), "the command behind the token leak");
+  assert.ok(got.includes("gh attestation verify"));
+  assert.ok(got.includes("gh gist view"));
+  assert.ok(got.includes("gh release download --output -"));
+});
+
+test("a span is only kept when it names the tool as a word", () => {
+  // The case the word boundary actually decides — and it has to be one that
+  // clears toNeedles, or the filter under test never runs: "team sync --all"
+  // is specific enough to be kept, and contains "tea" only as a substring.
+  // A `tea` user's notes talking about teams would otherwise be grepped for a
+  // command that does not exist.
+  assert.deepEqual(commandsFromNotes("tea", "Use `team sync --all` to invite everyone."), []);
+  assert.deepEqual(commandsFromNotes("tea", "Use `tea pulls list --state open`."), [
+    "tea pulls list --state open",
+  ]);
+});
+
+test("note extraction refuses groups and bare flags, which match half a machine", () => {
+  const got = commandsFromNotes("gh", GH_NOTES);
+  // Two tokens, no flag: "gh api" names a group, not a surface.
+  assert.ok(!got.includes("gh api"), "a two-token group is too broad to mean anything");
+  // A flag on its own is not attributable to this tool at all.
+  assert.ok(!got.includes("--show-token"));
+  // Token formats sitting in the same sentence as real commands.
+  for (const junk of ["github_pat_*", "ghs_*", "ghu_*"]) {
+    assert.ok(!got.includes(junk), `${junk} is not a command`);
+  }
+});
+
+test("punctuation inside the code span is stripped from the command", () => {
+  // Notes really are written as "`gh pr view --json.`" with the full stop
+  // inside the span. Grepping that verbatim finds nothing, which is
+  // indistinguishable from a checked "affects you: none".
+  assert.deepEqual(commandsFromNotes("gh", "Fixed `gh pr view --json.`"), ["gh pr view --json"]);
+  assert.deepEqual(commandsFromNotes("gh", "Fixed `gh pr view --json`, see below."), ["gh pr view --json"]);
+});
 
 test("toNeedles drops commands too broad to mean anything", () => {
   // "gh pr" appears in half of anyone's scripts; reporting "affects you" on it

@@ -81,6 +81,13 @@ export interface ToolReport {
   items: DigestItem[];
   /** Where the extracted commands actually appear in your own files. */
   hits: UsageHit[];
+  /**
+   * `hits` came from reading the notes mechanically, not from a digest — there
+   * was no engine, or it returned nothing. The strings are real and so are the
+   * files, but nothing judged which change they belong to, so the report must
+   * not present them as a verdict.
+   */
+  mechanical?: boolean;
   /** Set when the tool could not be inspected; everything above is then empty. */
   error?: string;
   /**

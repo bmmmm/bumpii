@@ -39,6 +39,7 @@ function entry(over: Partial<OverviewEntry> & { name: string }): OverviewEntry {
     truncated: false,
     items: [],
     hits: [],
+    mechanical: false,
     compare: null,
     ...over,
   };

@@ -20,7 +20,7 @@ import {
 } from "./outdated.ts";
 import { listReleases, parseSource } from "./sources.ts";
 import type { Config, DigestItem, Release, ToolConfig, UsageHit } from "./types.ts";
-import { findUsage, referenceCounts, resolveUsagePaths } from "./usage.ts";
+import { commandsFromNotes, findUsage, referenceCounts, resolveUsagePaths } from "./usage.ts";
 import { isComparable, isTruncated, releasesBehind } from "./version.ts";
 
 /** Why an entry ended up where it did. Each bucket renders differently. */
@@ -73,6 +73,8 @@ export interface OverviewEntry {
   truncated: boolean;
   items: DigestItem[];
   hits: UsageHit[];
+  /** `hits` were read out of the notes mechanically, with no engine involved. */
+  mechanical: boolean;
   /** Diff between the installed and the newest tag, when both tags are known. */
   compare: string | null;
   /** Why this landed in "unreachable", or why its digest came back empty. */
@@ -246,6 +248,7 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
         truncated: false,
         items: [],
         hits: [],
+        mechanical: false,
         compare: null,
       };
       if (count === 0) return base;
@@ -270,13 +273,19 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
         } catch (err) {
           error = err instanceof Error ? err.message : String(err);
         }
-        const hits = await findUsage(
-          usage.roots,
-          items.flatMap((i) => i.commands),
-        );
+        // With no items there are no extracted commands, so nothing would be
+        // grepped and the entry would carry a version and a link and nothing
+        // else. Reading the notes mechanically keeps the one thing this tool is
+        // for — does this touch me — working without an engine at all.
+        const mechanical = items.length === 0 && behind.length > 0;
+        const commands = mechanical
+          ? behind.flatMap((r) => commandsFromNotes(pkg.name, r.notes))
+          : items.flatMap((i) => i.commands);
+        const hits = await findUsage(usage.roots, commands);
         return {
           ...base,
           bucket: bucketFor({ refs: count, source, itemCount: items.length }),
+          mechanical,
           behind,
           published,
           truncated,
