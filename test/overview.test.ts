@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import type { Engine } from "../src/judge.ts";
-import { namesOf, type Overview, type OverviewEntry } from "../src/overview.ts";
+import { bucketFor, compareFor, namesOf, type Overview, type OverviewEntry } from "../src/overview.ts";
 import { renderOverview } from "../src/render.ts";
 import { referenceCounts } from "../src/usage.ts";
 
@@ -33,6 +33,10 @@ function entry(over: Partial<OverviewEntry> & { name: string }): OverviewEntry {
     update: `brew upgrade ${over.name}`,
     bucket: "no-signal",
     behind: [],
+    // Enough published releases that the default entry does not accidentally
+    // exercise the "publishes no versioned releases" branch.
+    published: 1,
+    truncated: false,
     items: [],
     hits: [],
     compare: null,
@@ -255,12 +259,113 @@ test("an untracked package that was judged is offered for tracking", () => {
 test("brew ahead of the forge is not rendered as a failed digest", () => {
   const text = renderOverview(
     overview({
-      // A revision bump (mpv 0.41.0_6 → 0.41.0_7) moves brew's version without
-      // any release behind it. Blaming the engine there sends the reader to
-      // check a model that was never asked anything.
-      entries: [entry({ name: "mpv", refs: 5, bucket: "digested", behind: [], items: [] })],
+      // A revision bump (0.41.0_6 → 0.41.0_7) moves brew's version without any
+      // release behind it. Blaming the engine there sends the reader to check a
+      // model that was never asked anything.
+      entries: [
+        entry({ name: "some-tool", refs: 5, bucket: "undigested", behind: [], items: [], published: 9 }),
+      ],
     }),
   );
-  assert.match(text, /forge published no release notes between these versions/);
+  assert.match(text, /forge published no release between these versions/);
   assert.doesNotMatch(text, /engine returned nothing usable/);
+});
+
+test("a repo that publishes no releases is not reported as nothing having changed", () => {
+  // `published: 0` and `behind: []` render identically unless they are told
+  // apart — one means "nothing changed", the other "nothing could be compared".
+  const text = renderOverview(
+    overview({
+      entries: [
+        entry({
+          name: "some-tool",
+          refs: 5,
+          bucket: "undigested",
+          source: "github:o/r",
+          behind: [],
+          items: [],
+          published: 0,
+        }),
+      ],
+    }),
+  );
+  assert.match(text, /publishes no versioned releases/);
+  assert.doesNotMatch(text, /no release between these versions/);
+});
+
+test("the compare link is refused when its exact range is unknown", () => {
+  const rel = (version: string, tag: string) => ({
+    tag,
+    version,
+    publishedAt: null,
+    notes: "",
+    url: `https://example.com/${tag}`,
+  });
+  const releases = [rel("1.2.4", "v1.2.4"), rel("1.2.3", "v1.2.3")];
+
+  // Both ends published: an exact range, and a link.
+  assert.equal(
+    compareFor("github:o/r", releases, "1.2.3", "1.2.4"),
+    "https://github.com/o/r/compare/v1.2.3...v1.2.4",
+  );
+  // brew offers a revision bump the forge never tagged. Linking v1.2.3...v1.2.4
+  // here would describe a release the upgrade does not contain.
+  assert.equal(compareFor("github:o/r", releases, "1.2.3", "1.2.3_2"), null);
+  // Installed version predates the page: the lower bound is unknown.
+  assert.equal(compareFor("github:o/r", releases, "0.9.0", "1.2.4"), null);
+});
+
+test("the bucket follows the facts, and an empty digest is never called digested", () => {
+  // The decision itself, not the rendering of it: a renderer test built from a
+  // hand-written entry stays green no matter what buildOverview assigns, which
+  // is how "★ digested" came to sit above an entry reading "digest failed".
+  const b = (f: Parameters<typeof bucketFor>[0]) => bucketFor(f);
+  assert.equal(b({ refs: 0, source: "github:o/r", itemCount: 3 }), "no-signal");
+  assert.equal(b({ refs: 5, source: null, itemCount: 0 }), "no-repo");
+  assert.equal(b({ refs: 5, source: "github:o/r", unreachable: true, itemCount: 0 }), "unreachable");
+  assert.equal(b({ refs: 5, source: "github:o/r", itemCount: 3 }), "digested");
+  // The engine was off, failed, or returned nothing — all three are this.
+  assert.equal(b({ refs: 5, source: "github:o/r", itemCount: 0 }), "undigested");
+  // Unreferenced wins over everything: nothing is judged without usage behind
+  // it, so it cannot be "digested" even if items somehow exist.
+  assert.equal(b({ refs: 0, source: null, itemCount: 0 }), "no-signal");
+});
+
+test("an entry the engine could not digest is not counted as digested", () => {
+  const text = renderOverview(
+    overview({
+      entries: [
+        entry({
+          name: "some-tool",
+          refs: 5,
+          bucket: "undigested",
+          behind: [
+            { tag: "v2", version: "2.0.0", publishedAt: null, notes: "", url: "https://example.com/r/2" },
+          ],
+          items: [],
+          error: "engine timed out",
+        }),
+      ],
+    }),
+  );
+  assert.match(text, /pending, not digested/);
+  assert.match(text, /digest failed: engine timed out/);
+  // The tally has to agree with the heading.
+  assert.match(text, /1 pending — 0 digested · 1 not digested/);
+});
+
+test("the release count carries a + when the forge page ran out first", () => {
+  const behind = Array.from({ length: 30 }, (_, i) => ({
+    tag: `v${i}`,
+    version: `1.0.${i}`,
+    publishedAt: null,
+    notes: "",
+    url: `https://example.com/r/${i}`,
+  }));
+  const text = renderOverview(
+    overview({
+      entries: [entry({ name: "some-tool", refs: 5, bucket: "undigested", behind, truncated: true })],
+    }),
+  );
+  assert.match(text, /30\+ releases/);
 });

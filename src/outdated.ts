@@ -102,37 +102,43 @@ function parseBrewJson<T>(stdout: string, what: string): T {
  * one that is.
  */
 export async function brewInstalledVersions(names: string[]): Promise<Map<string, string>> {
-  const found = new Map<string, string>();
-  if (names.length === 0) return found;
-  const parse = (text: string) => {
+  if (names.length === 0) return new Map();
+  const parse = (text: string): Map<string, string> => {
+    const out = new Map<string, string>();
     for (const line of text.split("\n")) {
       // "name 1.2.3" — and a formula kept at several versions lists them all,
       // newest last, which is the one that is linked.
       const parts = line.trim().split(/\s+/);
       const name = parts[0];
       const version = parts.at(-1);
-      if (name && version && parts.length > 1) found.set(name, version);
+      if (name && version && parts.length > 1) out.set(name, version);
     }
+    return out;
   };
   // Casks and formulae need separate calls, and each exits non-zero as soon as
   // one name is not of its kind — which is the normal case here, since the list
   // holds both. The output printed before that exit is the part we want, so a
   // failure is parsed rather than discarded: dropping it left every version in
   // the report as "?" while brew had in fact printed them all.
-  await Promise.all(
+  const [formulae, casks] = await Promise.all(
     [
       ["list", "--versions", ...names],
       ["list", "--cask", "--versions", ...names],
     ].map(async (argv) => {
       try {
         const { stdout } = await run("brew", argv, { timeout: 120_000 });
-        parse(stdout);
+        return parse(stdout);
       } catch (err) {
-        parse((err as ExecError).stdout ?? "");
+        return parse((err as ExecError).stdout ?? "");
       }
     }),
   );
-  return found;
+  // Into two maps and merged deterministically, rather than both writing into
+  // one: a name that exists as BOTH a formula and a cask (wireshark) would
+  // otherwise take whichever call happened to finish last, and the version
+  // under "up to date" would change between runs. The formula wins because the
+  // caller asks with a name it took from `brew upgrade <formula>`.
+  return new Map([...(casks ?? []), ...(formulae ?? [])]);
 }
 
 /**
@@ -157,7 +163,15 @@ export async function readSourceCache(path = sourceCachePath()): Promise<SourceC
     const raw = await readFile(path, "utf8");
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return parsed as SourceCache;
+    // Values are checked, not just the container. A hand-edited `{"gh": 123}`
+    // is truthy, so it would be carried all the way to parseSource and surface
+    // as "source.startsWith is not a function" — a message about this file that
+    // never mentions it. Dropping the bad entry re-derives it instead.
+    const out: SourceCache = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (v === null || typeof v === "string") out[k] = v;
+    }
+    return out;
   } catch {
     // A cache is the one file that must never break a run: an unreadable or
     // corrupt one is simply an empty one, and the next write repairs it.

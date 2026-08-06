@@ -21,12 +21,19 @@ import {
 import { listReleases, parseSource } from "./sources.ts";
 import type { Config, DigestItem, Release, ToolConfig, UsageHit } from "./types.ts";
 import { findUsage, referenceCounts, resolveUsagePaths } from "./usage.ts";
-import { releasesBehind } from "./version.ts";
+import { isComparable, isTruncated, releasesBehind } from "./version.ts";
 
 /** Why an entry ended up where it did. Each bucket renders differently. */
 export type Bucket =
-  /** Referenced by your files and its forge could be reached — notes digested. */
+  /** Referenced, forge read, and the engine produced something. */
   | "digested"
+  /**
+   * Referenced and the forge was read, but no items came back — the engine was
+   * off, failed, or there was nothing between the two versions to digest. Kept
+   * apart from `digested` so the heading and the tally cannot claim a reading
+   * that did not happen.
+   */
+  | "undigested"
   /** Referenced, but nothing names a forge repo, so there is nothing to read. */
   | "no-repo"
   /** Referenced, its forge was named, but reaching or reading it failed. */
@@ -50,6 +57,20 @@ export interface OverviewEntry {
   bucket: Bucket;
   /** Releases between installed and latest, oldest first. */
   behind: Release[];
+  /**
+   * Comparable releases the forge published at all. Zero says something quite
+   * different from an empty `behind`: one means nothing could be compared, the
+   * other that nothing changed between these two versions, and rendering both
+   * as "no release notes" reads as "nothing changed" for a repo that simply
+   * never publishes releases.
+   */
+  published: number;
+  /**
+   * The forge's page ran out before `behind` did, so the count is a floor.
+   * Rendered as "N+", the same as the digest does — a silent cap makes a tool
+   * thirty releases behind look routine.
+   */
+  truncated: boolean;
   items: DigestItem[];
   hits: UsageHit[];
   /** Diff between the installed and the newest tag, when both tags are known. */
@@ -106,8 +127,53 @@ export function namesOf(tool: ToolConfig): string[] {
  * published. Returns null rather than a guess: a compare URL built from an
  * invented tag 404s, which reads as a broken tool rather than as missing data.
  */
-function tagFor(releases: Release[], version: string): string | null {
+export function tagFor(releases: Release[], version: string): string | null {
   return releases.find((r) => r.version === version)?.tag ?? null;
+}
+
+/**
+ * The compare link for an upgrade, or null when its exact range is not known.
+ *
+ * Both ends must be tags the forge really published. There used to be a
+ * fallback to the newest release we happened to know, and it made the link
+ * describe changes the upgrade does not contain: brew offering a revision bump
+ * (1.2.3 → 1.2.3_2) produced a link to compare/v1.2.3...v1.2.4 — a working URL,
+ * the wrong range, and nothing on screen saying so. No link is the honest
+ * answer; the per-release links in the body still work.
+ */
+export function compareFor(
+  source: string,
+  releases: Release[],
+  installed: string,
+  latest: string,
+): string | null {
+  const from = tagFor(releases, installed);
+  const to = tagFor(releases, latest);
+  return from && to ? compareUrl(source, from, to) : null;
+}
+
+/**
+ * Which bucket a package belongs in, from the facts alone.
+ *
+ * Pulled out of the async flow so the decision can be tested without brew, a
+ * forge and an engine standing behind it. That matters more here than the few
+ * lines it costs: each bucket puts a different heading above the entry, every
+ * one of those headings makes a claim, and this function is the only thing
+ * deciding which claim gets made.
+ */
+export function bucketFor(f: {
+  refs: number;
+  source: string | null;
+  /** Set when reading the forge threw. */
+  unreachable?: boolean;
+  itemCount: number;
+}): Bucket {
+  if (f.refs === 0) return "no-signal";
+  if (!f.source) return "no-repo";
+  if (f.unreachable) return "unreachable";
+  // Nothing came back means nothing was digested, whatever the reason — the
+  // entry body explains which, and the heading must not overrule it.
+  return f.itemCount > 0 ? "digested" : "undigested";
 }
 
 export interface OverviewOptions {
@@ -176,21 +242,24 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
         update: tool?.update ?? `brew upgrade ${pkg.kind === "cask" ? "--cask " : ""}${pkg.name}`,
         bucket: "no-signal",
         behind: [],
+        published: 0,
+        truncated: false,
         items: [],
         hits: [],
         compare: null,
       };
       if (count === 0) return base;
-      if (!source) return { ...base, bucket: "no-repo" };
+      if (!source) return { ...base, bucket: bucketFor({ refs: count, source, itemCount: 0 }) };
 
       try {
         const list = await listReleases(parseSource(source));
         // brew's installed version, not a probe: it has just told us both
         // numbers, and a second answer from the binary could only disagree.
         const behind = releasesBehind(list.releases, pkg.installed);
-        const fromTag = tagFor(list.releases, pkg.installed);
-        const toTag = tagFor(list.releases, pkg.latest) ?? behind.at(-1)?.tag ?? null;
-        const compare = fromTag && toTag ? compareUrl(source, fromTag, toTag) : null;
+        const published = list.releases.filter(isComparable).length;
+        const truncated = isTruncated(list.releases, behind, list.capped);
+
+        const compare = compareFor(source, list.releases, pkg.installed, pkg.latest);
 
         // A digest that fails costs the summary, not the news — same split the
         // digest command makes, for the same reason.
@@ -205,9 +274,23 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
           usage.roots,
           items.flatMap((i) => i.commands),
         );
-        return { ...base, bucket: "digested", behind, items, hits, compare, error };
+        return {
+          ...base,
+          bucket: bucketFor({ refs: count, source, itemCount: items.length }),
+          behind,
+          published,
+          truncated,
+          items,
+          hits,
+          compare,
+          error,
+        };
       } catch (err) {
-        return { ...base, bucket: "unreachable", error: err instanceof Error ? err.message : String(err) };
+        return {
+          ...base,
+          bucket: bucketFor({ refs: count, source, unreachable: true, itemCount: 0 }),
+          error: err instanceof Error ? err.message : String(err),
+        };
       }
     }),
   );
@@ -217,7 +300,12 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
   // was never checked here, and reporting it as current would claim a check
   // that never happened.
   const outdatedNames = new Set(outdated.map((p) => p.name));
-  const quiet = config.tools.filter((t) => !namesOf(t).some((n) => outdatedNames.has(n)));
+  const quiet = config.tools
+    .filter((t) => !namesOf(t).some((n) => outdatedNames.has(n)))
+    // --only restricts the whole report, not only the pending half. Leaving
+    // these unfiltered printed every tracked tool under "up to date" after a
+    // question about one package, and put its own count in the summary.
+    .filter((t) => !opts.only?.length || namesOf(t).some((n) => opts.only?.includes(n)));
   const brewManaged = quiet.filter((t) => formulaOf(t.update) !== null);
   const installedVersions = await brewInstalledVersions(
     brewManaged.flatMap((t) => {

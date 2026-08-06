@@ -181,7 +181,14 @@ function entryHead(e: OverviewEntry): string {
     // nothing.
     e.pinned ? yellow("pinned") : "",
   ].filter(Boolean);
-  return `${name} ${e.installed} → ${bold(e.latest)}   ${refs}${flags.length ? `   ${flags.join(" ")}` : ""}`;
+  // "5+ releases" when the forge's page ran out before the pending list did:
+  // the count is the number a person acts on, and a silent cap makes a tool
+  // thirty releases behind look routine.
+  const count =
+    e.behind.length > 0
+      ? dim(`   ${e.behind.length}${e.truncated ? "+" : ""} release${e.behind.length === 1 ? "" : "s"}`)
+      : "";
+  return `${name} ${e.installed} → ${bold(e.latest)}${count}   ${refs}${flags.length ? `   ${flags.join(" ")}` : ""}`;
 }
 
 function renderEntry(e: OverviewEntry, engine: Engine, prefix: string, cont: string, out: string[]): void {
@@ -192,7 +199,8 @@ function renderEntry(e: OverviewEntry, engine: Engine, prefix: string, cont: str
 
   if (e.bucket === "no-repo") {
     body(dim("no forge repo in its brew URLs — nothing to read, and bumpii will not guess one"));
-    body(dim(`name it yourself: bumpii add ${e.name} --source github:owner/repo`));
+    // The trimmed name, not the padded one: this is the line meant to be copied.
+    body(dim(`name it yourself: bumpii add ${e.name.trim()} --source github:owner/repo`));
     return;
   }
   if (e.bucket === "unreachable") {
@@ -201,15 +209,17 @@ function renderEntry(e: OverviewEntry, engine: Engine, prefix: string, cont: str
   }
 
   if (e.items.length === 0) {
-    // brew says newer while the forge published nothing between the two is a
-    // real state (a revision bump, a tag never released) and not a digest
-    // failure — everything else defers to the same reason the digest gives, so
-    // "--no-judge" never reads as "the engine broke".
+    // Three different states read as an empty list, and only the middle one is
+    // "nothing changed". A repo that publishes no versioned releases at all
+    // cannot be compared — saying "no release notes between these versions"
+    // there reports a silence as a finding.
     body(
       dim(
-        e.behind.length === 0
-          ? "brew has a newer build, but the forge published no release notes between these versions"
-          : `${noDigestReason(e.error, engine)}; raw notes:`,
+        e.published === 0
+          ? `${e.source} publishes no versioned releases — bumpii cannot tell what changed, only that brew has a newer build`
+          : e.behind.length === 0
+            ? "brew has a newer build, but the forge published no release between these versions"
+            : `${noDigestReason(e.error, engine)}; raw notes:`,
       ),
     );
     for (const rel of e.behind) body(dim(`  ${rel.version}  ${link(rel.url, rel.url)}`));
@@ -274,6 +284,10 @@ export function renderOverview(o: Overview): string {
   }
 
   section("★ digested", of("digested"), o.engine, out);
+  // Its own heading, because these were not digested. The body says which of
+  // the reasons applied; a shared "★ digested" heading over an entry reading
+  // "digest failed" would be the report contradicting itself.
+  section("★ pending, not digested", of("undigested"), o.engine, out);
   section("referenced, but bumpii found no repo to read", of("no-repo"), o.engine, out);
   section("referenced, but its forge could not be read", of("unreachable"), o.engine, out);
 
@@ -347,18 +361,30 @@ export function renderOverview(o: Overview): string {
     );
   }
 
-  const judged = of("digested").length;
   const untrackedJudged = of("digested").filter((e) => !e.tracked);
   if (o.entries.length > 0) {
-    out.push(
-      dim(
-        `${o.entries.length} pending · ${judged} digested · ${quiet.length} unreferenced` +
-          `${o.current.length > 0 ? ` · ${o.current.length} current` : ""}`,
-      ),
-    );
+    // Every bucket, so the parts add up to the whole. The two that mean
+    // "bumpii could not check" were the ones missing, which is exactly
+    // backwards: an unread forge is the number worth seeing.
+    const parts = [
+      `${of("digested").length} digested`,
+      of("undigested").length > 0 ? `${of("undigested").length} not digested` : "",
+      of("no-repo").length > 0 ? `${of("no-repo").length} no repo` : "",
+      of("unreachable").length > 0 ? `${of("unreachable").length} unreadable` : "",
+      `${quiet.length} unreferenced`,
+    ].filter(Boolean);
+    out.push(dim(`${o.entries.length} pending — ${parts.join(" · ")}`));
+    if (o.current.length > 0 || o.unchecked.length > 0) {
+      out.push(
+        dim(
+          `${o.current.length} tracked and current` +
+            `${o.unchecked.length > 0 ? ` · ${o.unchecked.length} tracked but unchecked` : ""}`,
+        ),
+      );
+    }
   }
   if (untrackedJudged.length > 0) {
-    out.push(dim(`  worth tracking: bumpii add ${untrackedJudged.map((e) => e.name).join(" ")}`));
+    out.push(dim(`  worth tracking: bumpii add ${untrackedJudged.map((e) => e.name.trim()).join(" ")}`));
   }
   out.push(dim(`engine: ${o.engine.label}`), "");
   return out.join("\n");

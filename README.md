@@ -82,19 +82,25 @@ and sorts it by whether it can say anything useful about it:
 $ bumpii overview
 
 ★ digested
-├─ gh     2.96.0 → 2.97.0   12 refs
+├─ gh     2.96.0 → 2.97.0   4 releases   12 refs
 │    https://github.com/cli/cli/compare/v2.96.0...v2.97.0
 │    ! security Authorization header incorrectly included in TUF mirror requests (2.97.0)
 │      you use this: ~/ops/scripts/release.sh
 │    affects you: 1 of 26 changes touch commands you call
 │    → brew upgrade gh
-└─ docker 29.6.2 → 29.7.2    7 refs   untracked
+└─ docker 29.6.2 → 29.7.2   2 releases    7 refs   untracked
      https://github.com/docker/cli/compare/v29.6.2...v29.7.2
      …
      → brew upgrade docker
 
+★ pending, not digested
+└─ some-tool 1.4.0 → 1.4.1   1 release   3 refs
+     digest failed: engine timed out; raw notes:
+       1.4.1  https://github.com/o/some-tool/releases/tag/v1.4.1
+     → brew upgrade some-tool
+
 referenced, but bumpii found no repo to read
-└─ node 26.5.0 → 26.7.0    5 refs   untracked
+└─ node 26.5.0 → 26.7.0   5 refs   untracked
      no forge repo in its brew URLs — nothing to read, and bumpii will not guess one
      name it yourself: bumpii add node --source github:owner/repo
 
@@ -109,7 +115,8 @@ no signal (12)
     https://github.com/harfbuzz/harfbuzz/releases
   …
 
-23 pending · 2 digested · 12 unreferenced · 8 current
+23 pending — 2 digested · 1 not digested · 1 no repo · 12 unreferenced
+8 tracked and current
   worth tracking: bumpii add docker
 engine: claude-cli/haiku
 ```
@@ -142,10 +149,20 @@ that tool in one file instead of nineteen — which is not merely a mis-ranking,
 it is `no file in your usagePaths names these` printed about something named in
 nineteen of them.
 
-Compare links are built from the tags the forge really published, never from
-the version numbers: jq tags `jq-1.8.2` and gh tags `v2.97.0`, so a constructed
-tag is a 404 that reads as a broken tool. Where the tags are unknown, no link
-is shown. In a terminal that supports OSC 8 every URL is also clickable, and
+`★ pending, not digested` is its own section rather than a variant of the
+first, because nothing there was read: the engine was off, it failed, or the
+forge published nothing between the two versions. The body says which. A shared
+heading would have the report contradicting the line underneath it, and the
+tally at the bottom counts every bucket for the same reason — including the two
+that mean *bumpii could not check*, which are the numbers worth seeing.
+
+Compare links are built from the tags the forge really published, on **both**
+ends, never from the version numbers: jq tags `jq-1.8.2` and gh tags `v2.97.0`,
+so a constructed tag is a 404 that reads as a broken tool. Where either end is
+not a published release — brew offering a revision bump (`1.2.3` → `1.2.3_2`)
+that was never tagged — no link is shown at all, because a link to
+`compare/v1.2.3...v1.2.4` would work perfectly and describe a release the
+upgrade does not contain. In a terminal that supports OSC 8 every URL is also clickable, and
 the resolved repos are cached in `~/.config/bumpii/sources.json` — a derived
 file, safe to delete.
 

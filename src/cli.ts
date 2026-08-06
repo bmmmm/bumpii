@@ -576,11 +576,18 @@ async function main(): Promise<number> {
     });
     // A typo in --only must not read as "nothing is outdated". Checked after
     // the build rather than against the config, because overview ranges over
-    // everything brew has pending, not only what is tracked.
-    if (args.only.length > 0 && overview.entries.length === 0) {
+    // everything brew has pending, not only what is tracked — and only when
+    // NOTHING matched: a name that is simply current still has something true
+    // to show under "up to date", which is an answer rather than an error.
+    if (
+      args.only.length > 0 &&
+      overview.entries.length === 0 &&
+      overview.current.length === 0 &&
+      overview.unchecked.length === 0
+    ) {
       throw new Error(
-        `nothing pending matched --only ${args.only.join(",")} — those packages are either current or ` +
-          `not installed; run 'bumpii overview' without --only to see what is`,
+        `nothing matched --only ${args.only.join(",")} — no package by that name is installed or tracked; ` +
+          `run 'bumpii overview' without --only, or 'bumpii list' for the names you track`,
       );
     }
     process.stdout.write(args.json ? `${JSON.stringify(overview, null, 2)}\n` : renderOverview(overview));
