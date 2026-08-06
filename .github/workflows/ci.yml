@@ -13,6 +13,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # A push does not always produce a run — a history rewrite lands commits GitHub
+  # has never seen, and no `tests` run appeared for any of them. Without a manual
+  # trigger there is then no way to check the matrix short of pushing again,
+  # which is how "the suite passed locally" quietly becomes the only evidence.
+  workflow_dispatch:
 
 permissions:
   contents: read
