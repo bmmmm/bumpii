@@ -56,6 +56,7 @@ Optional, and only for what they enable: `brew` for `bumpii add`/`scan`,
 | | |
 | --- | --- |
 | `bumpii` | digest pending releases for everything tracked |
+| `bumpii overview` | everything brew has pending, ranked by your own usage |
 | `bumpii init` | write a starter config |
 | `bumpii add <formula>…` | derive entries from installed Homebrew formulae |
 | `bumpii add --image <container>…` | derive entries from running containers |
@@ -70,6 +71,72 @@ Optional, and only for what they enable: `brew` for `bumpii add`/`scan`,
 
 `bumpii --help` carries the options; the sections below cover what each of
 these does and why.
+
+## The whole machine at once
+
+`bumpii` reports on what you tracked. `bumpii overview` starts from what
+Homebrew already knows is pending — every formula and cask, tracked or not —
+and sorts it by whether it can say anything useful about it:
+
+```console
+$ bumpii overview
+
+★ digested
+├─ gh     2.96.0 → 2.97.0   12 refs
+│    https://github.com/cli/cli/compare/v2.96.0...v2.97.0
+│    ! security Authorization header incorrectly included in TUF mirror requests (2.97.0)
+│      you use this: ~/ops/scripts/release.sh
+│    affects you: 1 of 26 changes touch commands you call
+│    → brew upgrade gh
+└─ docker 29.6.2 → 29.7.2    7 refs   untracked
+     https://github.com/docker/cli/compare/v29.6.2...v29.7.2
+     …
+     → brew upgrade docker
+
+referenced, but bumpii found no repo to read
+└─ node 26.5.0 → 26.7.0    5 refs   untracked
+     no forge repo in its brew URLs — nothing to read, and bumpii will not guess one
+     name it yourself: bumpii add node --source github:owner/repo
+
+referenced, up to date
+  jq 1.8.2 · fj 0.6.0 · shellcheck 0.11.0
+
+no signal (12)
+  no file in your usagePaths names these — version and link only
+  fzf       0.74.1 → 0.74.2
+    https://github.com/junegunn/fzf/releases
+  harfbuzz  14.2.1 → 14.3.0
+  …
+
+23 pending · 2 digested · 12 unreferenced · 8 current
+  worth tracking: bumpii add docker
+engine: claude-cli/haiku
+```
+
+**What decides the buckets is your own files, not a list of important
+packages.** The reference count is how many files in `usagePaths` name each
+one, and a package no file names never reaches the engine: with no usage to
+check a release note against, a model asked anyway would return an opinion
+rather than the verdict the rest of this tool is built on. Those still get a
+version and a link, because that is what the data supports.
+
+Being untracked is no reason to skip the digest — `docker` above gets the same
+treatment as `gh` — so `tools.json` decides what `bumpii` watches, not what
+`overview` can tell you. `worth tracking` at the end names the ones that
+earned an entry.
+
+Two states are deliberately not folded into "up to date". A package whose brew
+URLs name no forge (node ships from nodejs.org) says so instead of having a
+repo guessed for it, and tracked entries brew does not manage — containers,
+anything installed by hand — are listed apart under `tracked, not covered
+here`, because brew never checked them and `bumpii` is what does.
+
+Compare links are built from the tags the forge really published, never from
+the version numbers: jq tags `jq-1.8.2` and gh tags `v2.97.0`, so a constructed
+tag is a 404 that reads as a broken tool. Where the tags are unknown, no link
+is shown. In a terminal that supports OSC 8 every URL is also clickable, and
+the resolved repos are cached in `~/.config/bumpii/sources.json` — a derived
+file, safe to delete.
 
 ## Adding tools
 

@@ -189,8 +189,17 @@ export async function installedFormulae(): Promise<InstalledFormula[]> {
   return out;
 }
 
-/** Build a ready-to-use tool entry for an installed formula. */
-export async function discoverFormula(formula: string): Promise<Discovery> {
+/**
+ * Build a ready-to-use tool entry for an installed formula.
+ *
+ * `sourceOverride` is for the formulae brew cannot place: node ships from
+ * nodejs.org, so its brew URLs name no forge at all, and the repo behind it
+ * (nodejs/node) is something only a person can supply. Guessing it off the
+ * homepage is the mistake this tool refuses to make everywhere else, so the
+ * override is the way that answer gets in — written down as the caller's
+ * choice rather than derived.
+ */
+export async function discoverFormula(formula: string, sourceOverride?: string): Promise<Discovery> {
   const f = await brewJson(formula);
   const versions = (f.versions ?? {}) as { stable?: string };
   const version = versions.stable;
@@ -201,10 +210,13 @@ export async function discoverFormula(formula: string): Promise<Discovery> {
     );
 
   const urls = (f.urls ?? {}) as { stable?: { url?: string }; head?: { url?: string } };
-  const source = sourceFromUrls([urls.stable?.url ?? "", urls.head?.url ?? "", (f.homepage as string) ?? ""]);
+  const source =
+    sourceOverride ??
+    sourceFromUrls([urls.stable?.url ?? "", urls.head?.url ?? "", (f.homepage as string) ?? ""]);
   if (!source) {
     throw new Error(
-      `${formula}: no forge repo in its brew URLs — add it by hand with a "source" of "github:owner/repo" or a full forge URL`,
+      `${formula}: no forge repo in its brew URLs — re-run with --source github:owner/repo, ` +
+        `or add it by hand with a full forge URL`,
     );
   }
 

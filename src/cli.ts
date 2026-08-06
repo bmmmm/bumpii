@@ -14,7 +14,8 @@ import { run } from "./exec.ts";
 import { discoverImage, untrackedContainers } from "./images.ts";
 import { digest, resolveEngine } from "./judge.ts";
 import { limiter } from "./limit.ts";
-import { renderReport } from "./render.ts";
+import { buildOverview } from "./overview.ts";
+import { renderOverview, renderReport } from "./render.ts";
 import { listReleases, parseSource } from "./sources.ts";
 import type { DigestItem, ToolConfig, ToolReport } from "./types.ts";
 import { findUsage, mentioned, resolveUsagePaths } from "./usage.ts";
@@ -32,6 +33,7 @@ const JUDGE_CONCURRENCY = 3;
 const HELP = `bumpii — what changed in the CLIs and containers you run, judged against your usage
 
   bumpii [options]        digest pending releases for every configured tool
+  bumpii overview         everything brew has pending, ranked by your own usage
   bumpii init             write a starter config
   bumpii add <formula>…   derive entries from installed Homebrew formulae
   bumpii add --image <c>… derive entries from running containers
@@ -52,7 +54,8 @@ Options:
   --since <14d|3w>    with scan --new: how far back to look (default 14d)
   --deps              with scan --new: list dependencies too, not just requests
   --source <s>        with add: set the repo yourself, for one tool at a time
-  --only <name,...>   restrict to these tools
+                      (needed when brew's URLs name no forge, as for node)
+  --only <name,...>   restrict to these tools, or with overview these packages
   --model <id>        force a judge model instead of discovering one
   --json              machine-readable report
   --no-judge          skip the model; list pending releases and their URLs
@@ -64,7 +67,7 @@ Engine: OPENAI_BASE_URL (oMLX/Ollama/vLLM) is preferred, else the \`claude\` CLI
 `;
 
 interface Args {
-  cmd: "digest" | "init" | "add" | "scan" | "list" | "set" | "rm" | "help";
+  cmd: "digest" | "overview" | "init" | "add" | "scan" | "list" | "set" | "rm" | "help";
   yes: boolean;
   json: boolean;
   noJudge: boolean;
@@ -139,7 +142,13 @@ export function parseArgs(argv: string[]): Args {
     if (v === undefined) continue;
     if (
       !sawCmd &&
-      (v === "init" || v === "add" || v === "scan" || v === "list" || v === "set" || v === "rm")
+      (v === "init" ||
+        v === "add" ||
+        v === "scan" ||
+        v === "list" ||
+        v === "set" ||
+        v === "rm" ||
+        v === "overview")
     ) {
       a.cmd = v;
       sawCmd = true;
@@ -472,9 +481,6 @@ async function main(): Promise<number> {
         `--source names one repo, but ${args.rest.length} tools were given — add them one at a time`,
       );
     }
-    if (args.source && !args.image) {
-      throw new Error("--source only applies to --image; a formula's repo comes from brew");
-    }
 
     // Concurrently: each entry costs an inspect or a brew call, and on the
     // brew path up to five version probes able to sit out their own timeout.
@@ -482,7 +488,7 @@ async function main(): Promise<number> {
       args.rest.map(async (name) => {
         try {
           // One unresolvable name must not sink the rest of the batch.
-          const d = args.image ? await discoverImage(name) : await discoverFormula(name);
+          const d = args.image ? await discoverImage(name) : await discoverFormula(name, args.source);
           return { ok: true as const, value: d };
         } catch (err) {
           return { ok: false as const, message: (err as Error).message };
@@ -549,6 +555,22 @@ async function main(): Promise<number> {
         : `\nnothing added — already tracked\n`,
     );
     return 0;
+  }
+
+  if (args.cmd === "overview") {
+    const config = await loadConfig();
+    const engine = args.noJudge
+      ? { kind: "none" as const, model: "", label: "skipped (--no-judge)" }
+      : await resolveEngine({ model: args.model });
+    const overview = await buildOverview(config, {
+      engine,
+      only: args.only,
+      concurrency: JUDGE_CONCURRENCY,
+    });
+    process.stdout.write(args.json ? `${JSON.stringify(overview, null, 2)}\n` : renderOverview(overview));
+    // Same contract as the digest: non-zero when something is pending, so a
+    // scheduled run can act on it without parsing the report.
+    return overview.entries.length > 0 ? 1 : 0;
   }
 
   const config = await loadConfig();

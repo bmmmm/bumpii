@@ -108,6 +108,68 @@ export async function mentioned(roots: string[], names: string[]): Promise<Set<s
 }
 
 /**
+ * How many of your files name each of these, one file counted once per name.
+ *
+ * Word-boundary (`grep -w`), and deliberately the opposite call from
+ * `mentioned` above. That one is making an absence claim, where over-reporting
+ * is the safe direction; this one produces a ranking, where it is not.
+ * Measured rather than assumed: on one real set of usagePaths a three-letter
+ * tool name matched over three times as many files as a substring ("tea" inside
+ * "instead", "team") as it did as a word, which would have ranked it above
+ * tools genuinely called far more often. `-w` costs the odd real hit inside a
+ * compound word, which moves a number rather than inventing one.
+ *
+ * `-o` keeps the output to the matched names instead of whole lines — a name as
+ * common as "node" would otherwise return most of a dotfiles repo — and `-H`
+ * forces the filename even when a single root is searched, so the two halves of
+ * every line are always in the same place.
+ */
+export async function referenceCounts(roots: string[], names: string[]): Promise<Map<string, number>> {
+  const counts = new Map(names.map((n) => [n, 0]));
+  if (names.length === 0 || roots.length === 0) return counts;
+
+  let stdout: string;
+  try {
+    const r = await run(
+      "grep",
+      [
+        "-rwoIH", // recursive, whole words, matched part only, with filename, skip binaries
+        "-F",
+        ...names.flatMap((n) => ["-e", n]),
+        "--exclude-dir=.git",
+        "--exclude-dir=node_modules",
+        ...roots,
+      ],
+      { timeout: 120_000, maxBuffer: 32 * 1024 * 1024 },
+    );
+    stdout = r.stdout;
+  } catch (err) {
+    const e = err as ExecError;
+    if (e.code === 1 || e.code === "1") return counts;
+    stdout = e.stdout ?? "";
+  }
+
+  const files = new Map<string, Set<string>>();
+  for (const line of stdout.split("\n")) {
+    // Split at the LAST colon: a path may contain one, a package name never
+    // does, so everything before the final colon is the file.
+    const idx = line.lastIndexOf(":");
+    if (idx < 1) continue;
+    const file = line.slice(0, idx);
+    const name = line.slice(idx + 1);
+    if (!counts.has(name)) continue;
+    let seen = files.get(name);
+    if (!seen) {
+      seen = new Set();
+      files.set(name, seen);
+    }
+    seen.add(file);
+  }
+  for (const [name, seen] of files) counts.set(name, seen.size);
+  return counts;
+}
+
+/**
  * Grep the user's own files for each extracted command string.
  *
  * Fixed-string search (`grep -F`), not regex: the needles come from release
