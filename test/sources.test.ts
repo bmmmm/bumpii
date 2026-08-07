@@ -1,9 +1,31 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The forge layer, against a stubbed fetch: what gets filtered out, what the
 // page boundary means, and whether a token can end up at the wrong host.
+//
+// `gh` is stubbed away for the whole file before anything runs. sources.ts asks
+// it for a token when no env var carries one, and it resolves that once per
+// process — so without this, whether these tests see an authenticated request
+// would depend on whether the machine running them happens to be logged in.
+// The gh path has its own file, where that one answer can be the point.
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { listReleases, parseSource } from "../src/sources.ts";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, test } from "node:test";
+
+const ghDir = mkdtempSync(join(tmpdir(), "bumpii-nogh-"));
+writeFileSync(join(ghDir, "gh"), "#!/bin/sh\nexit 1\n");
+chmodSync(join(ghDir, "gh"), 0o755);
+const realPath = process.env.PATH;
+process.env.PATH = ghDir;
+
+const { listReleases, parseSource } = await import("../src/sources.ts");
+
+after(async () => {
+  process.env.PATH = realPath;
+  await rm(ghDir, { recursive: true, force: true });
+});
 
 interface Call {
   url: string;

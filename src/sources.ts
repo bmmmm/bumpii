@@ -5,6 +5,7 @@
 // Deliberately dependency-free: `fetch` is in the runtime, and a release list
 // is a GET with a token header. Pulling an SDK for that would add a supply
 // chain to a tool whose whole job is telling you what changed in your tools.
+import { run } from "./exec.ts";
 import type { Release } from "./types.ts";
 
 export interface ForgeRef {
@@ -71,12 +72,40 @@ export function parseSource(source: string): ForgeRef {
   );
 }
 
-function authHeaders(ref: ForgeRef): Record<string, string> {
+/**
+ * The token `gh` is already logged in with, if it is installed and logged in.
+ *
+ * 60 requests/hour is the ceiling this tool hits first, and anyone tracking
+ * GitHub projects almost certainly has `gh` set up — sitting on 5000/hour that
+ * a run had no way to use. Asking it is the same move the rest of this tool
+ * makes: derive it from what is already on the machine rather than ask for a
+ * second copy of something already configured.
+ *
+ * Resolved once per process, and never printed: it reaches the authorization
+ * header and nothing else.
+ */
+let ghCliToken: Promise<string | null> | null = null;
+function tokenFromGhCli(): Promise<string | null> {
+  ghCliToken ??= run("gh", ["auth", "token"], { timeout: 5_000 })
+    .then((r): string | null => r.stdout.trim() || null)
+    // Not installed, not logged in, or refusing for any other reason — every
+    // one of them means the same thing here: carry on unauthenticated.
+    .catch((): string | null => null);
+  return ghCliToken;
+}
+
+async function authHeaders(ref: ForgeRef): Promise<Record<string, string>> {
   const h: Record<string, string> = { accept: "application/json" };
   // Only ever send a token to the host it belongs to. Sending GitHub's token
-  // to a self-hosted forge is exactly the class of leak gh shipped in 2.93.0.
+  // to a self-hosted forge is exactly the class of leak gh shipped in 2.93.0 —
+  // which is why gh's own token is reached for only on the github branch, and
+  // never becomes a fallback for Codeberg or a self-hosted instance.
+  //
+  // An env var still wins. Someone who exported a deliberately narrow token
+  // meant that one, and silently preferring whatever `gh` is logged in with
+  // would widen the scope of every request without saying so.
   if (ref.kind === "github") {
-    const t = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+    const t = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || (await tokenFromGhCli());
     if (t) h.authorization = `Bearer ${t}`;
   } else if (ref.api.startsWith("https://codeberg.org")) {
     const t = process.env.CODEBERG_TOKEN;
@@ -96,7 +125,7 @@ function authHeaders(ref: ForgeRef): Record<string, string> {
  * the reader to check a source that is spelled correctly. The reset time is
  * printed because the other half of the answer is "or just wait".
  */
-function rateLimitMessage(res: Response, ref: ForgeRef): string | null {
+async function rateLimitMessage(res: Response, ref: ForgeRef): Promise<string | null> {
   if (res.status !== 403 && res.status !== 429) return null;
   const remaining = res.headers.get("x-ratelimit-remaining");
   const retryAfter = res.headers.get("retry-after");
@@ -110,12 +139,17 @@ function rateLimitMessage(res: Response, ref: ForgeRef): string | null {
       : ref.api.startsWith("https://codeberg.org")
         ? "CODEBERG_TOKEN"
         : "FORGEJO_TOKEN";
-  const authed = Boolean(authHeaders(ref).authorization);
+  // What to do about it depends on whether the request was authenticated at
+  // all, so the answer comes from the headers that were actually sent — which
+  // on the github branch may be gh's token rather than anything the user set.
+  const authed = Boolean((await authHeaders(ref)).authorization);
+  const fix =
+    ref.kind === "github"
+      ? `set ${envVar}, or run 'gh auth login' — bumpii uses gh's token when it finds one (anonymous callers get 60 requests/hour)`
+      : `set ${envVar} to raise it`;
   return (
     `rate limit exhausted at ${new URL(ref.api).host}${at ? `, resets at ${at}` : ""} — ` +
-    (authed
-      ? `${envVar} is set, so this is that token's own limit; run fewer tools at once or wait`
-      : `set ${envVar} to raise it (anonymous callers get 60 requests/hour)`)
+    (authed ? "this is that token's own limit; run fewer tools at once or wait" : fix)
   );
 }
 
@@ -132,9 +166,9 @@ function rateLimitMessage(res: Response, ref: ForgeRef): string | null {
  * validator would miss every time and buy a cache file for nothing.
  */
 async function getJson(url: string, ref: ForgeRef): Promise<unknown> {
-  const res = await fetch(url, { headers: authHeaders(ref) });
+  const res = await fetch(url, { headers: await authHeaders(ref) });
   if (!res.ok) {
-    const limited = rateLimitMessage(res, ref);
+    const limited = await rateLimitMessage(res, ref);
     if (limited) throw new Error(limited);
     // 404 on a private repo without a token reads identically to a typo, so
     // say which of the two it might be rather than just echoing the status.

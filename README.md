@@ -520,7 +520,16 @@ Every run fetches releases fresh — no cache, no conditional requests — so an
 unauthenticated forge caps how much this scales. GitHub's anonymous limit is
 60 requests/hour, one per tracked tool per run: fine for a handful of tools
 run on a cron, tight if you track two dozen and also iterate on the config by
-hand. Set a token to raise it:
+hand.
+
+**If `gh` is logged in, that is already handled.** With no token in the
+environment, `bumpii` asks `gh auth token` and uses what it gets — 5000
+requests/hour, from the login you already have, without configuring a second
+copy of it. It is only ever used for `github:` sources; Codeberg and
+self-hosted Forgejo never see it.
+
+Otherwise, or to use a narrower token than the one `gh` holds, set it
+yourself — an environment variable always wins over `gh`:
 
 ```console
 $ export GITHUB_TOKEN=…      # or GH_TOKEN — for github: sources
