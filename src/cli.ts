@@ -19,10 +19,11 @@ import {
 } from "./discover.ts";
 import { run } from "./exec.ts";
 import { discoverImage, untrackedContainers } from "./images.ts";
+import { buildInbox, markThreadsRead, shownThreads } from "./inbox.ts";
 import { digest, resolveEngine } from "./judge.ts";
 import { limiter } from "./limit.ts";
 import { buildOverview } from "./overview.ts";
-import { renderOverview, renderReport } from "./render.ts";
+import { renderInbox, renderOverview, renderReport } from "./render.ts";
 import { listReleases, parseSource } from "./sources.ts";
 import type { DigestItem, ToolConfig, ToolReport } from "./types.ts";
 import { commandsFromNotes, findUsageAcross, mentioned, resolveUsagePaths } from "./usage.ts";
@@ -41,6 +42,7 @@ const HELP = `bumpii — what changed in the CLIs and containers you run, judged
 
   bumpii [options]        digest pending releases for every configured tool
   bumpii overview         everything brew has pending, ranked by your own usage
+  bumpii inbox            unread GitHub release notifications, digested
   bumpii init             write a starter config
   bumpii add <formula>…   derive entries from installed Homebrew formulae
   bumpii add --image <c>… derive entries from running containers
@@ -62,6 +64,7 @@ Options:
   --deps              with scan --new: list dependencies too, not just requests
   --source <s>        with add: set the repo yourself, for one tool at a time
                       (needed when brew's URLs name no forge, as for node)
+  --mark-read         with inbox: mark the shown release threads read
   --only <name,...>   restrict to these tools, or with overview these packages
   --model <id>        force a judge model instead of discovering one
   --json              machine-readable report
@@ -74,7 +77,7 @@ Engine: OPENAI_BASE_URL (oMLX/Ollama/vLLM) is preferred, else the \`claude\` CLI
 `;
 
 interface Args {
-  cmd: "digest" | "overview" | "init" | "add" | "scan" | "list" | "set" | "rm" | "help";
+  cmd: "digest" | "overview" | "inbox" | "init" | "add" | "scan" | "list" | "set" | "rm" | "help";
   yes: boolean;
   json: boolean;
   noJudge: boolean;
@@ -89,6 +92,8 @@ interface Args {
   sinceDays: number;
   /** With `scan --new`: list the dependencies too, not only what you asked for. */
   deps: boolean;
+  /** With `inbox`: mark the shown release threads read afterwards. */
+  markRead: boolean;
   /** With `add`: the repo, when the image does not state it. One tool only. */
   source?: string;
   only: string[];
@@ -140,6 +145,7 @@ export function parseArgs(argv: string[]): Args {
     unreferenced: false,
     sinceDays: SINCE_DEFAULT,
     deps: false,
+    markRead: false,
     only: [],
     rest: [],
   };
@@ -155,7 +161,8 @@ export function parseArgs(argv: string[]): Args {
         v === "list" ||
         v === "set" ||
         v === "rm" ||
-        v === "overview")
+        v === "overview" ||
+        v === "inbox")
     ) {
       a.cmd = v;
       sawCmd = true;
@@ -168,6 +175,7 @@ export function parseArgs(argv: string[]): Args {
     else if (v === "--new") a.onlyNew = true;
     else if (v === "--unref") a.unreferenced = true;
     else if (v === "--deps") a.deps = true;
+    else if (v === "--mark-read") a.markRead = true;
     else if (v === "--since") a.sinceDays = parseWindow(takeValue(argv, ++i, v));
     else if (v === "--source") a.source = takeValue(argv, ++i, v);
     else if (v === "--only") a.only = takeValue(argv, ++i, v).split(",").filter(Boolean);
@@ -569,6 +577,35 @@ async function main(): Promise<number> {
         : `\nnothing added — already tracked\n`,
     );
     return 0;
+  }
+
+  if (args.cmd === "inbox") {
+    const config = await loadConfig();
+    if (args.rest.length > 0) {
+      throw new Error("inbox takes no arguments — it reads your unread GitHub notifications as they are");
+    }
+    const engine = args.noJudge
+      ? { kind: "none" as const, model: "", label: "skipped (--no-judge)" }
+      : await resolveEngine({ model: args.model });
+    const inbox = await buildInbox(config, { engine, concurrency: JUDGE_CONCURRENCY });
+    process.stdout.write(args.json ? `${JSON.stringify(inbox, null, 2)}\n` : renderInbox(inbox));
+
+    if (args.markRead) {
+      // Only threads whose releases were actually shown; an entry that errored
+      // showed nothing, and its notification is the only reminder it exists.
+      const threads = shownThreads(inbox.entries);
+      const failures = await markThreadsRead(threads);
+      for (const f of failures) process.stderr.write(`mark-read failed: ${f}\n`);
+      if (threads.length > 0 && failures.length === 0) {
+        process.stdout.write(
+          `marked ${threads.length} release notification${threads.length === 1 ? "" : "s"} read\n`,
+        );
+      }
+      // A cron that relies on --mark-read has to be able to say it did not
+      // happen — otherwise the same releases arrive again as "new" next run.
+      if (failures.length > 0) return 2;
+    }
+    return inbox.entries.length > 0 ? 1 : 0;
   }
 
   if (args.cmd === "overview") {

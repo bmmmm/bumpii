@@ -57,6 +57,7 @@ Optional, and only for what they enable: `brew` for `bumpii add`/`scan`,
 | --- | --- |
 | `bumpii` | digest pending releases for everything tracked |
 | `bumpii overview` | everything brew has pending, ranked by your own usage |
+| `bumpii inbox` | unread GitHub release notifications, digested |
 | `bumpii init` | write a starter config |
 | `bumpii add <formula>…` | derive entries from installed Homebrew formulae |
 | `bumpii add --image <container>…` | derive entries from running containers |
@@ -165,6 +166,53 @@ that was never tagged — no link is shown at all, because a link to
 upgrade does not contain. In a terminal that supports OSC 8 every URL is also clickable, and
 the resolved repos are cached in `~/.config/bumpii/sources.json` — a derived
 file, safe to delete.
+
+## The releases GitHub already told you about
+
+Watching a repo queues one notification per release — including releases
+nothing else here can see: apps brew does not manage, npm-installed CLIs, and
+the prereleases a nightly channel actually runs on. `bumpii inbox` reads
+exactly that queue — your unread notifications of type Release — and digests
+it like everything else:
+
+```console
+$ bumpii inbox
+anthropics/claude-code → v2.1.226  3 releases  tracked as claude
+  ! security  Sandbox deny entries with a trailing slash were silently bypassable (v2.1.224)
+      you use this: ~/ops/scripts/worker.sh
+  · fix       Transient 401 no longer replaces a long-lived OAuth token (v2.1.225)
+  affects you: 1 of 12 changes touch commands you call
+
+jundot/omlx → v0.5.8.dev2  2 releases  prerelease
+  + feature  Ling 3.0 Flash support for FP8 and mixed FP4/FP8 checkpoints (v0.5.8.dev1)
+  affects you: none of these touch commands you call
+
+5 other unread notifications — 3 Issue · 2 PullRequest — github.com/notifications
+engine: claude-cli/haiku
+```
+
+A repo a `tools.json` entry already points at is searched under that entry's
+name — `anthropics/claude-code` is called `claude` in scripts, and searching
+its notes under the repo name would miss every span the search exists to find.
+An untracked repo falls back to its short name, which under-reports relevance
+when the binary is named differently — the safe direction for a guess.
+
+Prereleases are flagged, never filtered. The other commands drop them because
+`brew upgrade` will never hand you one; here the subscription is you saying
+you want these, and a machine on a nightly channel gets its release news from
+nowhere else. The rest of the inbox — issues, PRs, CI — is counted, never
+expanded: this command reads release news, and reporting "inbox zero" while
+issue threads pile up would claim more than it checked.
+
+`--mark-read` marks the shown release threads read afterwards, each thread
+individually — never the whole-inbox sweep, which would also clear the issues
+and PRs this command deliberately does not touch. An entry whose release
+bodies could not be fetched keeps its threads unread: nothing was shown, and
+the notification is the only reminder it exists.
+
+This is the one command that cannot run anonymously — GitHub's /notifications
+endpoint has no unauthenticated form — so it needs `gh auth login` or a
+`GITHUB_TOKEN`, the same sources the rest of the tool already uses.
 
 ## Adding tools
 

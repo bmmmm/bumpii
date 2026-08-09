@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+import type { Inbox } from "./inbox.ts";
 import type { Engine } from "./judge.ts";
 import type { Overview, OverviewEntry } from "./overview.ts";
 import type { ItemKind, ToolReport, UsageHit } from "./types.ts";
@@ -196,6 +197,96 @@ function mechanicalHits(hits: UsageHit[], indent: string): string[] {
     out.push(`${indent}  ${command}${dim(" — ")}${shown}${more}`);
   }
   return out;
+}
+
+export function renderInbox(inbox: Inbox): string {
+  const out: string[] = [""];
+
+  if (inbox.entries.length === 0) {
+    out.push(
+      `${green("no unread release notifications")}  ${dim("GitHub queued nothing new from the repos you watch")}`,
+      "",
+    );
+  }
+
+  for (const e of inbox.entries) {
+    const name = bold(e.repo);
+    if (e.error) {
+      // Its threads stay unread under --mark-read: nothing was shown, so the
+      // notification is still the only reminder this release exists.
+      out.push(`${name}  ${red("could not read its releases")}: ${e.error}`, "");
+      continue;
+    }
+    const latest = e.releases.at(-1);
+    const count = dim(`${e.releases.length} release${e.releases.length === 1 ? "" : "s"}`);
+    const flags = [
+      // brew would filter these; a subscription is you saying you want them.
+      e.prerelease ? yellow("prerelease") : "",
+      e.tracked ? dim(`tracked as ${e.tool}`) : "",
+    ].filter(Boolean);
+    out.push(`${name} → ${bold(latest?.tag ?? "?")}  ${count}${flags.length ? `  ${flags.join("  ")}` : ""}`);
+
+    if (e.items.length === 0) {
+      out.push(dim(`  ${noDigestReason(e.digestError, inbox.engine)}; raw notes:`));
+      for (const rel of e.releases) out.push(dim(`    ${rel.tag}  ${link(rel.url, rel.url)}`));
+      if (e.mechanical) out.push(...mechanicalHits(e.hits, "  "));
+      out.push("");
+      continue;
+    }
+
+    const sorted = [...e.items].sort((a, b) => ORDER.indexOf(a.kind) - ORDER.indexOf(b.kind));
+    for (const item of sorted) {
+      const mark = paint(item.kind, MARK[item.kind]);
+      // The version doubles as the link to the release it landed in — same
+      // trade as the overview, and for the same reason: an entry three
+      // releases deep must not become a screenful of URL lines.
+      const rel = e.releases.find((r) => r.version === item.version || r.tag === item.version);
+      const where = item.version ? dim(` (${rel ? link(rel.url, item.version) : item.version})`) : "";
+      out.push(`  ${mark} ${paint(item.kind, item.kind.padEnd(8))} ${item.summary}${where}`);
+      const own = e.hits.filter((h) => item.commands.includes(h.command));
+      if (own.length > 0) {
+        const files = [...new Set(own.map((h) => h.file))];
+        const more = files.length > 3 ? dim(` +${files.length - 3} more`) : "";
+        out.push(`      ${yellow("you use this")}: ${files.slice(0, 3).join(", ")}${more}`);
+      }
+    }
+    const touching = sorted.filter((i) => e.hits.some((h) => i.commands.includes(h.command))).length;
+    out.push(
+      dim(
+        touching === 0
+          ? "  affects you: none of these touch commands you call"
+          : `  affects you: ${touching} of ${sorted.length} changes touch commands you call`,
+      ),
+      "",
+    );
+  }
+
+  // The rest of the inbox is named, never expanded: this command reads release
+  // news, and "inbox zero" while issue threads pile up would be claiming more
+  // than it checked.
+  const otherCount = Object.values(inbox.other).reduce((a, b) => a + b, 0);
+  if (otherCount > 0) {
+    const parts = Object.entries(inbox.other)
+      .sort((a, b) => b[1] - a[1])
+      .map(([type, n]) => `${n} ${type}`)
+      .join(dim(" · "));
+    out.push(
+      dim(`${otherCount} other unread notification${otherCount === 1 ? "" : "s"} — ${parts} — `) +
+        dim(link("https://github.com/notifications", "github.com/notifications")),
+    );
+  }
+  if (inbox.capped) {
+    out.push(dim("the first page of notifications was full — the queue holds more than this"));
+  }
+
+  if (inbox.missingUsagePaths.length > 0) {
+    out.push(
+      `${yellow("usagePaths not found")}: ${inbox.missingUsagePaths.join(", ")}`,
+      dim("  nothing was searched there, so every “affects you” above is incomplete"),
+    );
+  }
+  out.push(dim(`engine: ${inbox.engine.label}`), "");
+  return out.join("\n");
 }
 
 /** Tree connectors, so a section reads as one block rather than as loose lines. */

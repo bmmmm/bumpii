@@ -94,7 +94,12 @@ function tokenFromGhCli(): Promise<string | null> {
   return ghCliToken;
 }
 
-async function authHeaders(ref: ForgeRef): Promise<Record<string, string>> {
+/**
+ * Exported for inbox.ts, which PATCHes notification threads — the one write
+ * this tool makes anywhere, and it must ride the same rule: the token goes to
+ * the host it belongs to and nowhere else.
+ */
+export async function authHeaders(ref: ForgeRef): Promise<Record<string, string>> {
   const h: Record<string, string> = { accept: "application/json" };
   // Only ever send a token to the host it belongs to. Sending GitHub's token
   // to a self-hosted forge is exactly the class of leak gh shipped in 2.93.0 —
@@ -165,7 +170,7 @@ async function rateLimitMessage(res: Response, ref: ForgeRef): Promise<string | 
  * answered 304. For the cron-shaped use this tool is built around, a stored
  * validator would miss every time and buy a cache file for nothing.
  */
-async function getJson(url: string, ref: ForgeRef): Promise<unknown> {
+export async function getJson(url: string, ref: ForgeRef): Promise<unknown> {
   const res = await fetch(url, { headers: await authHeaders(ref) });
   if (!res.ok) {
     const limited = await rateLimitMessage(res, ref);
