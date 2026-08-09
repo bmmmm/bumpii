@@ -102,6 +102,15 @@ test("parseArgs defaults to a read-only digest", () => {
   const a = parseArgs([]);
   assert.equal(a.cmd, "digest");
   assert.equal(a.yes, false, "updating must never be the default");
+  assert.equal(a.brewUpgrade, false, "a blanket brew upgrade must never be the default either");
+});
+
+test("parseArgs keeps --brew-upgrade apart from --yes", () => {
+  // Two different kinds of "yes" — one judged and per-tool, one not — so
+  // reading one must never imply the other.
+  assert.equal(parseArgs(["--brew-upgrade"]).brewUpgrade, true);
+  assert.equal(parseArgs(["--brew-upgrade"]).yes, false);
+  assert.equal(parseArgs(["--yes"]).brewUpgrade, false);
 });
 
 test("parseArgs reads the flags that change behaviour", () => {

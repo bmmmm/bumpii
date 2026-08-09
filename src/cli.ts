@@ -55,6 +55,8 @@ const HELP = `bumpii — what changed in the CLIs and containers you run, judged
   bumpii scan --new       list what was installed recently
   bumpii scan --unref     list formulae no file of yours names
   bumpii --yes            digest, then run each tool's update command
+  bumpii --brew-upgrade   digest, then run brew update && brew upgrade —
+                          everything brew has pending, tracked or not
 
 Options:
   --image             with add: read the arguments as container names
@@ -71,6 +73,8 @@ Options:
   --json              machine-readable report
   --no-judge          skip the model; list pending releases and their URLs
   --dry-run           with add: show the entries, write nothing
+  --brew-upgrade      after the digest, run brew update && brew upgrade —
+                      unjudged, and not limited to tools.json
   -h, --help
 
 Config: ${configPath()}
@@ -95,6 +99,9 @@ interface Args {
   deps: boolean;
   /** With `inbox`: mark the shown release threads read afterwards. */
   markRead: boolean;
+  /** Run `brew update && brew upgrade` after the digest — everything brew has
+   * pending, not only tools.json, and never judged first. */
+  brewUpgrade: boolean;
   /** With `add`: the repo, when the image does not state it. One tool only. */
   source?: string;
   only: string[];
@@ -147,6 +154,7 @@ export function parseArgs(argv: string[]): Args {
     sinceDays: SINCE_DEFAULT,
     deps: false,
     markRead: false,
+    brewUpgrade: false,
     only: [],
     rest: [],
   };
@@ -177,6 +185,7 @@ export function parseArgs(argv: string[]): Args {
     else if (v === "--unref") a.unreferenced = true;
     else if (v === "--deps") a.deps = true;
     else if (v === "--mark-read") a.markRead = true;
+    else if (v === "--brew-upgrade") a.brewUpgrade = true;
     else if (v === "--since") a.sinceDays = parseWindow(takeValue(argv, ++i, v));
     else if (v === "--source") a.source = takeValue(argv, ++i, v);
     else if (v === "--only") a.only = takeValue(argv, ++i, v).split(",").filter(Boolean);
@@ -782,9 +791,26 @@ async function main(): Promise<number> {
     }
   }
 
-  // An unattended --yes run has to be able to say it did not work; reporting
-  // success while a formula failed to build is how a broken cron goes unseen.
-  if (args.yes) return updateFailures > 0 ? 2 : 0;
+  // Deliberately not folded into the --yes loop above: that one runs a
+  // judged, per-tool command; this runs everything brew has pending,
+  // tracked or not, with none of it read first. Two different kinds of
+  // "yes", so one flag cannot silently imply the other.
+  if (args.brewUpgrade) {
+    const cmd = "brew update && brew upgrade";
+    process.stdout.write(`\n$ ${cmd}\n`);
+    try {
+      const out = await run("/bin/sh", ["-c", cmd], { timeout: 1_200_000 });
+      process.stdout.write(out.stdout);
+    } catch (err) {
+      updateFailures++;
+      process.stderr.write(`brew update && brew upgrade failed: ${(err as Error).message}\n`);
+    }
+  }
+
+  // An unattended --yes/--brew-upgrade run has to be able to say it did not
+  // work; reporting success while something failed to build is how a broken
+  // cron goes unseen.
+  if (args.yes || args.brewUpgrade) return updateFailures > 0 ? 2 : 0;
   // Non-zero when something is pending, so a scheduled run can act on it.
   return reports.some((r) => !r.error && r.behind.length > 0) ? 1 : 0;
 }
