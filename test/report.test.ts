@@ -191,6 +191,35 @@ test("an entry that is neither installed nor comparable says both, not a bare ?"
   assert.doesNotMatch(out, /latest \?/);
 });
 
+test("other brew-pending packages are named, with a way to see them", () => {
+  const out = renderReport([report({ installed: "2.96.0", latest: "2.96.0" })], {
+    engine,
+    missingPaths: [],
+    otherPending: 3,
+  });
+  assert.match(out, /3 other packages have brew updates pending/);
+  assert.match(out, /bumpii overview/);
+});
+
+test("one other pending package is not reported as three", () => {
+  const out = renderReport([report({ installed: "2.96.0", latest: "2.96.0" })], {
+    engine,
+    missingPaths: [],
+    otherPending: 1,
+  });
+  assert.match(out, /1 other package has brew updates pending/);
+});
+
+test("a failed or skipped brew check says nothing, rather than claiming zero", () => {
+  // undefined is "not checked"; printing "0 other packages" would claim a
+  // clean sweep the tool never verified.
+  const out = renderReport([report({ installed: "2.96.0", latest: "2.96.0" })], {
+    engine,
+    missingPaths: [],
+  });
+  assert.doesNotMatch(out, /other package/);
+});
+
 test("a missing usage path says what to do about it, like every other state", () => {
   const out = renderReport([report({ installed: "2.96.0", latest: "2.96.0" })], {
     engine,

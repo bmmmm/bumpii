@@ -44,6 +44,12 @@ export interface RenderOptions {
   /** Configured usagePaths that do not exist — named, because they silently
    * turn every "affects you" verdict into "none". */
   missingPaths: string[];
+  /**
+   * Brew-outdated packages this digest never looked at, because nothing in
+   * tools.json tracks them. `undefined` when the brew check itself failed or
+   * did not run — that is silence, not a claim that nothing else is pending.
+   */
+  otherPending?: number;
 }
 
 /**
@@ -162,6 +168,14 @@ export function renderReport(reports: ToolReport[], opts: RenderOptions): string
       dim("  nothing was searched there, so every “affects you” above is incomplete"),
       dim("  correct it in usagePaths, or remove it, so the verdict means something again"),
       "",
+    );
+  }
+  if (opts.otherPending) {
+    const plural = opts.otherPending === 1;
+    out.push(
+      dim(
+        `${opts.otherPending} other package${plural ? "" : "s"} ${plural ? "has" : "have"} brew updates pending — bumpii overview, or brew upgrade`,
+      ),
     );
   }
   out.push(dim(`engine: ${opts.engine.label}`), "");

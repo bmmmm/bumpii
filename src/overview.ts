@@ -125,6 +125,20 @@ export function namesOf(tool: ToolConfig): string[] {
 }
 
 /**
+ * How many of brew's outdated packages nothing in `tools` covers.
+ *
+ * Pulled out of `buildOverview` so the digest command can point at "N more
+ * packages have updates" without running a second digest over them — this is
+ * a count, not a judgement, so it costs nothing beyond the `brew outdated`
+ * call already needed to produce it. Pure for the same reason `bucketFor` is:
+ * testable without brew standing behind it.
+ */
+export function untrackedOutdatedCount(outdated: OutdatedPackage[], tools: ToolConfig[]): number {
+  const trackedNames = new Set(tools.flatMap((t) => namesOf(t)));
+  return outdated.filter((p) => !trackedNames.has(p.name)).length;
+}
+
+/**
  * The tag that carried a version, from the releases the forge actually
  * published. Returns null rather than a guess: a compare URL built from an
  * invented tag 404s, which reads as a broken tool rather than as missing data.

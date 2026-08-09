@@ -5,7 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import type { Engine } from "../src/judge.ts";
-import { bucketFor, compareFor, namesOf, type Overview, type OverviewEntry } from "../src/overview.ts";
+import type { OutdatedPackage } from "../src/outdated.ts";
+import {
+  bucketFor,
+  compareFor,
+  namesOf,
+  type Overview,
+  type OverviewEntry,
+  untrackedOutdatedCount,
+} from "../src/overview.ts";
 import { renderOverview } from "../src/render.ts";
 import { referenceCounts } from "../src/usage.ts";
 
@@ -102,6 +110,46 @@ test("a tap-qualified formula also answers to its last segment", () => {
   });
   assert.ok(got.includes("someone/tap/thing"), "the full tap-qualified name");
   assert.ok(got.includes("thing"), "and the short name brew prints");
+});
+
+const outdated = (name: string, over: Partial<OutdatedPackage> = {}): OutdatedPackage => ({
+  name,
+  installed: "1.0.0",
+  latest: "2.0.0",
+  kind: "formula",
+  pinned: false,
+  ...over,
+});
+
+test("untrackedOutdatedCount counts what tools.json never named", () => {
+  const tools = [
+    {
+      name: "gh",
+      source: "github:cli/cli",
+      version: { cmd: ["gh", "--version"], match: "gh version ([0-9.]+)" },
+      update: "brew upgrade gh",
+    },
+  ];
+  const count = untrackedOutdatedCount([outdated("gh"), outdated("libffi"), outdated("openldap")], tools);
+  assert.equal(count, 2, "gh is tracked, the other two are not");
+});
+
+test("untrackedOutdatedCount matches a tracked tool under its formula name too", () => {
+  // The bug namesOf exists to prevent, applied here: brew reports the formula
+  // (forgejo-cli), not the binary (fj) the tool is keyed on.
+  const tools = [
+    {
+      name: "fj",
+      source: "codeberg:forgejo-contrib/forgejo-cli",
+      version: { cmd: ["fj", "version"], match: "fj v?([0-9.]+)" },
+      update: "brew upgrade forgejo-cli",
+    },
+  ];
+  assert.equal(untrackedOutdatedCount([outdated("forgejo-cli")], tools), 0);
+});
+
+test("untrackedOutdatedCount is zero when brew has nothing pending", () => {
+  assert.equal(untrackedOutdatedCount([], []), 0);
 });
 
 test("reference counts are taken across every name a tool answers to", async () => {

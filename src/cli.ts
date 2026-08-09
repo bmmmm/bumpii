@@ -22,7 +22,8 @@ import { discoverImage, untrackedContainers } from "./images.ts";
 import { buildInbox, markThreadsRead, shownThreads } from "./inbox.ts";
 import { digest, resolveEngine } from "./judge.ts";
 import { limiter } from "./limit.ts";
-import { buildOverview } from "./overview.ts";
+import { brewOutdated } from "./outdated.ts";
+import { buildOverview, untrackedOutdatedCount } from "./overview.ts";
 import { renderInbox, renderOverview, renderReport } from "./render.ts";
 import { listReleases, parseSource } from "./sources.ts";
 import type { DigestItem, ToolConfig, ToolReport } from "./types.ts";
@@ -734,15 +735,25 @@ async function main(): Promise<number> {
   );
   const reports: ToolReport[] = built.map((b, i) => ({ ...b.report, hits: usageHits[i] ?? [] }));
 
+  // What this digest never looked at: everything brew has pending that
+  // tools.json does not track. `undefined` on failure — brew missing (Linux
+  // CI, no Homebrew) or erroring costs this line, not the digest above it.
+  let otherPending: number | undefined;
+  try {
+    otherPending = untrackedOutdatedCount(await brewOutdated(), config.tools);
+  } catch {
+    otherPending = undefined;
+  }
+
   if (args.json) {
     // The whole engine, not just its label: a scheduled run that acts on this
     // should be able to branch on "was anything actually judged" without
     // parsing prose.
     process.stdout.write(
-      `${JSON.stringify({ engine, missingUsagePaths: usage.missing, reports }, null, 2)}\n`,
+      `${JSON.stringify({ engine, missingUsagePaths: usage.missing, otherPending, reports }, null, 2)}\n`,
     );
   } else {
-    process.stdout.write(renderReport(reports, { engine, missingPaths: usage.missing }));
+    process.stdout.write(renderReport(reports, { engine, missingPaths: usage.missing, otherPending }));
   }
 
   let updateFailures = 0;
