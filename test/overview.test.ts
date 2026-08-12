@@ -61,6 +61,7 @@ function overview(over: Partial<Overview>): Overview {
     unchecked: [],
     missingUsagePaths: [],
     noUsagePaths: false,
+    filteredOut: 0,
     engine: ENGINE,
     ...over,
   };
@@ -202,6 +203,19 @@ test("reference counts are taken across every name a tool answers to", async () 
   assert.equal(counts.get("forgejo-cli"), 0, "brew's name appears nowhere");
   const best = Math.max(...namesOf(tool).map((n) => counts.get(n) ?? 0));
   assert.equal(best, 3, "but the tool is named in three files under its binary name");
+});
+
+test("a clean --only slice does not claim the whole machine is clean", () => {
+  // `overview --only fj` with five other packages pending used to headline
+  // "brew has no newer version for anything installed" — literally false, and
+  // exactly the kind of confident over-claim the report exists to avoid.
+  const sliced = renderOverview(overview({ filteredOut: 5 }));
+  assert.match(sliced, /nothing outdated among what --only names/);
+  assert.match(sliced, /5 packages pending outside that filter/);
+  assert.doesNotMatch(sliced, /anything installed/);
+
+  const whole = renderOverview(overview({}));
+  assert.match(whole, /anything installed/);
 });
 
 test("an empty overview says nothing is outdated, not nothing is known", () => {

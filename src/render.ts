@@ -450,7 +450,17 @@ export function renderOverview(o: Overview): string {
   // check at all. Returning here used to drop both, so the one run where the
   // answer is "all clear" was also the one that hid what "all" covered.
   if (o.entries.length === 0) {
-    out.push(`${green("nothing outdated")}  ${dim("brew has no newer version for anything installed")}`, "");
+    // With --only active, "anything installed" would claim more than was
+    // answered: brew may have plenty pending that the filter excluded, and the
+    // count says so instead of letting a clean slice read as a clean machine.
+    out.push(
+      o.filteredOut > 0
+        ? `${green("nothing outdated among what --only names")}  ${dim(
+            `brew has ${o.filteredOut} package${o.filteredOut === 1 ? "" : "s"} pending outside that filter — run without --only to see them`,
+          )}`
+        : `${green("nothing outdated")}  ${dim("brew has no newer version for anything installed")}`,
+      "",
+    );
   }
 
   section("★ digested", of("digested"), o.engine, out);

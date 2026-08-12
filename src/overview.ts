@@ -102,6 +102,13 @@ export interface Overview {
    * ever gave it.
    */
   noUsagePaths: boolean;
+  /**
+   * Pending packages --only filtered out of this report. The "nothing
+   * outdated" headline reads "no newer version for anything installed", and
+   * with a filter active that claims more than was answered — brew may well
+   * have five packages pending that the question simply excluded.
+   */
+  filteredOut: number;
   engine: Engine;
 }
 
@@ -419,6 +426,7 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
     unchecked,
     missingUsagePaths: usage.missing,
     noUsagePaths: config.usagePaths.length === 0,
+    filteredOut: outdated.length - wanted.length,
     engine: opts.engine,
   };
 }
