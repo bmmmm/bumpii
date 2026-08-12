@@ -51,6 +51,30 @@ test("an entry with no source is shown as waiting for one, not as an error", () 
   assert.doesNotMatch(out, /up to date/);
 });
 
+test("a channel entry counts commits, and a current one names its channel", () => {
+  // The synthetic release is one entry however far the gap is — "1 release
+  // behind" would be technically true and completely misleading. And a bare
+  // commit hash marked "up to date" looks like a rendering slip unless the
+  // channel it is current on is named.
+  const pending = report({
+    installed: "aaa111222",
+    latest: "999fff000",
+    channel: { tag: "tip", aheadBy: 41 },
+    behind: [{ tag: "tip", version: "999fff000", publishedAt: null, notes: "sha subject", url: "https://x" }],
+  });
+  const out = renderReport([pending], { engine: noEngine, missingPaths: [] });
+  assert.match(out, /41 commits behind on tip/);
+  assert.doesNotMatch(out, /1 release behind/);
+
+  const current = report({
+    installed: "aaa111222",
+    latest: "aaa111222",
+    channel: { tag: "tip", aheadBy: 0 },
+  });
+  const outCurrent = renderReport([current], { engine: noEngine, missingPaths: [] });
+  assert.match(outCurrent, /up to date on tip/);
+});
+
 test("a forge with no comparable release is reported unknown, never up to date", () => {
   // A repo that only tags, or only publishes rolling pointers, gives bumpii
   // nothing it can order. Calling that "up to date" is the one wrong answer an

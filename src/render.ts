@@ -115,15 +115,23 @@ export function renderReport(reports: ToolReport[], opts: RenderOptions): string
       continue;
     }
     if (r.behind.length === 0) {
-      out.push(`${name} ${r.installed}  ${green("up to date")}`, "");
+      // Naming the channel is what keeps a commit hash readable as a version:
+      // "b0b9fbc8d up to date" alone looks like a rendering slip.
+      const on = r.channel ? ` on ${r.channel.tag}` : "";
+      out.push(`${name} ${r.installed}  ${green(`up to date${on}`)}`, "");
       continue;
     }
 
-    const plural = r.behind.length === 1 ? "release" : "releases";
-    // "30+" rather than "30" when the page ran out first: the count is what a
-    // person acts on, and a silent cap makes a year-old install look routine.
-    const count = `${r.behind.length}${r.truncated ? "+" : ""}`;
-    out.push(`${name} ${r.installed} → ${bold(r.latest)}  ${yellow(`${count} ${plural} behind`)}`);
+    // A channel's `behind` is one synthetic release however far the gap is, so
+    // its honest count is the commit distance — which the compare endpoint
+    // reports exactly, even when the notes page ran out (no "+" needed).
+    const behindLabel = r.channel
+      ? `${r.channel.aheadBy} commit${r.channel.aheadBy === 1 ? "" : "s"} behind on ${r.channel.tag}`
+      : // "30+" rather than "30" when the page ran out first: the count is what
+        // a person acts on, and a silent cap makes a year-old install look
+        // routine.
+        `${r.behind.length}${r.truncated ? "+" : ""} release${r.behind.length === 1 ? "" : "s"} behind`;
+    out.push(`${name} ${r.installed} → ${bold(r.latest)}  ${yellow(behindLabel)}`);
 
     if (r.items.length === 0) {
       out.push(dim(`  ${noDigestReason(r.digestError, opts.engine)}; raw notes:`));

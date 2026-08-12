@@ -422,6 +422,37 @@ Or write entries by hand. `~/.config/bumpii/tools.json`:
 entry you tuned by hand is never replaced, and any key bumpii does not know
 about survives untouched. The same holds for `set` and `rm`.
 
+### Rolling channels (nightlies)
+
+Some projects ship their nightlies as one mutable release under a fixed tag —
+Ghostty's `tip` is rebuilt on every commit to main, and the release's notes
+never change. There is nothing there to digest: the actual news is the commit
+log between the build you run and the commit the tag points at now. A `channel`
+entry reads exactly that:
+
+```json
+{
+  "name": "ghostty",
+  "source": "github:ghostty-org/ghostty",
+  "channel": "tip",
+  "version": { "cmd": ["ghostty", "--version"], "match": "\\+([0-9a-f]{7,40})" },
+  "update": "# Ghostty tip updates itself — Ghostty menu, Check for Updates"
+}
+```
+
+- **`channel`** — the tag the rolling release lives under. With it set,
+  `version.match` must capture the **commit hash** of the installed build, not
+  a version number; a nightly's version string carries one for exactly this
+  reason (`Ghostty 1.3.2-main-+b0b9fbc8d`).
+- The digest then comes from the forge's compare endpoint: the commits between
+  your build and the channel's head, judged like release notes and grepped
+  against your usagePaths like everything else. The report counts honestly in
+  commits ("41 commits behind on tip"), and the raw-notes fallback links the
+  compare view.
+- A build whose commit is not on the channel's history — a local build, or a
+  force-pushed main — is reported as such rather than measured against a
+  history it is not on.
+
 ### Managing entries
 
 ```console

@@ -20,7 +20,7 @@ chmodSync(join(ghDir, "gh"), 0o755);
 const realPath = process.env.PATH;
 process.env.PATH = ghDir;
 
-const { listReleases, parseSource } = await import("../src/sources.ts");
+const { channelStatus, listReleases, parseSource } = await import("../src/sources.ts");
 
 after(async () => {
   process.env.PATH = realPath;
@@ -216,6 +216,161 @@ test("an exhausted rate limit says so, and names the variable that lifts it", as
     stub.restore();
     if (prev !== undefined) process.env.GITHUB_TOKEN = prev;
     if (prevGh !== undefined) process.env.GH_TOKEN = prevGh;
+  }
+});
+
+// ---- rolling channels ------------------------------------------------------
+
+/** Like stubFetch, but each call consumes the next body — the truncated path
+ * asks compare first and the tag's head second, and both answers matter. */
+function stubFetchSeq(bodies: unknown[]): { calls: Call[]; restore: () => void } {
+  const real = globalThis.fetch;
+  const calls: Call[] = [];
+  const queue = [...bodies];
+  globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+    calls.push({ url: String(url), headers: (init?.headers ?? {}) as Record<string, string> });
+    const body = queue.length > 1 ? queue.shift() : queue[0];
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers(),
+      json: async () => body,
+      text: async () => JSON.stringify(body),
+    };
+  }) as typeof globalThis.fetch;
+  return {
+    calls,
+    restore: () => {
+      globalThis.fetch = real;
+    },
+  };
+}
+
+const commit = (sha: string, msg: string, date = "2026-08-10T12:00:00Z") => ({
+  sha,
+  commit: { message: msg, committer: { date } },
+});
+
+test("a channel gap becomes one synthetic release carrying the commit log", async () => {
+  const stub = stubFetch({
+    status: "ahead",
+    ahead_by: 2,
+    total_commits: 2,
+    html_url: "https://github.com/o/r/compare/aaa1112223...tip",
+    commits: [
+      commit("1111111aaaaaaaaa", "terminal: first change\n\nlong body"),
+      commit("2222222bbbbbbbbb", "macOS: second change"),
+    ],
+  });
+  try {
+    const ch = await channelStatus(parseSource("github:o/r"), "tip", "aaa1112223");
+    assert.match(stub.calls[0]?.url ?? "", /\/repos\/o\/r\/compare\/aaa1112223\.\.\.tip\?per_page=250$/);
+    assert.equal(ch.aheadBy, 2);
+    assert.equal(ch.truncated, false);
+    assert.equal(ch.head, "2222222bb");
+    // Oldest first, one line per commit, bodies dropped — the digest reads it
+    // chronologically, like the release path.
+    assert.equal(ch.release?.notes, "1111111aa terminal: first change\n2222222bb macOS: second change");
+    assert.equal(ch.release?.version, "2222222bb");
+    assert.equal(ch.release?.tag, "tip");
+    assert.equal(ch.release?.url, "https://github.com/o/r/compare/aaa1112223...tip");
+    assert.equal(ch.release?.publishedAt, "2026-08-10T12:00:00Z");
+  } finally {
+    stub.restore();
+  }
+});
+
+test("a build on the channel's head is current, not one release behind", async () => {
+  const stub = stubFetch({ status: "identical", ahead_by: 0, total_commits: 0, commits: [] });
+  try {
+    const ch = await channelStatus(parseSource("github:o/r"), "tip", "aaa1112223");
+    assert.equal(ch.aheadBy, 0);
+    assert.equal(ch.release, null);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("when the page ran out, the head comes from the tag, not from mid-gap", async () => {
+  // compare returns the OLDEST slice of the gap, so its last commit is only
+  // the head when everything fit. Reporting a mid-gap commit as "latest"
+  // would show an update target that is itself out of date.
+  const stub = stubFetchSeq([
+    {
+      status: "ahead",
+      ahead_by: 300,
+      total_commits: 300,
+      commits: [commit("1111111aaaaaaaaa", "old"), commit("2222222bbbbbbbbb", "still old")],
+    },
+    [commit("9999999fffffffff", "the actual head")],
+  ]);
+  try {
+    const ch = await channelStatus(parseSource("github:o/r"), "tip", "aaa1112223");
+    assert.equal(ch.truncated, true);
+    assert.equal(ch.aheadBy, 300);
+    assert.equal(ch.head, "9999999ff");
+    assert.match(stub.calls[1]?.url ?? "", /\/repos\/o\/r\/commits\?sha=tip&per_page=1$/);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("a diverged build is refused, not counted against a history it is not on", async () => {
+  const stub = stubFetch({ status: "diverged", ahead_by: 4, behind_by: 2, commits: [commit("aa", "x")] });
+  try {
+    await assert.rejects(
+      channelStatus(parseSource("github:o/r"), "tip", "aaa1112223"),
+      /not on tip's history/,
+    );
+  } finally {
+    stub.restore();
+  }
+});
+
+test("a 404 from compare blames the range, not the source", async () => {
+  // The release path would have 404ed first if the repo were wrong — what
+  // does not exist here is one endpoint of the range.
+  const stub = stubFetch([], 404);
+  try {
+    await assert.rejects(channelStatus(parseSource("github:o/r"), "tip", "deadbeef1"), (err: Error) => {
+      assert.match(err.message, /cannot compare deadbeef1\.\.\.tip/);
+      assert.match(err.message, /captures a commit hash/);
+      return true;
+    });
+  } finally {
+    stub.restore();
+  }
+});
+
+test("with nothing installed, a channel reports its head and pends nothing", async () => {
+  const stub = stubFetch([commit("9999999fffffffff", "head")]);
+  try {
+    const ch = await channelStatus(parseSource("github:o/r"), "tip", null);
+    assert.equal(ch.head, "9999999ff");
+    assert.equal(ch.release, null);
+    assert.equal(ch.aheadBy, 0);
+    assert.match(stub.calls[0]?.url ?? "", /\/commits\?sha=tip&per_page=1$/);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("a Forgejo channel works from total_commits alone, with its own paging", async () => {
+  // Forgejo/Gitea serves the same compare path but omits status and ahead_by.
+  const stub = stubFetch({
+    total_commits: 1,
+    commits: [commit("3333333ccccccccc", "fix: something")],
+  });
+  try {
+    const ch = await channelStatus(parseSource("https://git.example.com/team/app"), "nightly", "aaa111222");
+    assert.match(stub.calls[0]?.url ?? "", /\/api\/v1\/repos\/team\/app\/compare\/aaa111222\.\.\.nightly$/);
+    assert.equal(ch.aheadBy, 1);
+    assert.equal(ch.release?.notes, "3333333cc fix: something");
+    // No html_url in the payload — built from the forge's own root instead.
+    assert.equal(ch.release?.url, "https://git.example.com/team/app/compare/aaa111222...nightly");
+  } finally {
+    stub.restore();
   }
 });
 

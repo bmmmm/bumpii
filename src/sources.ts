@@ -234,6 +234,136 @@ export function sourceFromUrls(urls: string[]): string | null {
   return null;
 }
 
+/** What a rolling channel holds beyond the installed build. */
+export interface ChannelStatus {
+  /** Head commit of the channel tag, abbreviated. */
+  head: string;
+  /** Commits between the installed build and the head; 0 means current. */
+  aheadBy: number;
+  /**
+   * One synthetic release whose notes are the commit log, oldest first — so it
+   * reads chronologically, like the release path. Null when current or when
+   * the tool is not installed (there is nothing to compare from).
+   */
+  release: Release | null;
+  /** The page ran out before the gap did: notes are the oldest slice of it. */
+  truncated: boolean;
+}
+
+interface RawCommit {
+  sha?: string;
+  commit?: { message?: string; committer?: { date?: string } };
+}
+
+interface RawCompare {
+  status?: string;
+  ahead_by?: number;
+  total_commits?: number;
+  html_url?: string;
+  commits?: RawCommit[];
+}
+
+/** ghostty prints nine hash characters in its own version string; match it. */
+const shortSha = (sha: string) => sha.slice(0, 9);
+
+/** The commit a channel tag currently points at. */
+async function channelHead(ref: ForgeRef, tag: string): Promise<string> {
+  const limit = ref.kind === "github" ? "per_page=1" : "limit=1";
+  const url = `${ref.api}/repos/${ref.repo}/commits?sha=${encodeURIComponent(tag)}&${limit}`;
+  const raw = (await getJson(url, ref)) as RawCommit[];
+  const head = Array.isArray(raw) ? raw[0]?.sha : undefined;
+  if (!head) {
+    throw new Error(
+      `no commits under "${tag}" at ${ref.repo} — is the channel tag spelled the way the forge spells it?`,
+    );
+  }
+  return head;
+}
+
+/**
+ * Where a rolling channel stands relative to the installed build.
+ *
+ * A channel like ghostty's "tip" is one mutable release whose notes never
+ * change — the actual news is the commit log between the build you run and
+ * the commit the tag points at now. The forge's compare endpoint answers both
+ * halves at once: how far behind, and what landed in between. Both API shapes
+ * this tool speaks serve the same path; Forgejo/Gitea omits `status` and
+ * `ahead_by`, so those fall back to the commit list itself.
+ */
+export async function channelStatus(
+  ref: ForgeRef,
+  tag: string,
+  installed: string | null,
+): Promise<ChannelStatus> {
+  // Nothing installed means nothing to compare from — report the head so the
+  // entry still shows what it is watching, rather than an empty shrug.
+  if (!installed) {
+    return { head: shortSha(await channelHead(ref, tag)), aheadBy: 0, release: null, truncated: false };
+  }
+
+  const url =
+    `${ref.api}/repos/${ref.repo}/compare/${encodeURIComponent(installed)}...${encodeURIComponent(tag)}` +
+    (ref.kind === "github" ? "?per_page=250" : "");
+  let raw: RawCompare;
+  try {
+    raw = (await getJson(url, ref)) as RawCompare;
+  } catch (err) {
+    // A 404 from compare is almost never a typo in the source — the release
+    // path would have failed first. It means one endpoint of the range does
+    // not exist: the probe captured something that is not a commit hash, the
+    // tag is spelled differently, or the history it sat on was force-pushed.
+    if (err instanceof Error && err.message.startsWith("404")) {
+      throw new Error(
+        `cannot compare ${installed}...${tag} at ${ref.repo} — the forge knows no such range; ` +
+          `check that the version probe captures a commit hash and that "${tag}" is the channel's tag`,
+      );
+    }
+    throw err;
+  }
+
+  // "diverged" is a real answer, not a failure of ours to parse: the installed
+  // commit is not on the tag's history (a branch build, or a force-pushed
+  // main). Counting commits "behind" against a history the build is not on
+  // would be a number that means nothing.
+  if (raw.status === "diverged") {
+    throw new Error(
+      `the installed build (${installed}) is not on ${tag}'s history at ${ref.repo} — ` +
+        `a local or branch build cannot be measured against the channel`,
+    );
+  }
+
+  const commits = Array.isArray(raw.commits) ? raw.commits : [];
+  const aheadBy = raw.ahead_by ?? raw.total_commits ?? commits.length;
+  // "identical" and "behind" both mean nothing is pending — being ahead of the
+  // channel (a just-moved tag) is not something an update can fix.
+  if (aheadBy === 0 || commits.length === 0) {
+    return { head: shortSha(installed), aheadBy: 0, release: null, truncated: false };
+  }
+
+  const truncated = aheadBy > commits.length;
+  // The page holds the oldest slice of the gap, so its last commit is only the
+  // head when the gap fit — otherwise ask for the real one, or the report
+  // would present a mid-gap commit as the latest build.
+  const last = commits.at(-1);
+  const head = truncated || !last?.sha ? await channelHead(ref, tag) : last.sha;
+  const notes = commits
+    .map((c) => `${c.sha ? shortSha(c.sha) : "?"} ${(c.commit?.message ?? "").split("\n")[0]}`)
+    .join("\n");
+  const root = ref.kind === "github" ? "https://github.com" : ref.api.replace(/\/api\/v1$/, "");
+  return {
+    head: shortSha(head),
+    aheadBy,
+    truncated,
+    release: {
+      tag,
+      version: shortSha(head),
+      publishedAt: last?.commit?.committer?.date ?? null,
+      notes,
+      url: raw.html_url ?? `${root}/${ref.repo}/compare/${installed}...${tag}`,
+    },
+  };
+}
+
 export interface ReleaseList {
   releases: Release[];
   /**

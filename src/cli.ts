@@ -25,8 +25,8 @@ import { limiter } from "./limit.ts";
 import { brewOutdated } from "./outdated.ts";
 import { buildOverview, untrackedOutdatedCount } from "./overview.ts";
 import { renderInbox, renderOverview, renderReport } from "./render.ts";
-import { listReleases, parseSource } from "./sources.ts";
-import type { DigestItem, ToolConfig, ToolReport } from "./types.ts";
+import { channelStatus, listReleases, parseSource } from "./sources.ts";
+import type { DigestItem, Release, ToolConfig, ToolReport } from "./types.ts";
 import { commandsFromNotes, findUsageAcross, mentioned, resolveUsagePaths } from "./usage.ts";
 import { installedVersion, isTruncated, latestComparable, releasesBehind } from "./version.ts";
 
@@ -691,11 +691,29 @@ async function main(): Promise<number> {
       // no version probed — render.ts reports it as waiting for one line.
       if (!tool.source) return { report: base, commands: [] };
       try {
-        const [installed, list] = await Promise.all([
-          installedVersion(tool),
-          listReleases(parseSource(tool.source)),
-        ]);
-        const behind = releasesBehind(list.releases, installed);
+        const ref = parseSource(tool.source);
+        let installed: string | null;
+        let behind: Release[];
+        let latest: string | null;
+        let truncated: boolean;
+        let channel: ToolReport["channel"];
+        if (tool.channel) {
+          // A rolling channel is compared from the installed build's commit,
+          // so the probe has to answer before the forge can be asked anything
+          // — sequential where the release path runs both at once.
+          installed = await installedVersion(tool);
+          const ch = await channelStatus(ref, tool.channel, installed);
+          behind = ch.release ? [ch.release] : [];
+          latest = ch.head;
+          truncated = ch.truncated;
+          channel = { tag: tool.channel, aheadBy: ch.aheadBy };
+        } else {
+          const [inst, list] = await Promise.all([installedVersion(tool), listReleases(ref)]);
+          installed = inst;
+          behind = releasesBehind(list.releases, inst);
+          latest = latestComparable(list.releases);
+          truncated = isTruncated(list.releases, behind, list.capped);
+        }
 
         // Digesting is fallible in a way fetching is not — a small local model
         // returning prose instead of JSON is routine. Catching it here keeps
@@ -719,9 +737,10 @@ async function main(): Promise<number> {
             ...base,
             mechanical,
             installed,
-            latest: latestComparable(list.releases),
+            latest,
             behind,
-            truncated: isTruncated(list.releases, behind, list.capped),
+            truncated,
+            channel,
             items,
             digestError,
           },

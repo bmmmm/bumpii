@@ -77,6 +77,19 @@ test("an entry may carry an empty source, but not a missing one", async () => {
   await assert.rejects(loadConfig(bad), /source must be a string/);
 });
 
+test("a channel must be a tag name, and must have a repo to live in", async () => {
+  // A channel names a tag in the source repo; without a source the entry
+  // would sit there watching nothing while reading as configured.
+  const ok = await configFile({ tools: [{ ...gh, channel: "tip" }] });
+  assert.equal((await loadConfig(ok)).tools[0]?.channel, "tip");
+
+  const empty = await configFile({ tools: [{ ...gh, channel: "" }] });
+  await assert.rejects(loadConfig(empty), /channel must be a tag name/);
+
+  const orphan = await configFile({ tools: [{ ...gh, source: "", channel: "tip" }] });
+  await assert.rejects(loadConfig(orphan), /channel needs a source/);
+});
+
 test("rm removes what it names and says what it removed", async () => {
   const p = await configFile({ $schema: "https://example.com/x", usagePaths: [], tools: [gh, jq] });
   assert.deepEqual(await removeTools(["gh"], p), ["gh"]);

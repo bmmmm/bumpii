@@ -54,6 +54,16 @@ function validate(cfg: unknown): Config {
     if (typeof t?.source !== "string") {
       throw new Error(`config: tools[${i}].source must be a string (empty if not known yet)`);
     }
+    if (t.channel !== undefined) {
+      if (typeof t.channel !== "string" || !t.channel) {
+        throw new Error(`config: tools[${i}].channel must be a tag name like "tip"`);
+      }
+      // A channel names a tag in a repo; without a source there is no repo to
+      // resolve it against, and the entry would sit there watching nothing.
+      if (!t.source) {
+        throw new Error(`config: tools[${i}].channel needs a source — the tag lives in that repo`);
+      }
+    }
     if (!Array.isArray(t.version?.cmd) || t.version.cmd.length === 0) {
       throw new Error(`config: tools[${i}].version.cmd must be a non-empty argv array`);
     }

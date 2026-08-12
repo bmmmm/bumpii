@@ -10,11 +10,23 @@ export interface ToolConfig {
    * report then flags as needing one rather than treating as broken.
    */
   source: string;
+  /**
+   * The tag of a rolling release this tool follows instead of versioned
+   * releases — ghostty's "tip", built fresh on every commit to main. The
+   * release object under such a tag is mutable and its notes are boilerplate,
+   * so what changed is read from the commit log between the installed build
+   * and the tag. With a channel set, `version.match` must capture the commit
+   * hash the installed build was made from, not a version number.
+   */
+  channel?: string;
   /** How to ask the installed binary for its version. */
   version: {
     /** argv, e.g. ["gh", "--version"]. Not a shell string — no quoting traps. */
     cmd: string[];
-    /** Regex with one capture group holding the bare version. */
+    /**
+     * Regex with one capture group holding the bare version — or, for a
+     * `channel` entry, the build's commit hash.
+     */
     match: string;
   };
   /** Shell command that upgrades it, e.g. "brew upgrade gh". */
@@ -73,6 +85,13 @@ export interface ToolReport {
   latest: string | null;
   /** Releases strictly newer than installed, oldest first. */
   behind: Release[];
+  /**
+   * Set for a rolling-channel entry. `behind` then holds at most one synthetic
+   * release whose notes are the commit log, and `aheadBy` is the real distance
+   * — the renderer says "N commits behind on tip" rather than "1 release
+   * behind", which would be technically true and completely misleading.
+   */
+  channel?: { tag: string; aheadBy: number };
   /**
    * The forge had more releases than one page held and all of them were
    * pending, so `behind` is a floor rather than the count. Rendered as "30+".
