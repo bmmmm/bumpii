@@ -39,11 +39,29 @@ function paint(kind: ItemKind, s: string): string {
 /** security first, then breaking, then features, then fixes. */
 const ORDER: ItemKind[] = ["security", "breaking", "feature", "fix"];
 
+/**
+ * An empty usagePaths config has to be said in every report that judges by
+ * usage: with nothing to search, "affects you: none" and a zero reference
+ * count are statements about an empty search, not about the user's files —
+ * and unlike a missing path, nothing else in the report hints at it.
+ */
+function noUsagePathsWarning(consequence: string): string[] {
+  return [
+    yellow("no usagePaths configured"),
+    dim(`  nothing was searched, so ${consequence}`),
+    dim("  add usagePaths to the config so the verdict means something"),
+    "",
+  ];
+}
+
 export interface RenderOptions {
   engine: Engine;
   /** Configured usagePaths that do not exist — named, because they silently
    * turn every "affects you" verdict into "none". */
   missingPaths: string[];
+  /** The config names no usagePaths at all — a different silence from
+   * `missingPaths`, and one no other line of the report betrays. */
+  noUsagePaths?: boolean;
   /**
    * Brew-outdated packages this digest never looked at, because nothing in
    * tools.json tracks them. `undefined` when the brew check itself failed or
@@ -168,6 +186,9 @@ export function renderReport(reports: ToolReport[], opts: RenderOptions): string
     out.push(`  ${dim("→")} ${r.tool.update}`, "");
   }
 
+  if (opts.noUsagePaths) {
+    out.push(...noUsagePathsWarning('every "affects you" above answered an empty question'));
+  }
   // Loud rather than dim: an unsearched path makes every "affects you" verdict
   // above meaningless, and it is the kind of typo that otherwise goes years.
   if (opts.missingPaths.length > 0) {
@@ -301,6 +322,9 @@ export function renderInbox(inbox: Inbox): string {
     out.push(dim("the first page of notifications was full — the queue holds more than this"));
   }
 
+  if (inbox.noUsagePaths) {
+    out.push(...noUsagePathsWarning('every "affects you" above answered an empty question'));
+  }
   if (inbox.missingUsagePaths.length > 0) {
     out.push(
       `${yellow("usagePaths not found")}: ${inbox.missingUsagePaths.join(", ")}`,
@@ -494,6 +518,9 @@ export function renderOverview(o: Overview): string {
     );
   }
 
+  if (o.noUsagePaths) {
+    out.push(...noUsagePathsWarning("every reference count is zero and the buckets above mean nothing"));
+  }
   if (o.missingUsagePaths.length > 0) {
     // Loud, and above the summary: with a path unsearched, every ref count in
     // the report is short, which is what decides the buckets — so this is not

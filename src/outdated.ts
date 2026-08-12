@@ -103,18 +103,6 @@ function parseBrewJson<T>(stdout: string, what: string): T {
  */
 export async function brewInstalledVersions(names: string[]): Promise<Map<string, string>> {
   if (names.length === 0) return new Map();
-  const parse = (text: string): Map<string, string> => {
-    const out = new Map<string, string>();
-    for (const line of text.split("\n")) {
-      // "name 1.2.3" — and a formula kept at several versions lists them all,
-      // newest last, which is the one that is linked.
-      const parts = line.trim().split(/\s+/);
-      const name = parts[0];
-      const version = parts.at(-1);
-      if (name && version && parts.length > 1) out.set(name, version);
-    }
-    return out;
-  };
   // Casks and formulae need separate calls, and each exits non-zero as soon as
   // one name is not of its kind — which is the normal case here, since the list
   // holds both. The output printed before that exit is the part we want, so a
@@ -127,18 +115,55 @@ export async function brewInstalledVersions(names: string[]): Promise<Map<string
     ].map(async (argv) => {
       try {
         const { stdout } = await run("brew", argv, { timeout: 120_000 });
-        return parse(stdout);
+        return stdout;
       } catch (err) {
-        return parse((err as ExecError).stdout ?? "");
+        return (err as ExecError).stdout ?? "";
       }
     }),
   );
+  return installedVersionMap(names, formulae ?? "", casks ?? "");
+}
+
+/**
+ * Parse brew's `list --versions` output and key the result by the names that
+ * were ASKED, not only the names brew prints. Exported so a test can drive the
+ * real parser rather than re-implement it.
+ *
+ * The distinction matters for tap-qualified formulae: the caller asks for
+ * `jundot/omlx/omlx` (the name its `brew upgrade` line carries) but brew
+ * prints `omlx 0.5.7` — and a map keyed only on the printed name answered
+ * `undefined` for a formula that is installed, which the overview then
+ * reported as "brew manages these but does not have them".
+ */
+export function installedVersionMap(
+  names: string[],
+  formulaeOut: string,
+  casksOut: string,
+): Map<string, string> {
+  const parse = (text: string): Map<string, string> => {
+    const out = new Map<string, string>();
+    for (const line of text.split("\n")) {
+      // "name 1.2.3" — and a formula kept at several versions lists them all,
+      // newest last, which is the one that is linked.
+      const parts = line.trim().split(/\s+/);
+      const name = parts[0];
+      const version = parts.at(-1);
+      if (name && version && parts.length > 1) out.set(name, version);
+    }
+    return out;
+  };
   // Into two maps and merged deterministically, rather than both writing into
   // one: a name that exists as BOTH a formula and a cask (wireshark) would
   // otherwise take whichever call happened to finish last, and the version
   // under "up to date" would change between runs. The formula wins because the
   // caller asks with a name it took from `brew upgrade <formula>`.
-  return new Map([...(casks ?? []), ...(formulae ?? [])]);
+  const map = new Map([...parse(casksOut), ...parse(formulaeOut)]);
+  for (const n of names) {
+    if (map.has(n)) continue;
+    const version = map.get(n.split("/").pop() ?? n);
+    if (version !== undefined) map.set(n, version);
+  }
+  return map;
 }
 
 /**

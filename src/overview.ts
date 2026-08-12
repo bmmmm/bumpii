@@ -94,6 +94,14 @@ export interface Overview {
    */
   unchecked: { name: string; refs: number; reason: "not-brew" | "not-installed" }[];
   missingUsagePaths: string[];
+  /**
+   * The config names no usagePaths at all. Distinct from `missingUsagePaths`
+   * (paths named but absent on disk), and it has to be said out loud: with
+   * nothing to search, every reference count is zero, everything lands under
+   * "no signal", and the report would be asserting absence about paths nobody
+   * ever gave it.
+   */
+  noUsagePaths: boolean;
   engine: Engine;
 }
 
@@ -122,6 +130,20 @@ export function namesOf(tool: ToolConfig): string[] {
   const formula = formulaOf(tool.update);
   const short = (s: string) => s.split("/").pop() ?? s;
   return [...new Set([tool.name, ...(formula ? [formula, short(formula)] : [])])];
+}
+
+/**
+ * The --only list, widened to every alias of each tool it names. Exported for
+ * the test that holds the pending half and the quiet half to the same rule.
+ */
+export function expandOnly(only: string[], tools: ToolConfig[]): Set<string> {
+  const out = new Set(only);
+  if (out.size === 0) return out;
+  for (const t of tools) {
+    const names = namesOf(t);
+    if (names.some((n) => out.has(n))) for (const n of names) out.add(n);
+  }
+  return out;
 }
 
 /**
@@ -202,7 +224,13 @@ export interface OverviewOptions {
 
 export async function buildOverview(config: Config, opts: OverviewOptions): Promise<Overview> {
   const outdated = await brewOutdated();
-  const wanted = opts.only?.length ? outdated.filter((p) => opts.only?.includes(p.name)) : outdated;
+  // --only names whatever the user calls the tool; brew prints its own name.
+  // Expanded through every alias a tracked entry answers to, so `--only fj`
+  // matches the `forgejo-cli` brew reports as outdated — the quiet half below
+  // already matches this way, and filtering the two halves differently made
+  // an aliased, pending tool disappear behind "nothing matched".
+  const only = expandOnly(opts.only ?? [], config.tools);
+  const wanted = only.size ? outdated.filter((p) => only.has(p.name)) : outdated;
 
   const usage = await resolveUsagePaths(config.usagePaths);
 
@@ -346,7 +374,7 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
     // --only restricts the whole report, not only the pending half. Leaving
     // these unfiltered printed every tracked tool under "up to date" after a
     // question about one package, and put its own count in the summary.
-    .filter((t) => !opts.only?.length || namesOf(t).some((n) => opts.only?.includes(n)));
+    .filter((t) => only.size === 0 || namesOf(t).some((n) => only.has(n)));
   const brewManaged = quiet.filter((t) => formulaOf(t.update) !== null);
   const installedVersions = await brewInstalledVersions(
     brewManaged.flatMap((t) => {
@@ -385,5 +413,12 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
   current.sort((a, b) => b.refs - a.refs || a.name.localeCompare(b.name));
   unchecked.sort((a, b) => b.refs - a.refs || a.name.localeCompare(b.name));
 
-  return { entries, current, unchecked, missingUsagePaths: usage.missing, engine: opts.engine };
+  return {
+    entries,
+    current,
+    unchecked,
+    missingUsagePaths: usage.missing,
+    noUsagePaths: config.usagePaths.length === 0,
+    engine: opts.engine,
+  };
 }

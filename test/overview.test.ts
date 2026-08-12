@@ -9,6 +9,7 @@ import type { OutdatedPackage } from "../src/outdated.ts";
 import {
   bucketFor,
   compareFor,
+  expandOnly,
   namesOf,
   type Overview,
   type OverviewEntry,
@@ -54,7 +55,15 @@ function entry(over: Partial<OverviewEntry> & { name: string }): OverviewEntry {
 }
 
 function overview(over: Partial<Overview>): Overview {
-  return { entries: [], current: [], unchecked: [], missingUsagePaths: [], engine: ENGINE, ...over };
+  return {
+    entries: [],
+    current: [],
+    unchecked: [],
+    missingUsagePaths: [],
+    noUsagePaths: false,
+    engine: ENGINE,
+    ...over,
+  };
 }
 
 test("reference counts are per name, counting each file once", async () => {
@@ -86,6 +95,32 @@ test("reference counts survive a filename containing a colon", async () => {
   // half a path as the filename and the rest as the package name.
   await writeFile(join(d, "weird:name.sh"), "gh pr list\n", "utf8");
   assert.equal((await referenceCounts([d], ["gh"])).get("gh"), 1);
+});
+
+test("expandOnly widens --only through every alias a tracked tool answers to", () => {
+  // `bumpii overview --only fj` with `forgejo-cli` outdated used to report
+  // "nothing matched": the pending half filtered on brew's name while the
+  // quiet half matched every alias, so the tool vanished between the two.
+  const fj = {
+    name: "fj",
+    source: "codeberg:forgejo-contrib/forgejo-cli",
+    version: { cmd: ["fj", "version"], match: "fj v?([0-9][0-9.]*)" },
+    update: "brew upgrade forgejo-cli",
+  };
+  const only = expandOnly(["fj"], [fj]);
+  assert.ok(only.has("forgejo-cli"), "the formula name brew prints has to match too");
+  assert.ok(only.has("fj"));
+  assert.equal(expandOnly(["unrelated"], [fj]).size, 1, "an alias of nothing stays itself");
+  assert.equal(expandOnly([], [fj]).size, 0, "no --only means no filter, not a filter on aliases");
+});
+
+test("an empty usagePaths config is called out in the overview", () => {
+  // Everything lands under "no signal" because nothing was searched — without
+  // this line the report asserts absence about paths nobody ever gave it.
+  const out = renderOverview(overview({ noUsagePaths: true }));
+  assert.match(out, /no usagePaths configured/);
+  assert.match(out, /buckets above mean nothing/);
+  assert.doesNotMatch(renderOverview(overview({})), /no usagePaths configured/);
 });
 
 test("a tool answers to its binary name and its formula name alike", () => {

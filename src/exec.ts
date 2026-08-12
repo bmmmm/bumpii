@@ -21,19 +21,35 @@ export interface ExecError extends Error {
   stderr?: string;
 }
 
+/**
+ * Node kills a child whose output exceeds maxBuffer, and its 1 MiB default is
+ * a size real commands here outgrow with the machine: `brew info --json=v2
+ * --installed` measured 827 KB for 178 formulae, so ~215 formulae would have
+ * turned `scan --new` into "brew info --installed failed: stdout maxBuffer
+ * length exceeded" — an error that blames brew for a limit set here. 32 MiB
+ * is the ceiling usage.ts already chose for grep, allocated only as output
+ * actually arrives; a caller with a reason can still override it.
+ */
+const MAX_OUTPUT = 32 * 1024 * 1024;
+
 export function run(file: string, args: string[], opts: ExecFileOptions = {}): Promise<ExecOutput> {
   return new Promise((resolve, reject) => {
     // Explicit encoding, though utf8 is the default: it is what picks the
     // overload whose callback hands back strings rather than Buffers.
-    const child = execFile(file, args, { ...opts, encoding: "utf8" as const }, (err, stdout, stderr) => {
-      if (!err) return resolve({ stdout, stderr });
-      const e = err as ExecError;
-      // execFile's own error drops the output; the callers need it, because a
-      // non-zero exit can still have printed the version they were after.
-      e.stdout = stdout;
-      e.stderr = stderr;
-      reject(e);
-    });
+    const child = execFile(
+      file,
+      args,
+      { maxBuffer: MAX_OUTPUT, ...opts, encoding: "utf8" as const },
+      (err, stdout, stderr) => {
+        if (!err) return resolve({ stdout, stderr });
+        const e = err as ExecError;
+        // execFile's own error drops the output; the callers need it, because a
+        // non-zero exit can still have printed the version they were after.
+        e.stdout = stdout;
+        e.stderr = stderr;
+        reject(e);
+      },
+    );
     child.stdin?.end();
   });
 }

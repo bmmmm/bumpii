@@ -141,6 +141,17 @@ test("a count the page cut short is marked, not reported as exact", () => {
   );
 });
 
+test("an empty usagePaths config is called out, apart from paths that do not exist", () => {
+  // With nothing configured there is nothing "missing", so the existing
+  // warning never fires — and every "affects you: none" above would be a
+  // statement about an empty search presented as one about the user's files.
+  const out = renderReport([report()], { engine, missingPaths: [], noUsagePaths: true });
+  assert.match(out, /no usagePaths configured/);
+  assert.doesNotMatch(out, /usagePaths not found/);
+  const configured = renderReport([report()], { engine, missingPaths: [] });
+  assert.doesNotMatch(configured, /no usagePaths configured/);
+});
+
 test("a missing usage path is called out, not swallowed", () => {
   const out = renderReport([report({ installed: "2.96.0", latest: "2.96.0" })], {
     engine,

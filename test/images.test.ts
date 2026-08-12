@@ -8,7 +8,13 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { discoverImage, runningContainers, untrackedContainers, versionFrom } from "../src/images.ts";
+import {
+  discoverImage,
+  runningContainers,
+  TAG_MATCH,
+  untrackedContainers,
+  versionFrom,
+} from "../src/images.ts";
 
 let dir: string | null = null;
 const realPath = process.env.PATH;
@@ -65,6 +71,30 @@ test("versionFrom takes the number out of a decorated tag", () => {
   // to change between `add` and the first digest.
   assert.equal(versionFrom("", "postgres:17-alpine"), "17");
   assert.equal(versionFrom("", "app:v3.2.5-rc1"), "3.2.5");
+});
+
+test("a digest pin is not a version, and a registry port is not a tag", () => {
+  // `nginx@sha256:0a1b…` used to read "0" out of the digest and
+  // `registry.home:5000/app` read "5000" out of the port — both compare as
+  // newer than every release ever published, which renders as permanently up
+  // to date. The honest answer for both is "no version here".
+  assert.equal(versionFrom("", "nginx@sha256:0a1b2c3d4e"), "");
+  assert.equal(versionFrom("", "registry.home:5000/app"), "");
+  assert.equal(versionFrom("", "registry.home:5000/app:17-alpine"), "17");
+  assert.equal(versionFrom("", "app:1.25@sha256:0a1b2c3d4e"), "1.25");
+});
+
+test("TAG_MATCH reads the tag and never the port or the digest", () => {
+  // The same shapes versionFrom is held to, because this regex is what the
+  // generated entry re-reads on every later run — the two must agree or the
+  // version changes between `add` and the first digest.
+  const grab = (s: string) => new RegExp(TAG_MATCH).exec(s)?.[1];
+  assert.equal(grab("ghcr.io/owner/app:2.4.1\n"), "2.4.1");
+  assert.equal(grab("nginx:1.25-alpine\n"), "1.25");
+  assert.equal(grab("registry.home:5000/app:1.2\n"), "1.2");
+  assert.equal(grab("app:1.2@sha256:0a1b2c3d4e\n"), "1.2");
+  assert.equal(grab("registry.home:5000/app\n"), undefined);
+  assert.equal(grab("app@sha256:0a1b2c3d4e\n"), undefined);
 });
 
 test("a container with the OCI labels yields a complete entry", async () => {

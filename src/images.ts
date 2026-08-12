@@ -147,7 +147,16 @@ async function inspect(runtime: string, target: string, format: string): Promise
  */
 export function versionFrom(label: string, imageRef: string): string {
   if (label.trim()) return label.trim();
-  const tag = imageRef.includes(":") ? (imageRef.split(":").pop() ?? "") : "";
+  // A digest pin is not a version: `nginx@sha256:0a1b…` names one exact build,
+  // and reading digits out of the digest yields "0" — which compares as older
+  // than everything and renders as permanently up to date. Everything after
+  // "@" is dropped before looking for a tag.
+  const ref = imageRef.split("@")[0] ?? "";
+  // The tag is what follows the last ":" only when that ":" comes after the
+  // last "/" — before it, the colon is a registry port (registry.home:5000/app),
+  // and "5000" as a version is newer than every release ever published.
+  const colon = ref.lastIndexOf(":");
+  const tag = colon > ref.lastIndexOf("/") ? ref.slice(colon + 1) : "";
   // The numeric part only, and for the same reason the generated regex takes
   // it: "17-alpine" would otherwise be shown here while every later run
   // reports "17", and a version that changes between `add` and the first
@@ -155,6 +164,19 @@ export function versionFrom(label: string, imageRef: string): string {
   const numeric = /[0-9][0-9.]*/.exec(tag)?.[0] ?? "";
   return numeric;
 }
+
+/**
+ * The regex a no-label entry reads its version out of `{{.Config.Image}}`
+ * with. The first ":" in a ref is not reliably the tag, so each piece guards
+ * one wrong reading: the lazy `[^@\n]*?` prefix keeps the match out of a
+ * digest (`app@sha256:0a…` must not probe as "0"), the `[^/:@\n]*` after the
+ * number rejects a registry port (`registry.home:5000/app` has "/app" there,
+ * so ":5000" cannot close) while carrying a decorated tag ("2.4-alpine")
+ * through to the delimiter — the "@" of a pin, the end of the probe's line,
+ * or the end of its output. Exported so the test can hold it against the same
+ * ref shapes versionFrom is tested against.
+ */
+export const TAG_MATCH = "^[^@\\n]*?:v?([0-9][0-9.]*)[^/:@\\n]*(?:@|\\n|$)";
 
 /**
  * Build a ready-to-use tool entry from a running container.
@@ -239,7 +261,7 @@ export async function discoverImage(container: string): Promise<ImageDiscovery> 
         : // No version label: read the tag off the running container instead.
           {
             cmd: [runtime, "inspect", "--format", "{{.Config.Image}}", container],
-            match: ":v?([0-9][0-9.]*)",
+            match: TAG_MATCH,
           },
       // Pulling is only half an update — the container still has to be
       // restarted onto the new image, and how depends on how it is run. Left

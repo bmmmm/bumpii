@@ -64,6 +64,9 @@ export interface Inbox {
   /** The page was full, so the queue holds more than what is shown. */
   capped: boolean;
   missingUsagePaths: string[];
+  /** The config names no usagePaths at all — nothing was searched, so every
+   * "affects you" would otherwise assert absence about an empty search. */
+  noUsagePaths: boolean;
   engine: Engine;
 }
 
@@ -225,6 +228,7 @@ export async function buildInbox(config: Config, opts: InboxOptions): Promise<In
     other,
     capped: raw.length >= PAGE,
     missingUsagePaths: usage.missing,
+    noUsagePaths: config.usagePaths.length === 0,
     engine: opts.engine,
   };
 }

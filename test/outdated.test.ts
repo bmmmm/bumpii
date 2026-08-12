@@ -4,7 +4,13 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { compareUrl, readSourceCache, resolveSources, toPackages } from "../src/outdated.ts";
+import {
+  compareUrl,
+  installedVersionMap,
+  readSourceCache,
+  resolveSources,
+  toPackages,
+} from "../src/outdated.ts";
 
 const dirs: string[] = [];
 async function scratch(): Promise<string> {
@@ -85,6 +91,22 @@ test("pinned survives the parse, since brew lists pinned packages it will not mo
     "formula",
   );
   assert.equal(got[0]?.pinned, true);
+});
+
+test("installedVersionMap answers under the name that was asked, tap-qualified included", () => {
+  // The caller asks with the name its `brew upgrade` line carries
+  // (jundot/omlx/omlx); brew prints the bare name (omlx). A map keyed only on
+  // what brew printed answered undefined for an installed formula, which the
+  // overview reported as "brew manages these but does not have them".
+  const map = installedVersionMap(["jundot/omlx/omlx", "gh"], "omlx 0.5.6 0.5.7\ngh 2.97.0\n", "");
+  assert.equal(map.get("jundot/omlx/omlx"), "0.5.7", "the newest kept version, under the asked name");
+  assert.equal(map.get("gh"), "2.97.0");
+  assert.equal(map.get("absent"), undefined, "a name brew does not manage stays absent");
+});
+
+test("a name that is both formula and cask answers with the formula's version", () => {
+  const map = installedVersionMap(["wireshark"], "wireshark 4.0.0\n", "wireshark 3.9.9\n");
+  assert.equal(map.get("wireshark"), "4.0.0");
 });
 
 test("compareUrl builds a diff link from the tags, not the versions", () => {

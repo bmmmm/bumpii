@@ -91,8 +91,13 @@ function brewPrefix(): Promise<string> {
  * reads a cache path some sandboxes deny). */
 export async function binariesOf(formula: string): Promise<string[]> {
   const prefix = await brewPrefix();
+  // The opt link is named after the bare formula: a tap-qualified name
+  // (jundot/omlx/omlx) lives at opt/omlx, and building the path from the full
+  // name made every tapped `add` fail with an error blaming binaries that
+  // were never probed.
+  const name = formula.split("/").pop() ?? formula;
   try {
-    return await readdir(`${prefix}/opt/${formula}/bin`);
+    return await readdir(`${prefix}/opt/${name}/bin`);
   } catch {
     return [];
   }
