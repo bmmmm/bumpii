@@ -219,6 +219,24 @@ test("an exhausted rate limit says so, and names the variable that lifts it", as
   }
 });
 
+test("a transport failure names the host and the cause, not just 'fetch failed'", async () => {
+  // Node's fetch buries ENOTFOUND/ECONNREFUSED in `cause`; the bare top-level
+  // message confirms a failure without naming anything actionable.
+  const real = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("fetch failed", { cause: new Error("getaddrinfo ENOTFOUND api.github.com") });
+  }) as typeof globalThis.fetch;
+  try {
+    await assert.rejects(listReleases(parseSource("github:o/r")), (err: Error) => {
+      assert.match(err.message, /cannot reach api\.github\.com/);
+      assert.match(err.message, /ENOTFOUND/);
+      return true;
+    });
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
 // ---- rolling channels ------------------------------------------------------
 
 /** Like stubFetch, but each call consumes the next body — the truncated path

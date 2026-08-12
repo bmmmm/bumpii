@@ -170,8 +170,28 @@ async function rateLimitMessage(res: Response, ref: ForgeRef): Promise<string | 
  * answered 304. For the cron-shaped use this tool is built around, a stored
  * validator would miss every time and buy a cache file for nothing.
  */
+/**
+ * Node's fetch reports every transport failure as a bare "fetch failed" and
+ * puts the part you can act on — ECONNREFUSED, ENOTFOUND, a TLS complaint —
+ * in `cause`. Unwrapping it is the difference between a message that names
+ * the problem and one that only confirms there was one.
+ */
+export function describeFetchError(err: unknown): string {
+  const top = err instanceof Error ? err.message : String(err);
+  const cause = err instanceof Error ? err.cause : undefined;
+  const detail = cause instanceof Error ? cause.message : undefined;
+  return detail && detail !== top ? `${top}: ${detail}` : top;
+}
+
 export async function getJson(url: string, ref: ForgeRef): Promise<unknown> {
-  const res = await fetch(url, { headers: await authHeaders(ref) });
+  let res: Response;
+  try {
+    res = await fetch(url, { headers: await authHeaders(ref) });
+  } catch (err) {
+    // "gh error fetch failed" points at nothing; the host plus the cause
+    // says whether it is DNS, a refused port, or a proxy in the way.
+    throw new Error(`cannot reach ${new URL(url).host} — ${describeFetchError(err)}`);
+  }
   if (!res.ok) {
     const limited = await rateLimitMessage(res, ref);
     if (limited) throw new Error(limited);

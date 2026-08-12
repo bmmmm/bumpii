@@ -7,6 +7,7 @@
 //   - the `claude` CLI, when it is on PATH
 // No model is hardcoded or crowned: /v1/models is asked what it serves.
 import { run } from "./exec.ts";
+import { describeFetchError } from "./sources.ts";
 import type { DigestItem, ItemKind, Release } from "./types.ts";
 
 export type EngineKind = "openai" | "claude-cli" | "none";
@@ -36,19 +37,6 @@ async function probeOpenAi(base: string): Promise<EngineProbe> {
   } catch (err) {
     return { reachable: false, reason: describeFetchError(err) };
   }
-}
-
-/**
- * Node's fetch reports every transport failure as a bare "fetch failed" and
- * puts the part you can act on — ECONNREFUSED, ENOTFOUND, a TLS complaint —
- * in `cause`. Unwrapping it is the difference between a message that names the
- * problem and one that only confirms there was one.
- */
-function describeFetchError(err: unknown): string {
-  const top = err instanceof Error ? err.message : String(err);
-  const cause = err instanceof Error ? err.cause : undefined;
-  const detail = cause instanceof Error ? cause.message : undefined;
-  return detail && detail !== top ? `${top}: ${detail}` : top;
 }
 
 /** Append why the preferred engine was not used, so the footer explains itself. */
