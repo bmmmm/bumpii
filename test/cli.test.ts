@@ -401,6 +401,18 @@ test("running without a config points at init instead of a stack trace", async (
   assert.doesNotMatch(r.stderr, /at .*\.ts:/, "an ENOENT trace is not an error message");
 });
 
+test("a manual update line is complete — list counts only the comment as a gap", async () => {
+  const home = await freshHome();
+  await writeConfig(home, [
+    tool({ name: "auto", source: "github:o/r", update: "manual: open the app's updater" }),
+    tool({ name: "draft", source: "github:o/r", update: "# complete this: pull and restart" }),
+  ]);
+  const r = await runCli(["list"], home);
+  assert.match(r.stdout, /draft.*needs: update/);
+  assert.doesNotMatch(r.stdout, /auto.*needs/);
+  assert.match(r.stdout, /1 entry incomplete/);
+});
+
 test("--only that matches nothing is an error, not an empty success", async () => {
   const home = await freshHome();
   await writeConfig(home, [tool({ source: "github:o/r" })]);
@@ -464,6 +476,20 @@ test("a tool with nothing newer exits 0", async (t) => {
   const r = await runCli(["--no-judge"], home);
   assert.match(r.stdout, /up to date/);
   assert.equal(r.code, 0, "nothing pending is the only case a scheduler should read as quiet");
+});
+
+test("--yes skips a manual entry as routine, not as a failure", async (t) => {
+  // A manual entry is complete — there is simply no command to run — so a
+  // scheduled `--yes` must not exit red over it the way it does for an
+  // unfinished placeholder (which `sh -c` would "run" successfully).
+  const url = await stubForge(["v2.0.0", "v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  await writeConfig(home, [tool({ source: url, update: "manual: use the in-app updater" })]);
+
+  const r = await runCli(["--yes", "--no-judge"], home);
+  assert.match(r.stdout, /manual: use the in-app updater — skipped/);
+  assert.equal(r.code, 0, "nothing failed — a manual entry is not a broken one");
 });
 
 test("a pending release exits 1, which is what a scheduled run acts on", async (t) => {

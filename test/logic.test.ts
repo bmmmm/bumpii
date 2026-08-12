@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { containerOf, formulaOf, isPlaceholderUpdate, parseArgs, parseWindow } from "../src/cli.ts";
+import {
+  containerOf,
+  formulaOf,
+  isManualUpdate,
+  isPlaceholderUpdate,
+  parseArgs,
+  parseWindow,
+} from "../src/cli.ts";
 import { bare, parseSource } from "../src/sources.ts";
 import type { Release, ToolConfig } from "../src/types.ts";
 import {
@@ -18,6 +25,22 @@ const rel = (version: string): Release => ({
   publishedAt: null,
   notes: "",
   url: "",
+});
+
+test("a manual update line is a complete entry, a comment is an unfinished one", () => {
+  // Both are skipped by --yes, but only the placeholder is a gap: some tools
+  // (Ghostty's Sparkle updater) simply have no CLI trigger, and an entry
+  // saying so must not read as needing work forever.
+  assert.equal(isManualUpdate("manual: open the app's updater"), true);
+  assert.equal(isManualUpdate("Manual"), true);
+  assert.equal(isManualUpdate("# complete this: pull and restart"), false);
+  assert.equal(
+    isManualUpdate("manually curated script.sh"),
+    false,
+    "a word starting with manual is not the marker",
+  );
+  assert.equal(isManualUpdate("brew upgrade gh"), false);
+  assert.equal(isPlaceholderUpdate("manual: open the app's updater"), false, "manual is not a placeholder");
 });
 
 test("bare strips a leading v so tag forms compare equal", () => {

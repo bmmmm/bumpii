@@ -224,6 +224,19 @@ export function isPlaceholderUpdate(update: string): boolean {
 }
 
 /**
+ * Whether an update line deliberately says "there is no command for this".
+ *
+ * A different statement from a placeholder: `# complete this: …` is an entry
+ * waiting to be finished, and `list` rightly counts it as a gap; `manual: open
+ * the app's updater` is the entry being complete — some tools (Ghostty's
+ * Sparkle updater) simply have no CLI trigger. `--yes` skips both, but only
+ * the placeholder is a failure: nothing about a manual entry is broken.
+ */
+export function isManualUpdate(update: string): boolean {
+  return /^manual(:|$)/i.test(update.trim());
+}
+
+/**
  * The container an entry reads its version out of, if it reads one.
  *
  * `scan --image` needs this for the same reason the brew path needs
@@ -773,21 +786,31 @@ async function main(): Promise<number> {
     otherPending = undefined;
   }
 
+  const noUsagePaths = config.usagePaths.length === 0;
   if (args.json) {
     // The whole engine, not just its label: a scheduled run that acts on this
     // should be able to branch on "was anything actually judged" without
     // parsing prose.
     process.stdout.write(
-      `${JSON.stringify({ engine, missingUsagePaths: usage.missing, otherPending, reports }, null, 2)}\n`,
+      `${JSON.stringify({ engine, missingUsagePaths: usage.missing, noUsagePaths, otherPending, reports }, null, 2)}\n`,
     );
   } else {
-    process.stdout.write(renderReport(reports, { engine, missingPaths: usage.missing, otherPending }));
+    process.stdout.write(
+      renderReport(reports, { engine, missingPaths: usage.missing, noUsagePaths, otherPending }),
+    );
   }
 
   let updateFailures = 0;
   if (args.yes) {
     for (const r of reports) {
       if (r.error || !r.installed || r.behind.length === 0) continue;
+      // A manual entry is complete — there is simply no command to run — so
+      // skipping it is routine, not a failure, and must not turn the exit
+      // code red the way an unfinished placeholder does.
+      if (isManualUpdate(r.tool.update)) {
+        process.stdout.write(`${r.tool.name}: ${r.tool.update.trim()} — skipped\n`);
+        continue;
+      }
       // A placeholder update line is a comment, which `sh -c` runs happily and
       // exits 0 on — reporting a successful update that never happened. That
       // is the exact class of quiet wrong answer this tool exists to avoid.

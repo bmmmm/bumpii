@@ -418,6 +418,9 @@ Or write entries by hand. `~/.config/bumpii/tools.json`:
   with one capture group. Not every CLI agrees on `--version`: `fj` wants
   `fj version`, and some print to stderr — both are handled.
 - **`update`** — whatever bumps it on your machine. Only ever run with `--yes`.
+  A tool with no CLI trigger at all (an app that updates itself) takes
+  `manual: <where to click>` — a complete entry that `--yes` skips as routine,
+  unlike a `#`-comment, which marks an entry still waiting to be finished.
 
 `bumpii add` rewrites this file, and it writes back the whole document: an
 entry you tuned by hand is never replaced, and any key bumpii does not know
@@ -437,7 +440,7 @@ entry reads exactly that:
   "source": "github:ghostty-org/ghostty",
   "channel": "tip",
   "version": { "cmd": ["ghostty", "--version"], "match": "\\+([0-9a-f]{7,40})" },
-  "update": "# Ghostty tip updates itself — Ghostty menu, Check for Updates"
+  "update": "manual: Ghostty updates itself — menu Ghostty, Check for Updates"
 }
 ```
 
