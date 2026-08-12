@@ -69,6 +69,7 @@ Optional, and only for what they enable: `brew` for `bumpii add`/`scan`,
 | `bumpii set <name> <field> <value>` | change one field: `source` or `update` |
 | `bumpii rm <name>…` | stop tracking these |
 | `bumpii --yes` | digest, then run each tool's update command |
+| `bumpii --brew-upgrade` | digest, then `brew update && brew upgrade` — everything brew has pending, tracked or not |
 
 `bumpii --help` carries the options; the sections below cover what each of
 these does and why.
