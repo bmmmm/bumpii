@@ -280,3 +280,25 @@ test("renderInbox: empty inbox says so, and the rest of the queue stays a count"
   assert.match(out, /2 Issue/);
   assert.match(out, /github\.com\/notifications/);
 });
+
+test("a release whose notes cannot be read stays an entry, and keeps the exit code honest", async () => {
+  // The same invariant the digest got wrong: a failure must not shrink the
+  // report to nothing, because cli.ts turns `entries.length === 0` into exit
+  // 0 — the code a scheduler reads as "your inbox is clear". An entry that
+  // errored is still an unread release notification.
+  const s = stubFetch((url) => {
+    if (url.includes("/notifications")) return { body: [notification("1", "cli/cli")] };
+    return { status: 500, body: { message: "upstream is having a day" } };
+  });
+  try {
+    const inbox = await buildInbox(config([tool("gh", "github:cli/cli")]), {
+      engine: NONE,
+      concurrency: 1,
+    });
+    assert.equal(inbox.entries.length, 1, "the notification was real — losing it empties the inbox");
+    assert.ok(inbox.entries[0]?.error, "and the entry has to say why it is empty");
+    assert.equal(inbox.entries[0]?.releases.length, 0, "nothing was read, so nothing is claimed");
+  } finally {
+    s.restore();
+  }
+});

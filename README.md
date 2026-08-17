@@ -71,6 +71,7 @@ Optional, and only for what they enable: `brew` for `bumpii add`/`scan`,
 | `bumpii rm <name>…` | stop tracking these |
 | `bumpii digest --yes` | digest, then run each tool's update command |
 | `bumpii digest --brew-upgrade` | digest, then `brew update && brew upgrade` — everything brew has pending, tracked or not |
+| `bumpii digest --yes --dry-run` | print the update commands that would run, run none |
 
 `bumpii --help` carries the options; the sections below cover what each of
 these does and why.
@@ -487,7 +488,16 @@ $ bumpii --only gh        # one tool
 $ bumpii --no-judge       # no model: just list pending releases and their URLs
 $ bumpii --json           # machine-readable, for a scheduled run
 $ bumpii digest --yes     # digest, then run each update command
+$ bumpii digest --yes --dry-run   # print those commands, run none of them
 ```
+
+`--dry-run` is worth a look before the first unattended `--yes`: the update
+lines come from a config this tool never wrote, and it prints them as they
+are rather than describing them. It also reports an unfinished placeholder
+(`# complete this: …`) as the failure it would be — `sh -c` runs a comment
+happily and exits `0`, so a real `--yes` would report an update that never
+happened. Nothing was updated, so the exit code stays the digest's own: `1`
+while something is still pending.
 
 The digest has to be named. It is the most expensive thing here — a forge
 round-trip per tool and a model that can spend minutes on one release — and

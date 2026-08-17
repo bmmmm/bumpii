@@ -173,6 +173,32 @@ async function stubBrewPath(opts: { leaves?: string[]; formulae?: unknown[] }): 
   return dir;
 }
 
+/**
+ * A fake brew that reports one outdated formula, for the overview command.
+ *
+ * `outdated --json=v2` and `info --json=v2 --installed` are the two it asks;
+ * the second answers the "tracked, but is it installed" half of the report.
+ */
+async function stubBrewOutdated(pkg: { name: string; installed: string; latest: string }): Promise<string> {
+  const dir = await hermeticBin();
+  const outdated = JSON.stringify({
+    formulae: [{ name: pkg.name, installed_versions: [pkg.installed], current_version: pkg.latest }],
+    casks: [],
+  });
+  const info = JSON.stringify({
+    formulae: [{ name: pkg.name, installed: [{ version: pkg.installed, installed_on_request: true }] }],
+  });
+  await writeFile(
+    join(dir, "brew"),
+    `#!/bin/sh\ncase "$1" in\n` +
+      `  outdated) printf '%s' '${outdated}' ;;\n` +
+      `  *) printf '%s' '${info}' ;;\n` +
+      `esac\n`,
+  );
+  await chmod(join(dir, "brew"), 0o755);
+  return dir;
+}
+
 /** A receipt as brew reports it, dated relative to now so windows are stable. */
 const receipt = (name: string, daysAgo: number, onRequest = true) => ({
   name,
@@ -556,6 +582,93 @@ test("one broken tool among current ones still exits non-zero", async (t) => {
   const r = await runCli(["digest", "--no-judge"], home);
   assert.match(r.stdout, /up to date/, "the tool that answered is still reported");
   assert.equal(r.code, 2);
+});
+
+test("overview keeps an unreachable package in the report rather than dropping it", async (t) => {
+  // Why overview cannot make the mistake the digest made: every package brew
+  // reports pending produces an entry, including the ones whose forge died —
+  // so `entries.length` can only be zero when brew had nothing pending, which
+  // is a genuine 0. Assert the invariant, not the reasoning: a later "skip the
+  // unreachable ones" would turn a blind run back into a quiet exit 0.
+  const broken = await stubForgeFailing();
+  if (!broken) return t.skip(SKIP);
+  const path = await stubBrewOutdated({ name: "uv", installed: "0.1.0", latest: "0.2.0" });
+  const home = await freshHome();
+  // The usagePath matters: with nothing naming `uv` its reference count is
+  // zero, overview never contacts the forge at all, and the entry lands
+  // fehlerfrei under "no signal" — which is how the first version of this test
+  // stayed green with unreachable entries filtered out of the report.
+  const usage = await freshHome();
+  await writeFile(join(usage, "script.sh"), "#!/bin/sh\nuv sync\n");
+  await writeConfig(home, [tool({ name: "uv", source: broken, update: "brew upgrade uv" })], [usage]);
+
+  const r = await runCli(["overview", "--no-judge"], home, { PATH: path });
+  assert.match(r.stdout, /uv/, "the package brew reported has to appear at all");
+  assert.match(r.stdout, /(unreachable|error|could not)/i, "the failure has to be visible in the report");
+  assert.equal(r.code, 1, "brew says something is pending — that is not a quiet run");
+});
+
+test("overview exits 2 when brew itself cannot answer", async () => {
+  // The other half: if the source of the whole report fails, there is no
+  // report — and that must not read as "nothing pending" either.
+  const dir = await hermeticBin();
+  await writeFile(join(dir, "brew"), "#!/bin/sh\necho 'Error: nope' >&2\nexit 1\n");
+  await chmod(join(dir, "brew"), 0o755);
+  const home = await freshHome();
+  await writeConfig(home, [tool()]);
+
+  const r = await runCli(["overview", "--no-judge"], home, { PATH: dir });
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /brew outdated failed/);
+});
+
+test("--yes --dry-run prints the commands and runs none of them", async (t) => {
+  const url = await stubForge(["v2.0.0", "v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  // A command that would be visible if it ran: it writes a file. Asserting on
+  // absence of output would pass just as well against a command that ran and
+  // printed nothing.
+  const marker = join(await freshHome(), "ran");
+  await writeConfig(home, [tool({ source: url, update: `touch ${marker}` })]);
+
+  const r = await runCli(["digest", "--yes", "--dry-run", "--no-judge"], home);
+  assert.match(r.stdout, /would run 1 command:/);
+  assert.match(r.stdout, new RegExp(`\\$ touch ${marker}`), "the real update line, not a summary of it");
+  assert.match(r.stdout, /nothing was run/);
+  await assert.rejects(readFile(marker), "the update command actually ran");
+  assert.equal(r.code, 1, "nothing was updated, so what was pending still is");
+});
+
+test("--yes --dry-run reports a placeholder before an unattended run trips over it", async (t) => {
+  // The case that earns this flag: `sh -c '# complete this'` exits 0, so a
+  // real --yes reports a successful update that never happened. Finding that
+  // out from a dry run beats finding it out from a cron log.
+  const url = await stubForge(["v2.0.0", "v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  await writeConfig(home, [tool({ source: url, update: "# complete this: update it" })]);
+
+  const r = await runCli(["digest", "--yes", "--dry-run", "--no-judge"], home);
+  assert.match(r.stderr, /still a placeholder/);
+  assert.match(r.stdout, /nothing to run/);
+  assert.equal(r.code, 2);
+});
+
+test("--brew-upgrade --dry-run does not upgrade the machine", async (t) => {
+  const url = await stubForge(["v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  await writeConfig(home, [tool({ source: url })]);
+  // A brew that fails loudly if it is called at all: --dry-run must not reach
+  // it, and "did not run" is otherwise indistinguishable from "ran quietly".
+  const dir = await hermeticBin();
+  await writeFile(join(dir, "brew"), "#!/bin/sh\necho 'BREW WAS CALLED' >&2\nexit 1\n");
+  await chmod(join(dir, "brew"), 0o755);
+
+  const r = await runCli(["digest", "--brew-upgrade", "--dry-run", "--no-judge"], home, { PATH: dir });
+  assert.match(r.stdout, /brew update && brew upgrade/, "it still has to say what it would run");
+  assert.doesNotMatch(r.stderr, /BREW WAS CALLED/, "the dry run reached brew anyway");
 });
 
 test("a pending release exits 1, which is what a scheduled run acts on", async (t) => {

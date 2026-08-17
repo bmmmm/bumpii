@@ -79,6 +79,8 @@ Options:
   --json              machine-readable report
   --no-judge          skip the model; list pending releases and their URLs
   --dry-run           with add: show the entries, write nothing
+                      with --yes/--brew-upgrade: print the update commands
+                      that would run, and run none of them
   --brew-upgrade      after the digest, run brew update && brew upgrade —
                       unjudged, and not limited to tools.json
   -h, --help
@@ -913,6 +915,47 @@ async function dispatch(progress: Progress): Promise<number> {
   }
 
   let updateFailures = 0;
+  // What `--yes` would run, without running any of it.
+  //
+  // The same flag `add` already uses, for the same reason: the commands come
+  // out of a config file this tool never wrote, and reading them before they
+  // execute is the difference between an update and a surprise. It prints the
+  // real update lines — not a description of them — and still reports a
+  // placeholder as the failure it would be, because finding that out during
+  // an unattended run is the case worth avoiding.
+  if ((args.yes || args.brewUpgrade) && args.dryRun) {
+    const runnable: string[] = [];
+    for (const r of args.yes ? reports : []) {
+      if (r.error || !r.installed || r.behind.length === 0) continue;
+      if (isManualUpdate(r.tool.update)) {
+        process.stdout.write(`${r.tool.name}: ${r.tool.update.trim()} — nothing to run\n`);
+        continue;
+      }
+      if (isPlaceholderUpdate(r.tool.update)) {
+        updateFailures++;
+        process.stderr.write(
+          `${r.tool.name}: update line is still a placeholder (${r.tool.update.trim()}) — would be skipped\n`,
+        );
+        continue;
+      }
+      runnable.push(`  $ ${r.tool.update}`);
+    }
+    if (args.brewUpgrade) runnable.push("  $ brew update && brew upgrade");
+    process.stdout.write(
+      runnable.length > 0
+        ? `\nwould run ${runnable.length} command${runnable.length === 1 ? "" : "s"}:\n${runnable.join("\n")}\n` +
+            `\n--dry-run: nothing was run\n`
+        : `\nnothing to run\n`,
+    );
+    // Deliberately not the --yes exit code: nothing was updated, so whatever
+    // was pending still is, and a scheduled dry run has to keep saying so.
+    // A placeholder still reports 2 — it is broken now, not once it runs.
+    if (updateFailures > 0) return 2;
+    if (reports.some((r) => !r.error && r.behind.length > 0)) return 1;
+    if (reports.some((r) => r.error)) return 2;
+    return 0;
+  }
+
   if (args.yes) {
     // Picked back up rather than started fresh: the report is printed but the
     // command is not over, and `brew upgrade` is the longest silence in it.
@@ -958,7 +1001,7 @@ async function dispatch(progress: Progress): Promise<number> {
   // judged, per-tool command; this runs everything brew has pending,
   // tracked or not, with none of it read first. Two different kinds of
   // "yes", so one flag cannot silently imply the other.
-  if (args.brewUpgrade) {
+  if (args.brewUpgrade && !args.dryRun) {
     const cmd = "brew update && brew upgrade";
     progress.out(`\n$ ${cmd}\n`);
     // Twenty minutes of allowance and not a byte of output until it returns —
