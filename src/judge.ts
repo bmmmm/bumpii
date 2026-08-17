@@ -6,6 +6,10 @@
 //     OPENAI_BASE_URL — the local path, so notes never have to leave the machine
 //   - the `claude` CLI, when it is on PATH
 // No model is hardcoded or crowned: /v1/models is asked what it serves.
+import { createHash } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { run } from "./exec.ts";
 import { describeFetchError } from "./sources.ts";
 import type { DigestItem, ItemKind, Release } from "./types.ts";
@@ -196,10 +200,101 @@ async function askClaudeCli(engine: Engine, text: string): Promise<string> {
   return r.stdout;
 }
 
-/** Digest one tool's pending releases. Returns [] when no engine is available. */
+/**
+ * Where judged release notes are kept between runs.
+ *
+ * Under the cache directory rather than beside tools.json, which is where the
+ * resolved-source cache lives: that one is a single small table keyed on names
+ * a person might recognise, this one grows by a file per tool per upgrade per
+ * model and is pure derived data. Deleting the directory costs exactly one slow
+ * run, which is also the way to force every judgement to be made again.
+ */
+export function digestCacheDir(): string {
+  const base = process.env.XDG_CACHE_HOME || join(homedir(), ".cache");
+  return join(base, "bumpii", "digests");
+}
+
+/**
+ * The cache key for one judgement.
+ *
+ * Content-addressed over the whole prompt rather than over (tool, version):
+ * the prompt already carries the tool, the versions and the notes, so editing
+ * `prompt` or `PROMPT_BUDGET` retires every entry it would invalidate by
+ * itself — there is no schema counter anyone has to remember to bump, and no
+ * way for a reworded prompt to be answered from the old wording's cache.
+ *
+ * The engine is in the key because the answer is the model's, not the notes':
+ * switching from haiku to a local model must produce that model's reading, not
+ * a replay of the other one's.
+ */
+export function digestKey(engine: Engine, promptText: string): string {
+  return createHash("sha256").update(`${engine.kind}\0${engine.model}\0${promptText}`).digest("hex");
+}
+
+/**
+ * A stored judgement, or null when there is none.
+ *
+ * The raw engine output is what is stored, not the parsed items: parsing is
+ * free next to the call that produced the text, and keeping the text means a
+ * later fix to {@link parseItems} reaches everything already cached instead of
+ * being shadowed by items parsed by the old rules.
+ */
+export async function readCachedDigest(key: string, dir = digestCacheDir()): Promise<string | null> {
+  try {
+    return await readFile(join(dir, `${key}.txt`), "utf8");
+  } catch {
+    // Same rule the source cache follows: a cache is the one file that must
+    // never break a run, so an unreadable one is simply a miss.
+    return null;
+  }
+}
+
+export async function writeCachedDigest(key: string, raw: string, dir = digestCacheDir()): Promise<void> {
+  try {
+    await mkdir(dir, { recursive: true });
+    const path = join(dir, `${key}.txt`);
+    // One file per key, published by rename. Three judges run at once
+    // (JUDGE_CONCURRENCY), and a single shared JSON map would lose entries to
+    // read-modify-write races between them — the failure mode being that the
+    // slowest tool of each run is the only one whose judgement survives.
+    const tmp = `${path}.tmp.${process.pid}`;
+    await writeFile(tmp, raw, "utf8");
+    await rename(tmp, path);
+  } catch {
+    // Failing to persist costs a repeat judgement next run, nothing else.
+  }
+}
+
+/**
+ * Digest one tool's pending releases. Returns [] when no engine is available.
+ *
+ * Answered from cache when the same notes have already been judged by the same
+ * model. This is where nearly all of a run's wall-clock goes — measured at 140s
+ * for `overview` against 4s with `--no-judge`, one `claude -p` subprocess per
+ * tool — and the notes for a published tag do not change, so a hit is not a
+ * stale answer but the same answer without the wait.
+ */
 export async function digest(engine: Engine, tool: string, releases: Release[]): Promise<DigestItem[]> {
   if (engine.kind === "none" || releases.length === 0) return [];
   const text = prompt(tool, releases);
+  const key = digestKey(engine, text);
+
+  const cached = await readCachedDigest(key);
+  if (cached !== null) {
+    try {
+      return parseItems(cached);
+    } catch {
+      // A stored answer that no longer parses is treated as a miss rather than
+      // as a failure: re-judging is always available, and refusing to would
+      // make a tightened parser break runs that used to work.
+    }
+  }
+
   const out = engine.kind === "openai" ? await askOpenAi(engine, text) : await askClaudeCli(engine, text);
-  return parseItems(out);
+  const items = parseItems(out);
+  // Stored only once it has parsed. Caching an answer that does not would pin
+  // that failure for every future run, and the point of the key is that a hit
+  // is always usable.
+  await writeCachedDigest(key, out);
+  return items;
 }
