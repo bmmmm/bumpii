@@ -13,7 +13,7 @@ digests them into security / breaking / feature / fix, and then answers the
 question the notes cannot: **do any of these touch commands I actually call?**
 
 ```console
-$ bumpii
+$ bumpii digest
 gh 2.92.0 → 2.96.0  4 releases behind
   ! security Authorization header incorrectly included in requests to TUF mirrors (2.93.0)
   ! security Command execution when connecting to a malicious Codespace (2.96.0)
@@ -55,7 +55,8 @@ Optional, and only for what they enable: `brew` for `bumpii add`/`scan`,
 
 | | |
 | --- | --- |
-| `bumpii` | digest pending releases for everything tracked |
+| `bumpii` | this help — the digest is asked for by name |
+| `bumpii digest` | digest pending releases for everything tracked |
 | `bumpii overview` | everything brew has pending, ranked by your own usage |
 | `bumpii inbox` | unread GitHub release notifications, digested |
 | `bumpii init` | write a starter config |
@@ -68,15 +69,15 @@ Optional, and only for what they enable: `brew` for `bumpii add`/`scan`,
 | `bumpii list` | what is tracked, and what is still incomplete |
 | `bumpii set <name> <field> <value>` | change one field: `source` or `update` |
 | `bumpii rm <name>…` | stop tracking these |
-| `bumpii --yes` | digest, then run each tool's update command |
-| `bumpii --brew-upgrade` | digest, then `brew update && brew upgrade` — everything brew has pending, tracked or not |
+| `bumpii digest --yes` | digest, then run each tool's update command |
+| `bumpii digest --brew-upgrade` | digest, then `brew update && brew upgrade` — everything brew has pending, tracked or not |
 
 `bumpii --help` carries the options; the sections below cover what each of
 these does and why.
 
 ## The whole machine at once
 
-`bumpii` reports on what you tracked. `bumpii overview` starts from what
+`bumpii digest` reports on what you tracked. `bumpii overview` starts from what
 Homebrew already knows is pending — every formula and cask, tracked or not —
 and sorts it by whether it can say anything useful about it:
 
@@ -480,12 +481,20 @@ typo you would otherwise never see.
 ## Use
 
 ```console
-$ bumpii                  # digest everything, change nothing (exit 1 if anything is pending)
+$ bumpii                  # this help — nothing is fetched, nothing is judged
+$ bumpii digest           # digest everything, change nothing (exit 1 if anything is pending)
 $ bumpii --only gh        # one tool
 $ bumpii --no-judge       # no model: just list pending releases and their URLs
 $ bumpii --json           # machine-readable, for a scheduled run
-$ bumpii --yes            # digest, then run each update command
+$ bumpii digest --yes     # digest, then run each update command
 ```
+
+The digest has to be named. It is the most expensive thing here — a forge
+round-trip per tool and a model that can spend minutes on one release — and
+the bare name is the easiest command in the world to run by accident, so the
+bare name prints help instead. Any argument at all is taken as meaning it,
+which is why the `--only` and `--json` forms above still digest and no
+existing script or cron line changes.
 
 Read-only is the default and updating is never implied: the point is to know
 what is in a release before you take it. `--yes` exists for the unattended
@@ -530,6 +539,45 @@ A count reads as **`30+`** when the forge's first page of releases was full
 and every one of them was pending — the page boundary ended the list, not your
 version, so the real gap is larger.
 
+### While it works
+
+Everything slow here is silent — a GET per forge, a model that may take
+minutes over one release, `brew outdated` on a machine with hundreds of
+formulae — so a run prints a progress line to keep the wait honest:
+
+```console
+   ⡀     v0.1.4  reading changelogs nobody reads 7/12 12s
+    \▄/  *BUMP*  reading changelogs nobody reads 7/12 12s
+  ·⠛⠛⠛·  v0.1.5  reading changelogs nobody reads 8/12 12s
+```
+
+A ball drops, lands, and the landing bumps a version. It is paced rather than
+ticked: the ball hangs at the top, accelerates into the floor, loses height
+with each landing and then rolls for nearly two seconds before something shoves
+it back up — which is the stretch slow enough to read a sentence over. Small
+landings take the patch, the shove out of the roll takes the minor.
+
+The counts beside it are
+the run's own — tools finished out of tools asked about — and so is the
+sentence: each one is only eligible while a predicate over the measured state
+holds, so `34 releases behind` appears when there really are thirty-four and
+never as filler. A line that guessed would be the same failure as a report that
+guessed.
+
+It writes to **stderr only**, and only to a terminal. Piping, redirecting,
+`--json`, cron and CI all produce byte-identical output to a run without it:
+
+| Condition | Effect |
+| --- | --- |
+| stderr is not a TTY | silent |
+| `CI` is set | silent |
+| `TERM=dumb` | silent |
+| `BUMPII_NO_PROGRESS` is set | silent |
+| `NO_COLOR` is set | drawn, without colour |
+
+Nothing is drawn for the first 220ms either, so commands that were never slow
+stay clean.
+
 ### What it is not
 
 Not a package manager — it never resolves or installs anything, it runs the
@@ -545,7 +593,7 @@ Any OpenAI-compatible server is preferred, so notes stay on your machine:
 
 ```console
 $ export OPENAI_BASE_URL=http://127.0.0.1:8080/v1   # oMLX, Ollama, vLLM, LM Studio
-$ bumpii
+$ bumpii digest
 ```
 
 No model is hardcoded — `/v1/models` is asked what it serves, and `--model`
@@ -561,7 +609,7 @@ files name, the compare and release links, the exit codes — and instead of a
 digest you get the notes' own URLs plus this:
 
 ```console
-$ bumpii
+$ bumpii digest
 gh 2.95.0 → 2.97.0  2 releases behind
   no digest — none (no engine reachable); raw notes:
     2.96.0  https://github.com/cli/cli/releases/tag/v2.96.0

@@ -21,6 +21,7 @@ pnpm only; npm is blocked by a `preinstall` guard. Node 24+. No build step —
 `sources.ts` forge APIs · `version.ts` probing and comparison · `judge.ts`
 engine and digest · `usage.ts` grep verdict · `render.ts` the report ·
 `discover.ts` brew → config entry · `exec.ts` the execFile wrapper ·
+`progress.ts` the stderr progress line · `quips.ts` what that line may say ·
 `types.ts` shared shapes, read first.
 
 ## The rule
@@ -48,6 +49,24 @@ Concretely: adding a code path that can fail quietly means adding a branch in
   because a non-zero exit often still printed the version.
 - Tests must not touch the network. Stub `fetch`.
 - A `biome-ignore` comment only suppresses when it fits on one line.
+- An ESC byte inside a **regex literal** is a lint error (it is fine in a
+  plain string), so tests that assert on escape sequences build them from a
+  named `ESC` constant instead.
+- The progress line is subject to the rule above like everything else: a quip
+  in `quips.ts` may only name a quantity the run measured, and its predicate
+  is what enforces that. Watch for the shape a digit check misses — a loose
+  predicate renders `undefined releases behind`, which has no digits and is
+  still a lie. Constants it quotes are imported (`PROBE_TIMEOUT_MS`) or handed
+  in (`concurrency`), never retyped.
+- Anything drawn to stderr must stay inside `process.stderr.columns`, and a
+  reported width of `0` means unknown, not zero — `|| 80`, never `?? 80`. A
+  wrapped line survives `\r\x1b[K` and every frame ends up in the scrollback.
+- `mock.timers.tick(5000)` runs only the timers that were already scheduled
+  when it was called, so it advances a chain of `setTimeout`s by exactly one
+  frame. The progress line is such a chain (each frame states its own
+  duration). Use the `advance()` helper in `test/progress.test.ts`, or the
+  assertions after it measure a single frame while reading as if they covered
+  five seconds.
 
 ## Definition of done
 

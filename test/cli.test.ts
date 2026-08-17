@@ -395,10 +395,28 @@ test("an unknown option exits 2 and names it, rather than running a default dige
 
 test("running without a config points at init instead of a stack trace", async () => {
   const home = await freshHome();
-  const r = await runCli([], home);
+  // Named explicitly: the bare invocation is help now, and help works fine
+  // without a config — which would make this pass while proving nothing.
+  const r = await runCli(["digest"], home);
   assert.equal(r.code, 2);
   assert.match(r.stderr, /bumpii init/);
   assert.doesNotMatch(r.stderr, /at .*\.ts:/, "an ENOENT trace is not an error message");
+});
+
+test("the bare invocation prints help and touches nothing", async () => {
+  const home = await freshHome();
+  const r = await runCli([], home);
+  assert.equal(r.code, 0, "help is not an error");
+  assert.match(r.stdout, /bumpii digest/, "help has to name the command it replaced");
+  // No config, and nothing complained: proof it never went looking for one.
+  assert.equal(r.stderr, "");
+});
+
+test("digest refuses a positional instead of digesting everything", async () => {
+  const home = await freshHome();
+  const r = await runCli(["digest", "gh"], home);
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /--only gh/, "should point at the flag that means what was typed");
 });
 
 test("a manual update line is complete — list counts only the comment as a gap", async () => {

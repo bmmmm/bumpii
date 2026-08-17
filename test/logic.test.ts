@@ -121,11 +121,22 @@ test("releasesBehind with no installed version takes only the newest", () => {
   );
 });
 
-test("parseArgs defaults to a read-only digest", () => {
-  const a = parseArgs([]);
-  assert.equal(a.cmd, "digest");
-  assert.equal(a.yes, false, "updating must never be the default");
-  assert.equal(a.brewUpgrade, false, "a blanket brew upgrade must never be the default either");
+test("the bare name is help, so the expensive command cannot be run by accident", () => {
+  // The digest is a forge round-trip per tool and a model that can sit on one
+  // release for minutes. It has to be asked for.
+  assert.equal(parseArgs([]).cmd, "help");
+});
+
+test("parseArgs defaults to a read-only digest once anything is asked of it", () => {
+  // Any argument at all means somebody meant it — which is what keeps the
+  // `bumpii --only <image>` in images-digest.sh and a `bumpii --json` cron
+  // line working exactly as they did.
+  for (const argv of [["digest"], ["--json"], ["--only", "gh"]]) {
+    const a = parseArgs(argv);
+    assert.equal(a.cmd, "digest", `${argv.join(" ")} should still digest`);
+    assert.equal(a.yes, false, "updating must never be the default");
+    assert.equal(a.brewUpgrade, false, "a blanket brew upgrade must never be the default either");
+  }
 });
 
 test("parseArgs keeps --brew-upgrade apart from --yes", () => {

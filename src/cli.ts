@@ -24,6 +24,7 @@ import { digest, resolveEngine } from "./judge.ts";
 import { limiter } from "./limit.ts";
 import { brewOutdated } from "./outdated.ts";
 import { buildOverview, untrackedOutdatedCount } from "./overview.ts";
+import { type Progress, startProgress } from "./progress.ts";
 import { renderInbox, renderOverview, renderReport } from "./render.ts";
 import { channelStatus, listReleases, parseSource } from "./sources.ts";
 import type { DigestItem, Release, ToolConfig, ToolReport } from "./types.ts";
@@ -41,7 +42,8 @@ const JUDGE_CONCURRENCY = 3;
 
 const HELP = `bumpii — what changed in the CLIs and containers you run, judged against your usage
 
-  bumpii [options]        digest pending releases for every configured tool
+  bumpii                  this help — the digest has to be asked for by name
+  bumpii digest           digest pending releases for every configured tool
   bumpii overview         everything brew has pending, ranked by your own usage
   bumpii inbox            unread GitHub release notifications, digested
   bumpii init             write a starter config
@@ -54,9 +56,13 @@ const HELP = `bumpii — what changed in the CLIs and containers you run, judged
   bumpii scan --image     list running containers not yet tracked
   bumpii scan --new       list what was installed recently
   bumpii scan --unref     list formulae no file of yours names
-  bumpii --yes            digest, then run each tool's update command
-  bumpii --brew-upgrade   digest, then run brew update && brew upgrade —
+  bumpii digest --yes     digest, then run each tool's update command
+  bumpii digest --brew-upgrade
+                          digest, then run brew update && brew upgrade —
                           everything brew has pending, tracked or not
+
+Any argument at all runs the command it names, so 'bumpii --only gh' and
+'bumpii --json' still digest — only the bare name is help.
 
 Options:
   --image             with add: read the arguments as container names
@@ -158,6 +164,16 @@ export function parseArgs(argv: string[]): Args {
     only: [],
     rest: [],
   };
+  // `bumpii` on its own is help, not a digest.
+  //
+  // The digest is the most expensive thing here — a forge round-trip per tool
+  // and a model that can sit on one release for minutes — and it used to be
+  // what you got for typing the bare name, which is the easiest command in the
+  // world to run by accident. Nothing else changes: any argument at all, flag
+  // or subcommand, means somebody meant it, so `bumpii --only gh` and the
+  // `bumpii --json` in a cron line behave exactly as before.
+  if (argv.length === 0) return { ...a, cmd: "help" };
+
   let sawCmd = false;
   for (let i = 0; i < argv.length; i++) {
     const v = argv[i];
@@ -171,7 +187,8 @@ export function parseArgs(argv: string[]): Args {
         v === "set" ||
         v === "rm" ||
         v === "overview" ||
-        v === "inbox")
+        v === "inbox" ||
+        v === "digest")
     ) {
       a.cmd = v;
       sawCmd = true;
@@ -256,7 +273,23 @@ export function containerOf(tool: ToolConfig): string[] {
   return target && !target.startsWith("{{") ? [target] : [];
 }
 
+/**
+ * One progress line for the whole command, stopped on every exit path.
+ *
+ * Started out here rather than inside each branch so that a command is one
+ * animation from start to finish — the ball keeps bouncing across resolving an
+ * engine, reading forges and judging, instead of a fresh spinner per step.
+ */
 async function main(): Promise<number> {
+  const progress = startProgress();
+  try {
+    return await dispatch(progress);
+  } finally {
+    progress.stop();
+  }
+}
+
+async function dispatch(progress: Progress): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
 
   if (args.cmd === "help") {
@@ -345,9 +378,11 @@ async function main(): Promise<number> {
   if (args.cmd === "scan" && args.onlyNew) {
     const cfg = await loadConfig();
     const cutoff = Date.now() / 1000 - args.sinceDays * 86_400;
+    progress.phase("brew");
     const fresh = (await installedFormulae())
       .filter((f) => f.installedAt !== null && f.installedAt >= cutoff)
       .sort((a, b) => (b.installedAt ?? 0) - (a.installedAt ?? 0));
+    progress.pause();
 
     if (fresh.length === 0) {
       process.stdout.write(
@@ -426,8 +461,10 @@ async function main(): Promise<number> {
       );
     }
 
+    progress.phase("brew");
     const leafNames = await leaves();
     const receipts = new Map((await installedFormulae()).map((f) => [f.name, f]));
+    progress.phase("discover", { tools: leafNames.length });
     // A formula is often not called by its own name — forgejo-cli ships `fj` —
     // so the binaries it installs are searched for too. Grepping the formula
     // name alone would report it as unmentioned while every script calls it.
@@ -437,8 +474,11 @@ async function main(): Promise<number> {
         return { formula, needles: [...new Set([formula, short, ...(await binariesOf(short))])] };
       }),
     );
-    const found = await mentioned(usage.roots, [...new Set(candidates.flatMap((c) => c.needles))]);
+    const needles = [...new Set(candidates.flatMap((c) => c.needles))];
+    progress.phase("grep", { commands: needles.length, roots: usage.roots.length });
+    const found = await mentioned(usage.roots, needles);
     const unref = candidates.filter((c) => !c.needles.some((n) => found.has(n)));
+    progress.pause();
 
     if (unref.length === 0) {
       process.stdout.write(`every one of the ${leafNames.length} leaves is named somewhere in your files\n`);
@@ -466,7 +506,9 @@ async function main(): Promise<number> {
     // Key by every name an entry answers to: the config key, plus the container
     // its version probe inspects — those differ once an entry is renamed.
     const tracked = new Set(cfg.tools.flatMap((t) => [t.name, ...containerOf(t)]));
+    progress.phase("discover");
     const { runtime, running, untracked } = await untrackedContainers(tracked);
+    progress.pause();
     if (running === 0) {
       // Not the same answer as "all tracked", and saying so names the runtime
       // that was asked — the machine may well have containers under the other.
@@ -492,7 +534,9 @@ async function main(): Promise<number> {
     const cfg = await loadConfig();
     // Key by the formula each entry upgrades, not by its binary name.
     const tracked = new Set(cfg.tools.flatMap((t) => [t.name, ...formulaOf(t.update)]));
+    progress.phase("brew");
     const untracked = await untrackedFormulae(tracked);
+    progress.pause();
     if (untracked.length === 0) {
       process.stdout.write("every installed formula is already tracked\n");
       return 0;
@@ -523,6 +567,7 @@ async function main(): Promise<number> {
     // What brew knows about all of them, in one call rather than one per name:
     // brew starting is what costs, not the length of the list. The container
     // path has no equivalent — an inspect is per container by nature.
+    progress.phase("discover", { tools: args.rest.length, total: args.rest.length, done: 0 });
     const brewKnown = args.image ? undefined : await brewJsonMany(args.rest);
 
     // Concurrently: each entry costs an inspect or a brew call, and on the
@@ -537,9 +582,12 @@ async function main(): Promise<number> {
           return { ok: true as const, value: d };
         } catch (err) {
           return { ok: false as const, message: (err as Error).message };
+        } finally {
+          progress.step();
         }
       }),
     );
+    progress.pause();
     const found = [];
     let incomplete = 0;
     // Reported in the order they were asked for, not the order they finished.
@@ -603,14 +651,18 @@ async function main(): Promise<number> {
   }
 
   if (args.cmd === "inbox") {
+    progress.phase("config");
     const config = await loadConfig();
     if (args.rest.length > 0) {
       throw new Error("inbox takes no arguments — it reads your unread GitHub notifications as they are");
     }
+    progress.phase("engine");
     const engine = args.noJudge
       ? { kind: "none" as const, model: "", label: "skipped (--no-judge)" }
       : await resolveEngine({ model: args.model });
-    const inbox = await buildInbox(config, { engine, concurrency: JUDGE_CONCURRENCY });
+    progress.set({ engine: engine.kind });
+    const inbox = await buildInbox(config, { engine, concurrency: JUDGE_CONCURRENCY, progress });
+    progress.pause();
     process.stdout.write(args.json ? `${JSON.stringify(inbox, null, 2)}\n` : renderInbox(inbox));
 
     if (args.markRead) {
@@ -632,6 +684,7 @@ async function main(): Promise<number> {
   }
 
   if (args.cmd === "overview") {
+    progress.phase("config");
     const config = await loadConfig();
     // Positionals mean nothing here, and silently ignoring them would print the
     // whole report as though the question had been answered.
@@ -640,14 +693,18 @@ async function main(): Promise<number> {
         `overview takes no arguments — did you mean --only ${args.rest.join(",")}? (or 'bumpii add ${args.rest.join(" ")}')`,
       );
     }
+    progress.phase("engine");
     const engine = args.noJudge
       ? { kind: "none" as const, model: "", label: "skipped (--no-judge)" }
       : await resolveEngine({ model: args.model });
+    progress.set({ engine: engine.kind });
     const overview = await buildOverview(config, {
       engine,
       only: args.only,
       concurrency: JUDGE_CONCURRENCY,
+      progress,
     });
+    progress.pause();
     // A typo in --only must not read as "nothing is outdated". Checked after
     // the build rather than against the config, because overview ranges over
     // everything brew has pending, not only what is tracked — and only when
@@ -670,14 +727,28 @@ async function main(): Promise<number> {
     return overview.entries.length > 0 ? 1 : 0;
   }
 
+  // Positionals mean nothing here, and swallowing them printed the whole
+  // report as though the question had been answered — the same trap `overview`
+  // already guards, now reachable by name as `bumpii digest gh`.
+  if (args.rest.length > 0) {
+    throw new Error(
+      `digest takes no arguments — did you mean --only ${args.rest.join(",")}? (or 'bumpii add ${args.rest.join(" ")}')`,
+    );
+  }
+
+  progress.phase("config");
   const config = await loadConfig();
   const tools = args.only.length ? config.tools.filter((t) => args.only.includes(t.name)) : config.tools;
   if (tools.length === 0)
     throw new Error(`no tools matched --only ${args.only.join(",")} — see 'bumpii list' for the names`);
 
+  // Probing a model server is one of the two places a run can sit still before
+  // it has anything to show for it, so it gets said out loud.
+  progress.phase("engine", { tools: tools.length });
   const engine = args.noJudge
     ? { kind: "none" as const, model: "", label: "skipped (--no-judge)" }
     : await resolveEngine({ model: args.model });
+  progress.set({ engine: engine.kind });
 
   // Resolved once, not per tool: a usage path that does not exist would make
   // every grep come back empty and every tool report "affects you: none".
@@ -697,12 +768,25 @@ async function main(): Promise<number> {
   // extracted between them. Grepping inside the map re-walked the usagePaths
   // for each tool, which is the same trees read once per tracked tool to
   // answer a single question about all of them.
+  // Counted here rather than read back out of the progress line: the phase
+  // switch below needs the running total to carry it across, and a spinner
+  // that owns numbers nobody else can see is a spinner that can drift from
+  // the run it claims to describe.
+  let finished = 0;
+  let behindTotal = 0;
+  let judging = false;
+  const done = (): void => progress.set({ done: ++finished });
+
+  progress.phase("fetch", { total: tools.length, done: 0, tools: tools.length });
   const built: { report: ToolReport; commands: string[] }[] = await Promise.all(
     tools.map(async (tool): Promise<{ report: ToolReport; commands: string[] }> => {
       const base: ToolReport = { tool, installed: null, latest: null, behind: [], items: [], hits: [] };
       // No source means there is nothing to ask, so no forge is contacted and
       // no version probed — render.ts reports it as waiting for one line.
-      if (!tool.source) return { report: base, commands: [] };
+      if (!tool.source) {
+        done();
+        return { report: base, commands: [] };
+      }
       try {
         const ref = parseSource(tool.source);
         let installed: string | null;
@@ -726,6 +810,22 @@ async function main(): Promise<number> {
           behind = releasesBehind(list.releases, inst);
           latest = latestComparable(list.releases);
           truncated = isTruncated(list.releases, behind, list.capped);
+        }
+
+        behindTotal += behind.length;
+        progress.set({ releases: behindTotal });
+        // From the first digest on, judging is what the run is waiting for —
+        // fetches still finishing behind it are not what makes it slow. The
+        // count carries across because both phases count the same thing: tools
+        // fully dealt with, out of the tools asked about.
+        if (!judging && behind.length > 0 && engine.kind !== "none") {
+          judging = true;
+          progress.phase("judge", {
+            total: tools.length,
+            done: finished,
+            tools: tools.length,
+            concurrency: JUDGE_CONCURRENCY,
+          });
         }
 
         // Digesting is fallible in a way fetching is not — a small local model
@@ -766,10 +866,17 @@ async function main(): Promise<number> {
           report: { ...base, error: err instanceof Error ? err.message : String(err) },
           commands: [],
         };
+      } finally {
+        // Both paths: a tool that failed is still a tool this run is done
+        // waiting for, and a counter that only advances on success stalls at
+        // 9/12 for the rest of a run that is actually progressing.
+        done();
       }
     }),
   );
 
+  const commandCount = built.reduce((n, b) => n + b.commands.length, 0);
+  progress.phase("grep", { commands: commandCount, roots: usage.roots.length });
   const usageHits = await findUsageAcross(
     usage.roots,
     built.map((b) => b.commands),
@@ -780,12 +887,17 @@ async function main(): Promise<number> {
   // tools.json does not track. `undefined` on failure — brew missing (Linux
   // CI, no Homebrew) or erroring costs this line, not the digest above it.
   let otherPending: number | undefined;
+  progress.phase("brew");
   try {
     otherPending = untrackedOutdatedCount(await brewOutdated(), config.tools);
   } catch {
     otherPending = undefined;
   }
 
+  // Everything below writes the report, so the line comes down first — an
+  // animation and a report sharing a row is how a spinner ends up frozen in
+  // somebody's scrollback.
+  progress.pause();
   const noUsagePaths = config.usagePaths.length === 0;
   if (args.json) {
     // The whole engine, not just its label: a scheduled run that acts on this
@@ -802,13 +914,19 @@ async function main(): Promise<number> {
 
   let updateFailures = 0;
   if (args.yes) {
+    // Picked back up rather than started fresh: the report is printed but the
+    // command is not over, and `brew upgrade` is the longest silence in it.
+    const pending = reports.filter((r) => !r.error && r.installed && r.behind.length > 0);
+    progress.phase("update", { total: pending.length, done: 0 });
+    progress.resume();
     for (const r of reports) {
       if (r.error || !r.installed || r.behind.length === 0) continue;
       // A manual entry is complete — there is simply no command to run — so
       // skipping it is routine, not a failure, and must not turn the exit
       // code red the way an unfinished placeholder does.
       if (isManualUpdate(r.tool.update)) {
-        process.stdout.write(`${r.tool.name}: ${r.tool.update.trim()} — skipped\n`);
+        progress.out(`${r.tool.name}: ${r.tool.update.trim()} — skipped\n`);
+        progress.step();
         continue;
       }
       // A placeholder update line is a comment, which `sh -c` runs happily and
@@ -816,21 +934,24 @@ async function main(): Promise<number> {
       // is the exact class of quiet wrong answer this tool exists to avoid.
       if (isPlaceholderUpdate(r.tool.update)) {
         updateFailures++;
-        process.stderr.write(
+        progress.err(
           `${r.tool.name}: update line is still a placeholder (${r.tool.update.trim()}) — skipped\n`,
         );
+        progress.step();
         continue;
       }
-      process.stdout.write(`\n$ ${r.tool.update}\n`);
+      progress.out(`\n$ ${r.tool.update}\n`);
       try {
         const out = await run("/bin/sh", ["-c", r.tool.update], { timeout: 600_000 });
-        process.stdout.write(out.stdout);
+        progress.out(out.stdout);
       } catch (err) {
         // Keep going: one formula failing to build should not block the others.
         updateFailures++;
-        process.stderr.write(`${r.tool.name}: update failed: ${(err as Error).message}\n`);
+        progress.err(`${r.tool.name}: update failed: ${(err as Error).message}\n`);
       }
+      progress.step();
     }
+    progress.pause();
   }
 
   // Deliberately not folded into the --yes loop above: that one runs a
@@ -839,14 +960,19 @@ async function main(): Promise<number> {
   // "yes", so one flag cannot silently imply the other.
   if (args.brewUpgrade) {
     const cmd = "brew update && brew upgrade";
-    process.stdout.write(`\n$ ${cmd}\n`);
+    progress.out(`\n$ ${cmd}\n`);
+    // Twenty minutes of allowance and not a byte of output until it returns —
+    // the one place in this tool where a spinner is not decoration.
+    progress.phase("update");
+    progress.resume();
     try {
       const out = await run("/bin/sh", ["-c", cmd], { timeout: 1_200_000 });
-      process.stdout.write(out.stdout);
+      progress.out(out.stdout);
     } catch (err) {
       updateFailures++;
-      process.stderr.write(`brew update && brew upgrade failed: ${(err as Error).message}\n`);
+      progress.err(`brew update && brew upgrade failed: ${(err as Error).message}\n`);
     }
+    progress.pause();
   }
 
   // An unattended --yes/--brew-upgrade run has to be able to say it did not

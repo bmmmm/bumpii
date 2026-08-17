@@ -18,6 +18,7 @@ import {
   type OutdatedPackage,
   resolveSources,
 } from "./outdated.ts";
+import type { Progress } from "./progress.ts";
 import { listReleases, parseSource } from "./sources.ts";
 import type { Config, DigestItem, Release, ToolConfig, UsageHit } from "./types.ts";
 import { commandsFromNotes, findUsageAcross, referenceCounts, resolveUsagePaths } from "./usage.ts";
@@ -227,9 +228,19 @@ export interface OverviewOptions {
   only?: string[];
   /** How many tools may be judged at once. */
   concurrency: number;
+  /**
+   * Where to report which part of this is running. Optional, and the counts
+   * fed to it are the ones this function already keeps — nothing is estimated
+   * for the sake of a nicer-looking line.
+   */
+  progress?: Progress;
 }
 
 export async function buildOverview(config: Config, opts: OverviewOptions): Promise<Overview> {
+  const progress = opts.progress;
+  // On a machine with a few hundred formulae this alone is several seconds of
+  // silence before anything else can start.
+  progress?.phase("brew");
   const outdated = await brewOutdated();
   // --only names whatever the user calls the tool; brew prints its own name.
   // Expanded through every alias a tracked entry answers to, so `--only fj`
@@ -258,6 +269,7 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
       ...config.tools.map((t) => t.name),
     ]),
   ];
+  progress?.phase("grep", { commands: countNames.length, roots: usage.roots.length });
   const refs = await referenceCounts(usage.roots, countNames);
 
   /** The strongest count among the names this package answers to. */
@@ -270,9 +282,19 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
   // Resolved for everything pending, not only for what is referenced: the
   // unreferenced list is deliberately unjudged, but it still promises a link,
   // and a link is the one thing that is useful without any judgement at all.
+  progress?.phase("discover", { tools: wanted.length });
   const sources = await resolveSources(wanted.map((p) => p.name));
 
   const limitJudge = limiter(opts.concurrency);
+
+  // Same two counters the digest command keeps, for the same reason: the phase
+  // switch below needs the running total, and a count that comes from anywhere
+  // other than the work itself is a count that can be wrong.
+  let finished = 0;
+  let behindTotal = 0;
+  let judging = false;
+  const done = (): void => progress?.set({ done: ++finished });
+  progress?.phase("fetch", { total: wanted.length, done: 0, tools: wanted.length });
 
   // Built in two passes: everything each entry can say on its own first, then
   // ONE grep for the commands all of them extracted. Grepping inside the map
@@ -304,12 +326,17 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
         mechanical: false,
         compare: null,
       };
-      if (count === 0) return { entry: base, commands: [] };
-      if (!source)
+      if (count === 0) {
+        done();
+        return { entry: base, commands: [] };
+      }
+      if (!source) {
+        done();
         return {
           entry: { ...base, bucket: bucketFor({ refs: count, source, itemCount: 0 }) },
           commands: [],
         };
+      }
 
       try {
         const list = await listReleases(parseSource(source));
@@ -320,6 +347,18 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
         const truncated = isTruncated(list.releases, behind, list.capped);
 
         const compare = compareFor(source, list.releases, pkg.installed, pkg.latest);
+
+        behindTotal += behind.length;
+        progress?.set({ releases: behindTotal });
+        if (!judging && behind.length > 0 && opts.engine.kind !== "none") {
+          judging = true;
+          progress?.phase("judge", {
+            total: wanted.length,
+            done: finished,
+            tools: wanted.length,
+            concurrency: opts.concurrency,
+          });
+        }
 
         // A digest that fails costs the summary, not the news — same split the
         // digest command makes, for the same reason.
@@ -361,10 +400,19 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
           },
           commands: [],
         };
+      } finally {
+        // Counted on the failing path too: an unreachable forge is one fewer
+        // thing this run is waiting for, and a counter that stalls at 9/12
+        // says the opposite.
+        done();
       }
     }),
   );
 
+  progress?.phase("grep", {
+    commands: built.reduce((n, b) => n + b.commands.length, 0),
+    roots: usage.roots.length,
+  });
   const hits = await findUsageAcross(
     usage.roots,
     built.map((b) => b.commands),
@@ -383,6 +431,7 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
     // question about one package, and put its own count in the summary.
     .filter((t) => only.size === 0 || namesOf(t).some((n) => only.has(n)));
   const brewManaged = quiet.filter((t) => formulaOf(t.update) !== null);
+  progress?.phase("brew");
   const installedVersions = await brewInstalledVersions(
     brewManaged.flatMap((t) => {
       const f = formulaOf(t.update);

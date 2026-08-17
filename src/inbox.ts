@@ -9,6 +9,7 @@
 // notifications shrinks to the lines that touch what you run.
 import { digest, type Engine } from "./judge.ts";
 import { limiter } from "./limit.ts";
+import type { Progress } from "./progress.ts";
 import { authHeaders, bare, type ForgeRef, getJson } from "./sources.ts";
 import type { Config, DigestItem, Release, UsageHit } from "./types.ts";
 import { commandsFromNotes, findUsageAcross, resolveUsagePaths } from "./usage.ts";
@@ -119,10 +120,14 @@ export interface InboxOptions {
   engine: Engine;
   /** How many repos may be judged at once. */
   concurrency: number;
+  /** Where to report which part of this is running. Counts come from the run. */
+  progress?: Progress;
 }
 
 export async function buildInbox(config: Config, opts: InboxOptions): Promise<Inbox> {
+  const progress = opts.progress;
   const usage = await resolveUsagePaths(config.usagePaths);
+  progress?.phase("notifications");
   const raw = await notifications();
 
   // Group release threads by repo: three claude-code releases are one entry
@@ -149,6 +154,10 @@ export async function buildInbox(config: Config, opts: InboxOptions): Promise<In
 
   const tracked = trackedRepos(config);
   const limitJudge = limiter(opts.concurrency);
+
+  let finished = 0;
+  const done = (): void => progress?.set({ done: ++finished });
+  progress?.phase("fetch", { total: byRepo.size, done: 0, tools: byRepo.size });
 
   // Two passes, same as the digest and the overview: everything each entry can
   // say on its own, then ONE grep for the commands all of them extracted.
@@ -187,6 +196,14 @@ export async function buildInbox(config: Config, opts: InboxOptions): Promise<In
         // split the digest command makes, for the same reason.
         let items: DigestItem[] = [];
         let digestError: string | undefined;
+        if (releases.length > 0 && opts.engine.kind !== "none") {
+          progress?.phase("judge", {
+            total: byRepo.size,
+            done: finished,
+            tools: byRepo.size,
+            concurrency: opts.concurrency,
+          });
+        }
         try {
           items = await limitJudge(() => digest(opts.engine, name, releases));
         } catch (err) {
@@ -211,10 +228,16 @@ export async function buildInbox(config: Config, opts: InboxOptions): Promise<In
           entry: { ...base, error: err instanceof Error ? err.message : String(err) },
           commands: [],
         };
+      } finally {
+        done();
       }
     }),
   );
 
+  progress?.phase("grep", {
+    commands: built.reduce((n, b) => n + b.commands.length, 0),
+    roots: usage.roots.length,
+  });
   const hits = await findUsageAcross(
     usage.roots,
     built.map((b) => b.commands),

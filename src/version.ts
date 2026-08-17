@@ -10,6 +10,14 @@ import type { Release, ToolConfig } from "./types.ts";
  * argv, never a shell string: a version probe is the last place that should be
  * able to run a second command because someone put a `;` in a config file.
  */
+/**
+ * How long one version probe may take before it is abandoned.
+ *
+ * Exported because the progress line quotes it at the user — a number written
+ * out twice is a number that will disagree with itself eventually.
+ */
+export const PROBE_TIMEOUT_MS = 10_000;
+
 export async function installedVersion(tool: ToolConfig): Promise<string | null> {
   const [bin, ...args] = tool.version.cmd;
   if (!bin)
@@ -19,7 +27,7 @@ export async function installedVersion(tool: ToolConfig): Promise<string | null>
   let out: string;
   let probeFailed = false;
   try {
-    const r = await run(bin, args, { timeout: 10_000 });
+    const r = await run(bin, args, { timeout: PROBE_TIMEOUT_MS });
     // Some CLIs print their version to stderr; `fj version` uses stdout, but
     // being wrong about that would silently report "not installed".
     out = `${r.stdout}\n${r.stderr}`;
