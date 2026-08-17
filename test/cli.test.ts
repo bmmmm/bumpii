@@ -483,6 +483,25 @@ async function stubForge(tags: string[]): Promise<string | null> {
   return typeof addr === "object" && addr ? `http://127.0.0.1:${addr.port}/o/r` : null;
 }
 
+/** A forge that is reachable but broken, so listReleases fails per tool. */
+async function stubForgeFailing(): Promise<string | null> {
+  const server = http.createServer((_req, res) => {
+    res.writeHead(500, { "content-type": "text/plain" });
+    res.end("upstream is having a day");
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+  } catch {
+    return null;
+  }
+  servers.push(server);
+  const addr = server.address();
+  return typeof addr === "object" && addr ? `http://127.0.0.1:${addr.port}/o/r` : null;
+}
+
 const SKIP = "cannot bind a loopback port in this environment";
 
 test("a tool with nothing newer exits 0", async (t) => {
@@ -508,6 +527,35 @@ test("--yes skips a manual entry as routine, not as a failure", async (t) => {
   const r = await runCli(["--yes", "--no-judge"], home);
   assert.match(r.stdout, /manual: use the in-app updater — skipped/);
   assert.equal(r.code, 0, "nothing failed — a manual entry is not a broken one");
+});
+
+test("a run that could not reach anything must not exit 0", async (t) => {
+  // Found by running the real digest with the network pulled out: twelve
+  // tools, twelve "cannot reach api.github.com", and exit 0 — which is the
+  // documented code for "nothing pending". A cron reading
+  // `bumpii --json || notify` stays silent exactly when it has gone blind.
+  const url = await stubForgeFailing();
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  await writeConfig(home, [tool({ source: url })]);
+
+  const r = await runCli(["digest", "--no-judge"], home);
+  assert.match(r.stdout, /error/, "the report itself has to name the failure");
+  assert.equal(r.code, 2, "0 would claim a check that never happened");
+});
+
+test("one broken tool among current ones still exits non-zero", async (t) => {
+  // The mixed case: nothing is pending, one forge failed. "Nothing pending"
+  // is only true of the eleven that answered.
+  const ok = await stubForge(["v1.0.0"]);
+  const broken = await stubForgeFailing();
+  if (!ok || !broken) return t.skip(SKIP);
+  const home = await freshHome();
+  await writeConfig(home, [tool({ source: ok }), tool({ name: "other", source: broken })]);
+
+  const r = await runCli(["digest", "--no-judge"], home);
+  assert.match(r.stdout, /up to date/, "the tool that answered is still reported");
+  assert.equal(r.code, 2);
 });
 
 test("a pending release exits 1, which is what a scheduled run acts on", async (t) => {

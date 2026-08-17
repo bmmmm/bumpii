@@ -980,7 +980,15 @@ async function dispatch(progress: Progress): Promise<number> {
   // cron goes unseen.
   if (args.yes || args.brewUpgrade) return updateFailures > 0 ? 2 : 0;
   // Non-zero when something is pending, so a scheduled run can act on it.
-  return reports.some((r) => !r.error && r.behind.length > 0) ? 1 : 0;
+  if (reports.some((r) => !r.error && r.behind.length > 0)) return 1;
+  // Nothing is pending — but a `0` here means "checked, and nothing was
+  // waiting", and a run where forges could not be reached did not check.
+  // Pulling the network out of a real run produced twelve errors and exit 0,
+  // which is `bumpii --json || notify` staying quiet precisely when it could
+  // not see. The report already says "error" per tool; the exit code has to
+  // agree with it.
+  if (reports.some((r) => r.error)) return 2;
+  return 0;
 }
 
 // Only run when invoked as the entrypoint. Without this guard, importing

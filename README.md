@@ -500,10 +500,13 @@ Read-only is the default and updating is never implied: the point is to know
 what is in a release before you take it. `--yes` exists for the unattended
 case; it prints the digest first regardless.
 
-Exit codes: `0` nothing pending, `1` updates available, `2` error. Under
-`--yes` there is nothing left pending by definition, so it exits `0` when
-every update ran and `2` when any of them failed — an unattended run has to be
-able to say it did not work. The `1` is there so a scheduled run can act on it:
+Exit codes: `0` nothing pending, `1` updates available, `2` error. `0` means
+*checked, and nothing was waiting* — so a run where a forge could not be
+reached exits `2` even though nothing came back pending, because nothing was
+checked either. Under `--yes` there is nothing left pending by definition, so
+it exits `0` when every update ran and `2` when any of them failed — an
+unattended run has to be able to say it did not work. The `1` is there so a
+scheduled run can act on it:
 
 ```console
 0 9 * * 1  bumpii --json > ~/tmp/bumpii.json || notify "tool updates pending"
