@@ -7,7 +7,7 @@
 // at all (the last entry in discover.ts's PROBES). A CLI invoked bare is quite
 // often a REPL, and an inherited open stdin pipe keeps it alive until the
 // timeout fires. Closing stdin makes it read EOF and exit at once.
-import { type ExecFileOptions, execFile } from "node:child_process";
+import { type ChildProcess, type ExecFileOptions, execFile } from "node:child_process";
 
 export interface ExecOutput {
   stdout: string;
@@ -32,6 +32,34 @@ export interface ExecError extends Error {
  */
 const MAX_OUTPUT = 32 * 1024 * 1024;
 
+/**
+ * Every child still running, so a signal can take them with it.
+ *
+ * Killing the parent does not kill these. Measured: SIGINT to the process
+ * left its `sleep` child running and reparented. The commands here are not
+ * cheap ones to strand — a judge is a `claude` invocation that may have
+ * minutes of work left, and `--yes` runs `brew upgrade`, which was still
+ * compiling. A terminal's Ctrl-C does signal the whole foreground group, so
+ * the interactive case usually survives by luck; nothing about a SIGTERM, a
+ * process supervisor or a parent that is not a terminal does.
+ */
+const running = new Set<ChildProcess>();
+
+/**
+ * Signal every child still running. Does not wait for them: this is called
+ * from a signal handler on its way to process.exit, and a child that ignores
+ * the signal would otherwise hold the terminal for as long as it liked.
+ */
+export function killChildren(signal: NodeJS.Signals = "SIGTERM"): number {
+  let sent = 0;
+  for (const c of running) {
+    // Already-dead children are a no-op rather than an error, and `killed`
+    // only says a signal was sent before, not that it worked.
+    if (c.kill(signal)) sent++;
+  }
+  return sent;
+}
+
 export function run(file: string, args: string[], opts: ExecFileOptions = {}): Promise<ExecOutput> {
   return new Promise((resolve, reject) => {
     // Explicit encoding, though utf8 is the default: it is what picks the
@@ -41,6 +69,7 @@ export function run(file: string, args: string[], opts: ExecFileOptions = {}): P
       args,
       { maxBuffer: MAX_OUTPUT, ...opts, encoding: "utf8" as const },
       (err, stdout, stderr) => {
+        running.delete(child);
         if (!err) return resolve({ stdout, stderr });
         const e = err as ExecError;
         // execFile's own error drops the output; the callers need it, because a
@@ -50,6 +79,7 @@ export function run(file: string, args: string[], opts: ExecFileOptions = {}): P
         reject(e);
       },
     );
+    running.add(child);
     child.stdin?.end();
   });
 }

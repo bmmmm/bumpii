@@ -61,6 +61,20 @@ Concretely: adding a code path that can fail quietly means adding a branch in
 - Anything drawn to stderr must stay inside `process.stderr.columns`, and a
   reported width of `0` means unknown, not zero — `|| 80`, never `?? 80`. A
   wrapped line survives `\r\x1b[K` and every frame ends up in the scrollback.
+- Killing this process does not kill what it spawned. `exec.ts` tracks every
+  live child so `killChildren()` can take them along — from the signal
+  handler, and from `main`'s `finally`, because a probe and its forge fetch
+  share a `Promise.all` and a failing fetch exits the run while the probe is
+  still going. Measured: SIGINT left a `sleep` child running and reparented.
+- Registering any SIGINT listener switches off Node's default termination, so
+  every path through that handler must end in `process.exit` — otherwise
+  Ctrl-C does nothing at all. `once`, so a second Ctrl-C gets the default back.
+  Exit codes are 128+signal (130, 143); a shell reports those and scripts read
+  them.
+- Send children **SIGTERM**, whatever signal arrived. A non-interactive
+  `sh -c` defers SIGINT until its current foreground command finishes, so
+  passing SIGINT through let a probe run to completion and write its output
+  after the run had been cancelled.
 - `mock.timers.tick(5000)` runs only the timers that were already scheduled
   when it was called, so it advances a chain of `setTimeout`s by exactly one
   frame. The progress line is such a chain (each frame states its own

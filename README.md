@@ -591,6 +591,11 @@ It writes to **stderr only**, and only to a terminal. Piping, redirecting,
 Nothing is drawn for the first 220ms either, so commands that were never slow
 stay clean.
 
+Ctrl-C is a supported way to leave a long run: it puts the cursor back, and it
+takes the running child with it — a judge is a `claude` invocation that may
+have minutes of work left, and `--yes` runs `brew upgrade`. It exits `130`,
+the conventional code for a run ended by SIGINT.
+
 ### What it is not
 
 Not a package manager — it never resolves or installs anything, it runs the

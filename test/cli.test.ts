@@ -43,6 +43,30 @@ async function runCli(args: string[], home: string, env: Record<string, string> 
 
 const freshHome = () => mkdtemp(join(tmpdir(), "bumpii-cli-"));
 
+/** Start the CLI without waiting for it, for the tests that signal it. */
+function spawnCli(args: string[], home: string, env: Record<string, string> = {}) {
+  return spawn(BIN, args, {
+    env: { ...process.env, XDG_CONFIG_HOME: home, NO_COLOR: "1", ...env },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * A version probe that leaves evidence behind if it is allowed to finish.
+ *
+ * Asserting "the child is gone" needs something observable: pgrep is not
+ * available everywhere and matching on process names picks up whatever else
+ * the machine is running. A file the child creates only after sleeping is
+ * checkable, hermetic, and says exactly what is being asked — did this
+ * outlive the run that started it.
+ */
+const slowProbe = (marker: string, seconds = 4) => ({
+  cmd: ["/bin/sh", "-c", `sleep ${seconds}; printf survived > ${marker}`],
+  match: "([0-9.]+)",
+});
+
 /**
  * Taken from what `init` reports rather than rebuilt here. Guessing it wrong
  * is not a visible failure: the CLI keeps reading the file init wrote, so
@@ -669,6 +693,46 @@ test("--brew-upgrade --dry-run does not upgrade the machine", async (t) => {
   const r = await runCli(["digest", "--brew-upgrade", "--dry-run", "--no-judge"], home, { PATH: dir });
   assert.match(r.stdout, /brew update && brew upgrade/, "it still has to say what it would run");
   assert.doesNotMatch(r.stderr, /BREW WAS CALLED/, "the dry run reached brew anyway");
+});
+
+test("Ctrl-C exits 130 and takes the running child with it", async (t) => {
+  // Measured before this existed: SIGINT killed the process and left its child
+  // running, reparented. For a judge that is a `claude` still working; for
+  // --yes a `brew upgrade` still compiling.
+  const url = await stubForge(["v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  const marker = join(await freshHome(), "survived");
+  await writeConfig(home, [tool({ source: url, version: slowProbe(marker) })]);
+
+  const p = spawnCli(["digest", "--no-judge"], home);
+  await wait(1200); // long enough for the probe to have started
+  p.kill("SIGINT");
+
+  const code = await new Promise<number | null>((resolve) => p.on("close", resolve));
+  assert.equal(code, 130, "128+SIGINT is what a shell reports, and scripts read it");
+
+  // Outlive the probe's own sleep: if it was merely orphaned rather than
+  // killed, this is when it would write its marker.
+  await wait(4000);
+  await assert.rejects(readFile(marker), "the child outlived the run that started it");
+});
+
+test("a run that ends early does not strand a probe it started", async (t) => {
+  // No signal involved. A tool's probe and its forge fetch are one
+  // Promise.all, so a failing fetch rejects the pair while the probe is still
+  // running; the report prints and the process exits out from under it.
+  const broken = await stubForgeFailing();
+  if (!broken) return t.skip(SKIP);
+  const home = await freshHome();
+  const marker = join(await freshHome(), "survived");
+  await writeConfig(home, [tool({ source: broken, version: slowProbe(marker) })]);
+
+  const r = await runCli(["digest", "--no-judge"], home);
+  assert.equal(r.code, 2, "the forge failed, so the run cannot report all-clear");
+
+  await wait(4000);
+  await assert.rejects(readFile(marker), "the probe kept running after bumpii exited");
 });
 
 test("a pending release exits 1, which is what a scheduled run acts on", async (t) => {

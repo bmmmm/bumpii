@@ -17,7 +17,7 @@ import {
   leaves,
   untrackedFormulae,
 } from "./discover.ts";
-import { run } from "./exec.ts";
+import { killChildren, run } from "./exec.ts";
 import { discoverImage, untrackedContainers } from "./images.ts";
 import { buildInbox, markThreadsRead, shownThreads } from "./inbox.ts";
 import { digest, resolveEngine } from "./judge.ts";
@@ -284,11 +284,52 @@ export function containerOf(tool: ToolConfig): string[] {
  */
 async function main(): Promise<number> {
   const progress = startProgress();
+  installSignalHandlers(progress);
   try {
     return await dispatch(progress);
   } finally {
     progress.stop();
+    // Not only for signals: a tool's probe and its forge fetch run as one
+    // Promise.all, so a 404 rejects the pair while the probe is still running.
+    // The report prints, process.exit follows, and the probe is left orphaned
+    // — reproduced with a `sleep` as version.cmd against a bad source. Nothing
+    // here is worth stranding: probes, `claude`, and `brew upgrade` alike.
+    killChildren();
   }
+}
+
+/**
+ * Leave the terminal and the process table as they were found.
+ *
+ * Two things do not happen on their own when this is interrupted. Node's
+ * default SIGINT handling terminates without running `exit` listeners, so the
+ * progress line's cursor-restore never fires and Ctrl-C during a judge hands
+ * back a terminal with no cursor. And a killed parent does not kill its
+ * children: measured, SIGINT left the child running and reparented, which for
+ * a judge is a `claude` still working and for `--yes` a `brew upgrade` still
+ * compiling.
+ *
+ * Registering a SIGINT listener at all switches off Node's default exit, so
+ * every path out of here must end in process.exit — a handler that returned
+ * would leave Ctrl-C doing nothing at all, which is worse than what it fixes.
+ * `once`, so a second Ctrl-C restores the default and kills it outright even
+ * if this is what is stuck. 128+signal is the conventional code a shell
+ * reports for a signalled process, and scripts read it.
+ */
+function installSignalHandlers(progress: Progress): void {
+  const handle = (code: number): void => {
+    progress.stop();
+    // SIGTERM regardless of what arrived here, because the children are not
+    // all interactive programs: a non-interactive `sh -c` defers SIGINT until
+    // its current foreground command finishes, so passing the signal through
+    // let a probe run to completion and write its output anyway — measured.
+    // SIGTERM is the one every one of them treats as "stop now", and it still
+    // lets `claude` and `brew` shut down on their own terms.
+    killChildren("SIGTERM");
+    process.exit(code);
+  };
+  process.once("SIGINT", () => handle(130));
+  process.once("SIGTERM", () => handle(143));
 }
 
 async function dispatch(progress: Progress): Promise<number> {
