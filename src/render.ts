@@ -2,7 +2,7 @@
 import type { Inbox } from "./inbox.ts";
 import type { Engine } from "./judge.ts";
 import type { Overview, OverviewEntry } from "./overview.ts";
-import type { ItemKind, ToolReport, UsageHit } from "./types.ts";
+import type { ItemKind, Release, ToolReport, UsageHit } from "./types.ts";
 import { compareVersions } from "./version.ts";
 
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
@@ -64,6 +64,12 @@ export interface RenderOptions {
    * `missingPaths`, and one no other line of the report betrays. */
   noUsagePaths?: boolean;
   /**
+   * grep did not get to the end of the walk, so every "affects you" below is a
+   * floor. One grep serves the whole run, so this is a property of the run
+   * rather than of any one tool.
+   */
+  usageIncomplete?: string;
+  /**
    * Brew-outdated packages this digest never looked at, because nothing in
    * tools.json tracks them. `undefined` when the brew check itself failed or
    * did not run — that is silence, not a claim that nothing else is pending.
@@ -76,12 +82,22 @@ export interface RenderOptions {
  * empty list, and telling the user "engine unavailable" when the engine
  * answered — or answered badly — sends them to fix the wrong thing.
  */
-function noDigestReason(digestError: string | undefined, engine: Engine): string {
-  if (digestError) return `digest failed: ${digestError}`;
+function noDigestReason(releases: Release[], digestError: string | undefined, engine: Engine): string {
+  if (digestError) return `digest failed: ${digestError}; raw notes:`;
   // The label carries why there is no engine — "skipped (--no-judge)" when you
   // turned it off yourself, which is not something to report as unavailable.
-  if (engine.kind === "none") return `no digest — ${engine.label}`;
-  return "engine returned nothing usable";
+  // Ahead of the empty-notes case on purpose: you asked for no digest, so that
+  // is the answer to what you typed, whatever the bodies happened to contain.
+  if (engine.kind === "none") return `no digest — ${engine.label}; raw notes:`;
+  // Nobody's fault, and not a failure: htop tags every version and writes no
+  // body, so its whole prompt would have been the line "### htop 3.5.3".
+  // judge.ts drops those before building one, which means "engine returned
+  // nothing usable" describes a call that never happened and sends the reader
+  // to check a model that did the only thing it could.
+  if (releases.length > 0 && releases.every((r) => r.notes.trim() === "")) {
+    return `the forge published ${releases.length === 1 ? "this release" : "these releases"} without notes — there is nothing to read beyond the version number`;
+  }
+  return "engine returned nothing usable; raw notes:";
 }
 
 export function renderReport(reports: ToolReport[], opts: RenderOptions): string {
@@ -172,7 +188,10 @@ export function renderReport(reports: ToolReport[], opts: RenderOptions): string
     out.push(`${name} ${r.installed} → ${bold(r.latest)}  ${yellow(behindLabel)}`);
 
     if (r.items.length === 0) {
-      out.push(dim(`  ${noDigestReason(r.digestError, opts.engine)}; raw notes:`));
+      // The links follow either way — unlike the overview list, this report is
+      // where you go to read the release, and its URL is the only thing left
+      // to read when the body was empty.
+      out.push(dim(`  ${noDigestReason(r.behind, r.digestError, opts.engine)}`));
       for (const rel of r.behind) out.push(dim(`    ${rel.version}  ${link(rel.url, rel.url)}`));
       if (r.mechanical) out.push(...mechanicalHits(r.hits, "  "));
       out.push(`  ${dim("→")} ${r.tool.update}`, "");
@@ -199,9 +218,17 @@ export function renderReport(reports: ToolReport[], opts: RenderOptions): string
     // is a number nobody can act on, "2 of 24 changes" is.
     const touching = sorted.filter((i) => r.hits.some((h) => i.commands.includes(h.command))).length;
     out.push(
-      touching === 0
-        ? dim(`  affects you: none of these touch commands you call`)
-        : dim(`  affects you: ${touching} of ${sorted.length} changes touch commands you call`),
+      // A zero out of a search that stopped short is not a verdict, and this is
+      // the line people read as one. Any hits it did find are still counted and
+      // still named above — what changes is that the count stops calling itself
+      // the whole answer.
+      opts.usageIncomplete && touching === 0
+        ? yellow(`  affects you: unknown — the search of your files did not finish`)
+        : touching === 0
+          ? dim(`  affects you: none of these touch commands you call`)
+          : dim(
+              `  affects you: ${touching} of ${sorted.length} changes touch commands you call${opts.usageIncomplete ? ", and the search did not finish" : ""}`,
+            ),
     );
     out.push(`  ${dim("→")} ${r.tool.update}`, "");
   }
@@ -216,6 +243,16 @@ export function renderReport(reports: ToolReport[], opts: RenderOptions): string
       `${yellow("usagePaths not found")}: ${opts.missingPaths.join(", ")}`,
       dim("  nothing was searched there, so every “affects you” above is incomplete"),
       dim("  correct it in usagePaths, or remove it, so the verdict means something again"),
+      "",
+    );
+  }
+  // The same statement as the block above, for the half grep reports rather
+  // than the half a stat can: a directory this user may not read, one that
+  // disappeared mid-run, or a walk killed on its timeout.
+  if (opts.usageIncomplete) {
+    out.push(
+      `${yellow("usage search did not finish")}: ${opts.usageIncomplete}`,
+      dim("  some of your files were never read, so every “affects you” above is a floor"),
       "",
     );
   }
@@ -290,7 +327,7 @@ export function renderInbox(inbox: Inbox): string {
     out.push(`${name} → ${bold(latest?.tag ?? "?")}  ${count}${flags.length ? `  ${flags.join("  ")}` : ""}`);
 
     if (e.items.length === 0) {
-      out.push(dim(`  ${noDigestReason(e.digestError, inbox.engine)}; raw notes:`));
+      out.push(dim(`  ${noDigestReason(e.releases, e.digestError, inbox.engine)}`));
       for (const rel of e.releases) out.push(dim(`    ${rel.tag}  ${link(rel.url, rel.url)}`));
       if (e.mechanical) out.push(...mechanicalHits(e.hits, "  "));
       out.push("");
@@ -349,6 +386,14 @@ export function renderInbox(inbox: Inbox): string {
     out.push(
       `${yellow("usagePaths not found")}: ${inbox.missingUsagePaths.join(", ")}`,
       dim("  nothing was searched there, so every “affects you” above is incomplete"),
+    );
+  }
+  // The half a stat cannot catch: a directory grep may not read, one that went
+  // away mid-run, or a walk killed on its timeout.
+  if (inbox.usageIncomplete) {
+    out.push(
+      `${yellow("usage search did not finish")}: ${inbox.usageIncomplete}`,
+      dim("  some of your files were never read, so every “affects you” above is a floor"),
     );
   }
   out.push(dim(`engine: ${inbox.engine.label}`), "");
@@ -410,12 +455,7 @@ function renderEntry(e: OverviewEntry, engine: Engine, prefix: string, cont: str
           ? `${e.source} publishes no versioned releases — bumpii cannot tell what changed, only that brew has a newer build`
           : e.behind.length === 0
             ? "brew has a newer build, but the forge published no release between these versions"
-            : // An error that did happen outranks this: the engine having tried
-              // and failed is a different thing from there being nothing to try
-              // on, and swallowing it would be the same silence in reverse.
-              !e.error && e.behind.every((r) => r.notes.trim() === "")
-              ? `the forge published ${e.behind.length === 1 ? "this release" : "these releases"} without notes — there is nothing to read beyond the version number`
-              : `${noDigestReason(e.error, engine)}; raw notes:`,
+            : noDigestReason(e.behind, e.error, engine),
       ),
     );
     for (const rel of e.behind) body(dim(`  ${rel.version}  ${link(rel.url, rel.url)}`));
@@ -567,6 +607,16 @@ export function renderOverview(o: Overview): string {
       dim(
         "  nothing was searched there, so the reference counts — and the buckets they sort into — are incomplete",
       ),
+      "",
+    );
+  }
+  // Same warning, for what grep reports rather than what a stat can: this one
+  // decides buckets too, so an entry may be sitting under "no signal" only
+  // because the files naming it were never reached.
+  if (o.usageIncomplete) {
+    out.push(
+      `${yellow("usage search did not finish")}: ${o.usageIncomplete}`,
+      dim("  some of your files were never read, so a zero reference count may not be one"),
       "",
     );
   }

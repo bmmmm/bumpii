@@ -29,11 +29,14 @@ const report = (over: Partial<ToolReport> = {}): ToolReport => ({
   ...over,
 });
 
-const rel = (version: string): Release => ({
+// Notes default to empty because that is what a plain tag carries, but a test
+// about what the engine did with them has to hand it something to read — an
+// empty body never reaches the engine at all.
+const rel = (version: string, notes = ""): Release => ({
   tag: `v${version}`,
   version,
   publishedAt: null,
-  notes: "",
+  notes,
   url: `https://example.com/${version}`,
 });
 
@@ -140,15 +143,47 @@ test("a failed digest keeps the releases and names the failure", () => {
 });
 
 test("no engine and a silent engine are not described the same way", () => {
-  const withoutEngine = renderReport([report({ behind: [rel("2.96.0")] })], {
+  // Both releases carry notes on purpose: an empty body never reaches the
+  // engine, so asserting "returned nothing usable" over one would pin the
+  // wrong string — which is what this test did until the case below existed.
+  const readable = [rel("2.96.0", "Fixed `gh pr view --json`")];
+  const withoutEngine = renderReport([report({ behind: readable })], {
     engine: noEngine,
     missingPaths: [],
   });
   assert.match(withoutEngine, /no engine reachable/);
 
-  const silent = renderReport([report({ behind: [rel("2.96.0")] })], { engine, missingPaths: [] });
+  const silent = renderReport([report({ behind: readable })], { engine, missingPaths: [] });
   assert.match(silent, /returned nothing usable/);
   assert.doesNotMatch(silent, /no engine/, "blaming a working engine sends you to fix the wrong thing");
+});
+
+test("a release the forge published without notes is not the engine's fault", () => {
+  // htop tags every version and writes nothing, so the whole prompt would be
+  // the line "### htop 3.5.3" — which is why judge.ts drops empty bodies
+  // before building it. The engine is therefore never asked, and saying it
+  // "returned nothing usable" sends the reader to check a model that did the
+  // only thing it could. overview.ts has said so since the case was found;
+  // digest and inbox kept the older wording.
+  const out = renderReport([report({ behind: [rel("3.5.3")] })], { engine, missingPaths: [] });
+  assert.match(out, /published this release without notes/);
+  assert.match(out, /nothing to read beyond the version number/);
+  assert.doesNotMatch(out, /engine returned nothing usable/);
+  assert.doesNotMatch(out, /digest failed/);
+  // The release is still real and still pending, so its link has to survive.
+  assert.match(out, /https:\/\/example\.com\/3\.5\.3/);
+  assert.match(out, /1 release behind/);
+});
+
+test("an engine that did fail outranks the notes being empty", () => {
+  // The two silences make different claims, and an error that happened is the
+  // more specific one: swallowing it would be the same wrong answer in reverse.
+  const out = renderReport(
+    [report({ behind: [rel("3.5.3")], digestError: "no JSON array in engine output" })],
+    { engine, missingPaths: [] },
+  );
+  assert.match(out, /digest failed: no JSON array/);
+  assert.doesNotMatch(out, /published this release without notes/);
 });
 
 test("an engine you turned off yourself is not reported as unavailable", () => {

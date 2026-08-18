@@ -20,7 +20,7 @@ import {
 import { killChildren, run } from "./exec.ts";
 import { discoverImage, untrackedContainers } from "./images.ts";
 import { buildInbox, markThreadsRead, shownThreads } from "./inbox.ts";
-import { digest, resolveEngine } from "./judge.ts";
+import { digest, isMechanical, resolveEngine } from "./judge.ts";
 import { limiter } from "./limit.ts";
 import { brewOutdated } from "./outdated.ts";
 import { buildOverview, untrackedOutdatedCount } from "./overview.ts";
@@ -528,8 +528,17 @@ async function dispatch(progress: Progress): Promise<number> {
     const needles = [...new Set(candidates.flatMap((c) => c.needles))];
     progress.phase("grep", { commands: needles.length, roots: usage.roots.length });
     const found = await mentioned(usage.roots, needles);
-    const unref = candidates.filter((c) => !c.needles.some((n) => found.has(n)));
+    const unref = candidates.filter((c) => !c.needles.some((n) => found.names.has(n)));
     progress.pause();
+
+    // The whole output of this command is an absence claim, so a search that
+    // stopped short does not get to produce a shorter list quietly.
+    if (found.incomplete) {
+      process.stderr.write(
+        `usage search did not finish: ${found.incomplete}\n` +
+          `  the list below names files that were not all read, so it is a guess\n`,
+      );
+    }
 
     if (unref.length === 0) {
       process.stdout.write(`every one of the ${leafNames.length} leaves is named somewhere in your files\n`);
@@ -895,7 +904,11 @@ async function dispatch(progress: Progress): Promise<number> {
         // "affects you" half of the report disappears for anyone running
         // without an engine — which is the configuration this tool has to keep
         // working in, not a degraded one.
-        const mechanical = items.length === 0 && behind.length > 0;
+        //
+        // The shared predicate rather than `behind.length > 0`: a release with
+        // an empty body offers nothing to extract, and this flag is a claim
+        // that lands in --json — that the hits were read out of the notes.
+        const mechanical = isMechanical(items.length, behind);
         return {
           report: {
             ...base,
@@ -928,11 +941,11 @@ async function dispatch(progress: Progress): Promise<number> {
 
   const commandCount = built.reduce((n, b) => n + b.commands.length, 0);
   progress.phase("grep", { commands: commandCount, roots: usage.roots.length });
-  const usageHits = await findUsageAcross(
+  const usageSearch = await findUsageAcross(
     usage.roots,
     built.map((b) => b.commands),
   );
-  const reports: ToolReport[] = built.map((b, i) => ({ ...b.report, hits: usageHits[i] ?? [] }));
+  const reports: ToolReport[] = built.map((b, i) => ({ ...b.report, hits: usageSearch.hits[i] ?? [] }));
 
   // What this digest never looked at: everything brew has pending that
   // tools.json does not track. `undefined` on failure — brew missing (Linux
@@ -955,11 +968,17 @@ async function dispatch(progress: Progress): Promise<number> {
     // should be able to branch on "was anything actually judged" without
     // parsing prose.
     process.stdout.write(
-      `${JSON.stringify({ engine, missingUsagePaths: usage.missing, noUsagePaths, otherPending, reports }, null, 2)}\n`,
+      `${JSON.stringify({ engine, missingUsagePaths: usage.missing, noUsagePaths, usageIncomplete: usageSearch.incomplete, otherPending, reports }, null, 2)}\n`,
     );
   } else {
     process.stdout.write(
-      renderReport(reports, { engine, missingPaths: usage.missing, noUsagePaths, otherPending }),
+      renderReport(reports, {
+        engine,
+        missingPaths: usage.missing,
+        noUsagePaths,
+        usageIncomplete: usageSearch.incomplete,
+        otherPending,
+      }),
     );
   }
 

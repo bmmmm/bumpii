@@ -9,7 +9,7 @@
 // yours names gets a version and a link and nothing more, because there is no
 // usage to judge a release note against, and running a model over it would
 // produce an opinion rather than a verdict.
-import { digest, type Engine } from "./judge.ts";
+import { digest, type Engine, isMechanical } from "./judge.ts";
 import { limiter } from "./limit.ts";
 import {
   brewInstalledVersions,
@@ -103,6 +103,12 @@ export interface Overview {
    * ever gave it.
    */
   noUsagePaths: boolean;
+  /**
+   * grep did not get to the end of the walk, so every "affects you" below is a
+   * floor rather than the answer. One grep serves the whole run, which is why
+   * this sits here and not on each entry.
+   */
+  usageIncomplete?: string;
   /**
    * Pending packages --only filtered out of this report. The "nothing
    * outdated" headline reads "no newer version for anything installed", and
@@ -222,22 +228,6 @@ export function bucketFor(f: {
   return f.itemCount > 0 ? "digested" : "undigested";
 }
 
-/**
- * Whether this entry's hits were read out of the notes with no engine involved.
- *
- * Pulled out of the async flow for the same reason as {@link bucketFor}: it is
- * a claim, it ends up in `--json`, and this is the only thing deciding it.
- *
- * Requires notes to read. A release published with an empty body — htop tags
- * every version and writes nothing — offers nothing to extract, and saying the
- * mechanical read happened there describes a pass over no text. The `hits` come
- * out empty either way, so this decides what the entry claims rather than what
- * it shows.
- */
-export function isMechanical(itemCount: number, behind: Release[]): boolean {
-  return itemCount === 0 && behind.some((r) => r.notes.trim() !== "");
-}
-
 export interface OverviewOptions {
   engine: Engine;
   /** Restrict to these names, as `--only` does for the digest. */
@@ -292,7 +282,7 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
   const refsFor = (pkg: OutdatedPackage): number => {
     const tool = trackedBy.get(pkg.name);
     const names = tool ? [...namesOf(tool), pkg.name] : [pkg.name];
-    return Math.max(...names.map((n) => refs.get(n) ?? 0));
+    return Math.max(...names.map((n) => refs.counts.get(n) ?? 0));
   };
 
   // Resolved for everything pending, not only for what is referenced: the
@@ -429,11 +419,11 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
     commands: built.reduce((n, b) => n + b.commands.length, 0),
     roots: usage.roots.length,
   });
-  const hits = await findUsageAcross(
+  const search = await findUsageAcross(
     usage.roots,
     built.map((b) => b.commands),
   );
-  const entries: OverviewEntry[] = built.map((b, i) => ({ ...b.entry, hits: hits[i] ?? [] }));
+  const entries: OverviewEntry[] = built.map((b, i) => ({ ...b.entry, hits: search.hits[i] ?? [] }));
 
   // Tracked and not in brew's outdated list. Split on whether brew was in a
   // position to say so at all: an entry whose update command is not a brew one
@@ -454,7 +444,7 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
       return f ? [f] : [];
     }),
   );
-  const refsForTool = (t: ToolConfig) => Math.max(...namesOf(t).map((n) => refs.get(n) ?? 0));
+  const refsForTool = (t: ToolConfig) => Math.max(...namesOf(t).map((n) => refs.counts.get(n) ?? 0));
 
   // "Not in the outdated list" has two causes, and only one of them is good
   // news. brew stays just as silent about a formula that is not installed at
@@ -491,6 +481,7 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
     unchecked,
     missingUsagePaths: usage.missing,
     noUsagePaths: config.usagePaths.length === 0,
+    usageIncomplete: search.incomplete ?? refs.incomplete,
     filteredOut: outdated.length - wanted.length,
     engine: opts.engine,
   };

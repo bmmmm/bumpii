@@ -130,6 +130,33 @@ Release notes:
 ${body}`;
 }
 
+/**
+ * Whether any of these releases carries something an engine could read.
+ *
+ * The one predicate behind three different claims, which is why it lives here
+ * rather than beside any of them: {@link digest} drops empty bodies before it
+ * builds a prompt, the renderers have to say so instead of blaming the engine
+ * for a call that never happened, and `mechanical` must not claim a pass over
+ * text that was not there. Answering it three times is how the three answers
+ * drifted apart in the first place.
+ */
+export function hasReadableNotes(releases: Release[]): boolean {
+  return releases.some((r) => r.notes.trim() !== "");
+}
+
+/**
+ * Whether this entry's hits were read out of the notes with no engine involved.
+ *
+ * Requires notes to read. A release published with an empty body — htop tags
+ * every version and writes nothing — offers nothing to extract, and saying the
+ * mechanical read happened there describes a pass over no text. The `hits` come
+ * out empty either way, so this decides what the entry claims rather than what
+ * it shows.
+ */
+export function isMechanical(itemCount: number, behind: Release[]): boolean {
+  return itemCount === 0 && hasReadableNotes(behind);
+}
+
 export function parseItems(text: string): DigestItem[] {
   // Models wrap JSON in fences often enough that stripping is cheaper than
   // re-prompting; find the outermost array rather than trusting the shape.

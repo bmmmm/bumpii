@@ -13,6 +13,7 @@ import {
   findUsage,
   findUsageAcross,
   mentioned,
+  referenceCounts,
   resolveUsagePaths,
   toNeedles,
 } from "../src/usage.ts";
@@ -107,6 +108,64 @@ test("resolveUsagePaths separates searchable paths from missing ones", async () 
   }
 });
 
+test("a grep that could not finish is not reported as finding nothing", async () => {
+  // grep exits 1 for "no matches" and 2 for a real failure, and both used to
+  // arrive here as an empty list — which the report prints as "affects you:
+  // none", this tool's central claim, made about a search that never ran.
+  //
+  // A root that is gone is the deterministic way to produce exit 2 on every
+  // grep this runs against (GNU, BSD, ugrep) and on both CI legs. It is also a
+  // real race: resolveUsagePaths stats the paths, and the walk happens after.
+  const dir = await mkdtemp(join(tmpdir(), "bumpii-usage-"));
+  try {
+    await writeFile(join(dir, "deploy.sh"), "gh pr view --json number\n");
+    const gone = join(dir, "was-here-a-moment-ago");
+
+    const partial = await findUsageAcross([gone, dir], [["gh pr view --json"]]);
+    assert.ok(partial.incomplete, "an exit 2 has to reach the caller as more than an empty list");
+    assert.match(partial.incomplete ?? "", /was-here-a-moment-ago/, "and has to name what it could not read");
+    assert.equal(
+      partial.hits[0]?.length,
+      1,
+      "the matches it did find are still worth keeping — incomplete is a floor, not a wipe",
+    );
+
+    // The contrast that makes the flag mean something: a search that ran to
+    // the end and found nothing must not claim to be incomplete, or the
+    // warning becomes noise and stops being read.
+    const clean = await findUsageAcross([dir], [["gh release verify"]]);
+    assert.equal(clean.incomplete, undefined, "no matches is a result, not a failure");
+    assert.deepEqual(clean.hits, [[]]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the absence claims of scan --unref and overview carry the same flag", async () => {
+  // mentioned() and referenceCounts() each answer a question about absence —
+  // "no file of yours names this" and "zero references" — from the same grep
+  // exit code, so both silences fail the same way.
+  const dir = await mkdtemp(join(tmpdir(), "bumpii-usage-"));
+  try {
+    await writeFile(join(dir, "deploy.sh"), "restic backup\n");
+    const gone = join(dir, "was-here-a-moment-ago");
+
+    const named = await mentioned([gone, dir], ["restic", "jq"]);
+    assert.ok(named.incomplete, "an unreferenced verdict from a failed grep is not a verdict");
+    assert.ok(named.names.has("restic"), "what it did read still counts");
+
+    const refs = await referenceCounts([gone, dir], ["restic", "jq"]);
+    assert.ok(refs.incomplete);
+    assert.equal(refs.counts.get("restic"), 1);
+    assert.equal(refs.counts.get("jq"), 0, "a zero from an unfinished walk is still reported as a zero");
+
+    const clean = await mentioned([dir], ["restic"]);
+    assert.equal(clean.incomplete, undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("findUsage attributes each match to the needle that produced it", async () => {
   // All needles now share one grep, so the mapping from output line back to
   // needle happens in JS — including a line that contains two of them.
@@ -143,10 +202,11 @@ test("findUsageAcross keeps each tool's hits to its own needles", async () => {
     await writeFile(join(dir, "scripts", "deploy.sh"), "gh pr view --json number\n");
     await writeFile(join(dir, "scripts", "sync.sh"), "tea pulls list --state open\n");
 
-    const [gh, tea, jq] = await findUsageAcross(
+    const { hits } = await findUsageAcross(
       [dir],
       [["gh pr view --json"], ["tea pulls list --state"], ["jq --slurp --raw"]],
     );
+    const [gh, tea, jq] = hits;
 
     assert.deepEqual(
       gh?.map((h) => h.command),
@@ -171,7 +231,7 @@ test("findUsageAcross gives a shared needle to every tool that asked for it", as
   try {
     await writeFile(join(dir, "release.sh"), "gh auth status --hostname github.com\n");
 
-    const groups = await findUsageAcross(
+    const { hits: groups } = await findUsageAcross(
       [dir],
       [["gh auth status --hostname"], ["gh auth status --hostname"]],
     );
@@ -187,8 +247,8 @@ test("findUsageAcross gives a shared needle to every tool that asked for it", as
 test("findUsageAcross returns one list per group even with nothing to search", async () => {
   // The positional contract is what the callers index into; a short array here
   // would silently drop the last tool's hits rather than fail.
-  assert.deepEqual(await findUsageAcross([], [["gh pr view --json"], ["tea pulls list"]]), [[], []]);
-  assert.deepEqual(await findUsageAcross(["/nonexistent"], []), []);
+  assert.deepEqual((await findUsageAcross([], [["gh pr view --json"], ["tea pulls list"]])).hits, [[], []]);
+  assert.deepEqual((await findUsageAcross(["/nonexistent"], [])).hits, []);
 });
 
 test("findUsage treats a needle as a fixed string, not a pattern", async () => {
@@ -214,8 +274,8 @@ test("mentioned reports which names appear, and says nothing about the rest", as
   try {
     await writeFile(join(dir, "deploy.sh"), "#!/bin/sh\nrestic backup /data | jq .\n");
     const found = await mentioned([dir], ["restic", "jq", "mpv", "yt-dlp"]);
-    assert.deepEqual([...found].sort(), ["jq", "restic"]);
-    assert.equal(found.has("mpv"), false, "the absence is the whole point of the command");
+    assert.deepEqual([...found.names].sort(), ["jq", "restic"]);
+    assert.equal(found.names.has("mpv"), false, "the absence is the whole point of the command");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -229,7 +289,7 @@ test("mentioned matches a substring, which is the safe direction to be wrong in"
   try {
     await writeFile(join(dir, "page.html"), "<script src=jquery.min.js></script>\n");
     const found = await mentioned([dir], ["jq"]);
-    assert.equal(found.has("jq"), true);
+    assert.equal(found.names.has("jq"), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -241,8 +301,8 @@ test("mentioned returns an empty set rather than every name when nothing matches
   const dir = await mkdtemp(join(tmpdir(), "bumpii-usage-"));
   try {
     await writeFile(join(dir, "a.sh"), "echo hello\n");
-    assert.equal((await mentioned([dir], ["restic", "mpv"])).size, 0);
-    assert.equal((await mentioned([], ["restic"])).size, 0, "nowhere to search is not a match either");
+    assert.equal((await mentioned([dir], ["restic", "mpv"])).names.size, 0);
+    assert.equal((await mentioned([], ["restic"])).names.size, 0, "nowhere to search is not a match either");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

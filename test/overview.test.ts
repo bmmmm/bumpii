@@ -4,13 +4,12 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import type { Engine } from "../src/judge.ts";
+import { type Engine, isMechanical } from "../src/judge.ts";
 import type { OutdatedPackage } from "../src/outdated.ts";
 import {
   bucketFor,
   compareFor,
   expandOnly,
-  isMechanical,
   namesOf,
   type Overview,
   type OverviewEntry,
@@ -72,7 +71,7 @@ test("reference counts are per name, counting each file once", async () => {
   const d = await scratch();
   await writeFile(join(d, "a.sh"), "gh pr list\ngh pr view\njq .\n", "utf8");
   await writeFile(join(d, "b.sh"), "gh auth status\n", "utf8");
-  const counts = await referenceCounts([d], ["gh", "jq", "restic"]);
+  const { counts } = await referenceCounts([d], ["gh", "jq", "restic"]);
   // Two mentions of gh in a.sh are one file, not two.
   assert.equal(counts.get("gh"), 2);
   assert.equal(counts.get("jq"), 1);
@@ -88,7 +87,7 @@ test("reference counts match whole words, so a ranking is not built on substring
   // called far more often.
   await writeFile(join(d, "notes.md"), "instead of that, the team decided\n", "utf8");
   await writeFile(join(d, "real.sh"), "tea pr list\n", "utf8");
-  assert.equal((await referenceCounts([d], ["tea"])).get("tea"), 1);
+  assert.equal((await referenceCounts([d], ["tea"])).counts.get("tea"), 1);
 });
 
 test("reference counts survive a filename containing a colon", async () => {
@@ -96,7 +95,7 @@ test("reference counts survive a filename containing a colon", async () => {
   // The output is "path:match", and splitting at the first colon would take
   // half a path as the filename and the rest as the package name.
   await writeFile(join(d, "weird:name.sh"), "gh pr list\n", "utf8");
-  assert.equal((await referenceCounts([d], ["gh"])).get("gh"), 1);
+  assert.equal((await referenceCounts([d], ["gh"])).counts.get("gh"), 1);
 });
 
 test("expandOnly widens --only through every alias a tracked tool answers to", () => {
@@ -285,7 +284,7 @@ test("reference counts are taken across every name a tool answers to", async () 
     version: { cmd: ["fj", "version"], match: "fj v?([0-9][0-9.]*)" },
     update: "brew upgrade forgejo-cli",
   };
-  const counts = await referenceCounts([d], namesOf(tool));
+  const { counts } = await referenceCounts([d], namesOf(tool));
   assert.equal(counts.get("forgejo-cli"), 0, "brew's name appears nowhere");
   const best = Math.max(...namesOf(tool).map((n) => counts.get(n) ?? 0));
   assert.equal(best, 3, "but the tool is named in three files under its binary name");

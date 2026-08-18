@@ -19,6 +19,31 @@ export interface UsageRoots {
 }
 
 /**
+ * What to tell the user about a grep that did not get to the end.
+ *
+ * Every search below returns this beside its result, because grep exits 1 for
+ * "no matches" — a result, and often the interesting one — and 2 for a real
+ * failure: a root that vanished between the stat and the walk, a directory
+ * this user may not read, a kill on timeout or maxBuffer. Both used to arrive
+ * at the caller as an empty list, and an empty list is what the report prints
+ * as "affects you: none". That is this tool's central claim, and making it
+ * about a search that never happened is the exact shape of quiet wrong answer
+ * everything else here is built to avoid.
+ *
+ * Whatever matches did arrive are still kept and still shown; the reason says
+ * they are a floor rather than the answer, which is a different statement from
+ * having found nothing.
+ *
+ * grep's own first line names the path it could not read, which is the only
+ * actionable part; a kill prints nothing at all, so the error's message stands
+ * in for it.
+ */
+function whyIncomplete(e: ExecError): string {
+  const first = (e.stderr ?? "").trim().split("\n")[0]?.trim();
+  return first || e.message;
+}
+
+/**
  * Split the configured usage paths into searchable and missing.
  *
  * "affects you: none" is this tool's central claim, and a path that does not
@@ -80,9 +105,13 @@ export function toNeedles(commands: string[]): string[] {
  * as common as "tree" would otherwise return most of a dotfiles repo, and only
  * which names matched is wanted here.
  */
-export async function mentioned(roots: string[], names: string[]): Promise<Set<string>> {
-  if (names.length === 0 || roots.length === 0) return new Set();
+export async function mentioned(
+  roots: string[],
+  names: string[],
+): Promise<{ names: Set<string>; incomplete?: string }> {
+  if (names.length === 0 || roots.length === 0) return { names: new Set() };
   let stdout: string;
+  let incomplete: string | undefined;
   try {
     const r = await run(
       "grep",
@@ -101,10 +130,14 @@ export async function mentioned(roots: string[], names: string[]): Promise<Set<s
     // Exit 1 is "no matches", a result rather than a failure — and here it is
     // the interesting one: nothing you have is named in anything you wrote.
     const e = err as ExecError;
-    if (e.code === 1 || e.code === "1") return new Set();
+    if (e.code === 1 || e.code === "1") return { names: new Set() };
+    // Anything else is a failure, and "no file of yours names this" is an
+    // absence claim — the one kind of answer a half-finished search must not
+    // be allowed to produce silently.
+    incomplete = whyIncomplete(e);
     stdout = e.stdout ?? "";
   }
-  return new Set(stdout.split("\n").filter(Boolean));
+  return { names: new Set(stdout.split("\n").filter(Boolean)), incomplete };
 }
 
 /**
@@ -161,11 +194,15 @@ export function commandsFromNotes(tool: string, notes: string): string[] {
  * forces the filename even when a single root is searched, so the two halves of
  * every line are always in the same place.
  */
-export async function referenceCounts(roots: string[], names: string[]): Promise<Map<string, number>> {
+export async function referenceCounts(
+  roots: string[],
+  names: string[],
+): Promise<{ counts: Map<string, number>; incomplete?: string }> {
   const counts = new Map(names.map((n) => [n, 0]));
-  if (names.length === 0 || roots.length === 0) return counts;
+  if (names.length === 0 || roots.length === 0) return { counts };
 
   let stdout: string;
+  let incomplete: string | undefined;
   try {
     const r = await run(
       "grep",
@@ -182,7 +219,10 @@ export async function referenceCounts(roots: string[], names: string[]): Promise
     stdout = r.stdout;
   } catch (err) {
     const e = err as ExecError;
-    if (e.code === 1 || e.code === "1") return counts;
+    if (e.code === 1 || e.code === "1") return { counts };
+    // A zero from a walk that stopped early ranks a package as unused, which
+    // is what decides whether overview bothers to judge it at all.
+    incomplete = whyIncomplete(e);
     stdout = e.stdout ?? "";
   }
 
@@ -203,7 +243,7 @@ export async function referenceCounts(roots: string[], names: string[]): Promise
     seen.add(file);
   }
   for (const [name, seen] of files) counts.set(name, seen.size);
-  return counts;
+  return { counts, incomplete };
 }
 
 /**
@@ -230,13 +270,14 @@ export async function referenceCounts(roots: string[], names: string[]): Promise
 export async function findUsageAcross(
   roots: string[],
   groups: readonly (readonly string[])[],
-): Promise<UsageHit[][]> {
+): Promise<{ hits: UsageHit[][]; incomplete?: string }> {
   const perGroup = groups.map((g) => toNeedles([...g]));
   const needles = [...new Set(perGroup.flat())];
   const empty = groups.map((): UsageHit[] => []);
-  if (needles.length === 0 || roots.length === 0) return empty;
+  if (needles.length === 0 || roots.length === 0) return { hits: empty };
 
   let stdout: string;
+  let incomplete: string | undefined;
   try {
     const r = await run(
       "grep",
@@ -252,12 +293,18 @@ export async function findUsageAcross(
     );
     stdout = r.stdout;
   } catch (err) {
-    // grep exits 1 on "no matches" — that is a result, not a failure. Paths
-    // that do not exist are already filtered by resolveUsagePaths, so any
-    // remaining exit 2 (an unreadable file mid-walk) still leaves the matches
-    // it did find on stdout, and those are worth keeping.
+    // grep exits 1 on "no matches" — that is a result, not a failure, and it
+    // is the one that makes "affects you: none" mean something.
+    //
+    // Any other code is a failure, and the matches it did manage still arrive
+    // on stdout, so they are kept. What changed is that the caller is told:
+    // resolveUsagePaths catches a path that is missing before the run, but not
+    // a directory this user may not read, not one that disappeared in between,
+    // and not a kill on timeout or maxBuffer. Every one of those used to end
+    // as a confident "none".
     const e = err as ExecError;
-    if (e.code === 1 || e.code === "1") return empty;
+    if (e.code === 1 || e.code === "1") return { hits: empty };
+    incomplete = whyIncomplete(e);
     stdout = e.stdout ?? "";
   }
 
@@ -277,13 +324,16 @@ export async function findUsageAcross(
   // Split by filtering the shared list rather than by grouping on the needle,
   // so each group keeps the order grep produced. Grouping would reorder hits by
   // command, which is what the report prints them in.
-  return perGroup.map((ns) => {
-    const want = new Set(ns);
-    return all.filter((h) => want.has(h.command));
-  });
+  return {
+    hits: perGroup.map((ns) => {
+      const want = new Set(ns);
+      return all.filter((h) => want.has(h.command));
+    }),
+    incomplete,
+  };
 }
 
 /** The one-tool form of {@link findUsageAcross}. */
 export async function findUsage(roots: string[], commands: string[]): Promise<UsageHit[]> {
-  return (await findUsageAcross(roots, [commands]))[0] ?? [];
+  return (await findUsageAcross(roots, [commands])).hits[0] ?? [];
 }

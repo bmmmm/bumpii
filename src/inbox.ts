@@ -7,7 +7,7 @@
 // that queue — unread notifications of type Release — and pushes the notes
 // through the same judge-and-grep pipeline as everything else, so a pile of
 // notifications shrinks to the lines that touch what you run.
-import { digest, type Engine } from "./judge.ts";
+import { digest, type Engine, isMechanical } from "./judge.ts";
 import { limiter } from "./limit.ts";
 import type { Progress } from "./progress.ts";
 import { authHeaders, bare, type ForgeRef, getJson } from "./sources.ts";
@@ -68,6 +68,12 @@ export interface Inbox {
   /** The config names no usagePaths at all — nothing was searched, so every
    * "affects you" would otherwise assert absence about an empty search. */
   noUsagePaths: boolean;
+  /**
+   * grep did not get to the end of the walk, so every "affects you" below is a
+   * floor rather than the answer. One grep serves the whole run, which is why
+   * this sits here and not on each entry.
+   */
+  usageIncomplete?: string;
   engine: Engine;
 }
 
@@ -209,7 +215,10 @@ export async function buildInbox(config: Config, opts: InboxOptions): Promise<In
         } catch (err) {
           digestError = err instanceof Error ? err.message : String(err);
         }
-        const mechanical = items.length === 0 && releases.length > 0;
+        // Same shared predicate the digest and overview paths use: a release
+        // the forge published with an empty body was never read, so claiming
+        // a mechanical read over it describes a pass over no text.
+        const mechanical = isMechanical(items.length, releases);
         return {
           entry: {
             ...base,
@@ -238,13 +247,13 @@ export async function buildInbox(config: Config, opts: InboxOptions): Promise<In
     commands: built.reduce((n, b) => n + b.commands.length, 0),
     roots: usage.roots.length,
   });
-  const hits = await findUsageAcross(
+  const search = await findUsageAcross(
     usage.roots,
     built.map((b) => b.commands),
   );
   // Kept in notification order — GitHub lists newest first, and an inbox that
   // re-sorted by name would bury this morning's release under the alphabet.
-  const entries = built.map((b, i) => ({ ...b.entry, hits: hits[i] ?? [] }));
+  const entries = built.map((b, i) => ({ ...b.entry, hits: search.hits[i] ?? [] }));
 
   return {
     entries,
@@ -252,6 +261,7 @@ export async function buildInbox(config: Config, opts: InboxOptions): Promise<In
     capped: raw.length >= PAGE,
     missingUsagePaths: usage.missing,
     noUsagePaths: config.usagePaths.length === 0,
+    usageIncomplete: search.incomplete,
     engine: opts.engine,
   };
 }
