@@ -3,6 +3,7 @@ import type { Inbox } from "./inbox.ts";
 import type { Engine } from "./judge.ts";
 import type { Overview, OverviewEntry } from "./overview.ts";
 import type { ItemKind, ToolReport, UsageHit } from "./types.ts";
+import { compareVersions } from "./version.ts";
 
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
 const c = (code: string, s: string) => (useColor ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -133,6 +134,25 @@ export function renderReport(reports: ToolReport[], opts: RenderOptions): string
       continue;
     }
     if (r.behind.length === 0) {
+      // Sitting above every published release is not being current, and the
+      // difference matters because of how you get there: `version.match` runs
+      // over the binary's whole output, so a pattern without a line anchor can
+      // capture a build date or a bundled library's version instead. Whatever
+      // it captured then outranks every release, `behind` is empty for good,
+      // and the entry reports itself current until somebody notices by hand.
+      //
+      // Channels are exempt: their `latest` is a commit hash, and comparing
+      // hashes as versions would call roughly half of them "ahead".
+      if (!r.channel && compareVersions(r.installed, r.latest) > 0) {
+        out.push(
+          `${name} ${r.installed}  ${yellow(`ahead of ${r.latest}`)}  ${dim(
+            "no release is newer, so nothing here was compared",
+          )}`,
+          dim(`  a version.match that captured the wrong number reads exactly like this`),
+          "",
+        );
+        continue;
+      }
       // Naming the channel is what keeps a commit hash readable as a version:
       // "b0b9fbc8d up to date" alone looks like a rendering slip.
       const on = r.channel ? ` on ${r.channel.tag}` : "";

@@ -98,6 +98,86 @@ test("compareVersions orders by numeric segment, not lexically", () => {
   assert.equal(compareVersions("1.2", "1.2.0"), 0);
 });
 
+test("a letter suffix on a segment is newer, not equal", () => {
+  // tmux tags 3.5a after 3.5, openssl went 1.1.1t → 1.1.1w. Reading the
+  // segment with parseInt drops the letter, which made both pairs compare
+  // equal — and equal renders as a green "up to date" over a pending release.
+  assert.ok(compareVersions("3.5a", "3.5") > 0, "tmux 3.5a is newer than 3.5");
+  assert.ok(compareVersions("3.5", "3.5a") < 0);
+  assert.ok(compareVersions("1.1.1w", "1.1.1t") > 0, "openssl w is newer than t");
+  assert.ok(compareVersions("1.1.1t", "1.1.1w") < 0);
+  assert.ok(compareVersions("3.5b", "3.5a") > 0);
+  assert.ok(compareVersions("1.1.1za", "1.1.1z") > 0, "a longer suffix continues the run");
+});
+
+test("a prerelease tail still sorts before the release it leads to", () => {
+  // The letter-suffix fix must not swallow this: "3.5a" is newer than "3.5",
+  // but "1.0.0-rc1" is OLDER than "1.0.0". Splitting on "." and "-" alike is
+  // what erased that difference, so the two cases are asserted together.
+  assert.ok(compareVersions("1.0.0", "1.0.0-rc1") > 0);
+  assert.ok(compareVersions("1.0.0-rc1", "1.0.0") < 0);
+  assert.ok(compareVersions("1.0.0-rc2", "1.0.0-rc1") > 0);
+  assert.ok(compareVersions("1.0.0-rc1", "1.0.0-beta") > 0);
+  // Build metadata carries no precedence, so it cannot make a version newer.
+  assert.equal(compareVersions("1.0.0+build", "1.0.0"), 0);
+});
+
+test("compareVersions calls two versions equal only when they are", () => {
+  // The property the 3.5a bug violated, stated as a property rather than as
+  // another list of pairs: answering 0 for versions that are not the same
+  // version is exactly how a pending release becomes "up to date". Only the
+  // documented equivalences — a missing segment is zero, build metadata is
+  // ignored — may compare equal while spelled differently.
+  const same = new Set(["1.2|1.2.0", "1.2.0|1.2", "1.0.0+build|1.0.0", "1.0.0|1.0.0+build"]);
+  const corpus = [
+    "1.0.0",
+    "1.2",
+    "1.2.0",
+    "1.0.0+build",
+    "3.5",
+    "3.5a",
+    "3.5b",
+    "1.1.1t",
+    "1.1.1w",
+    "1.1.1z",
+    "1.1.1za",
+    "1.0.0-rc1",
+    "1.0.0-rc2",
+    "1.0.0-beta",
+    "2.9.0",
+    "2.10.0",
+    "20231231",
+    "20240101",
+  ];
+  for (const a of corpus) {
+    for (const b of corpus) {
+      if (a === b || same.has(`${a}|${b}`)) continue;
+      assert.notEqual(compareVersions(a, b), 0, `${a} and ${b} are not the same version`);
+    }
+  }
+  // A comparator that is not antisymmetric orders a list differently depending
+  // on where each release happened to sit in it.
+  for (const a of corpus) {
+    for (const b of corpus) {
+      // Summed rather than negated: Math.sign(0) is 0 and -Math.sign(0) is -0,
+      // which strict equality tells apart for no reason that matters here.
+      assert.equal(
+        Math.sign(compareVersions(a, b)) + Math.sign(compareVersions(b, a)),
+        0,
+        `${a} vs ${b} must reverse cleanly`,
+      );
+    }
+  }
+});
+
+test("latestComparable takes the highest version, not the first one listed", () => {
+  // A forge that republishes an old tag moves it to the head of the list. The
+  // report prints this as "→ latest", so reading position instead of order
+  // points the arrow at a version you are already past.
+  assert.equal(latestComparable([rel("1.0.0"), rel("2.0.0"), rel("1.5.0")]), "2.0.0");
+  assert.equal(latestComparable([rel("3.5"), rel("3.5a")]), "3.5a");
+});
+
 test("releasesBehind returns only newer releases, oldest first", () => {
   const all = [rel("2.96.0"), rel("2.95.0"), rel("2.94.0"), rel("2.93.0")]; // newest first
   const behind = releasesBehind(all, "2.94.0");

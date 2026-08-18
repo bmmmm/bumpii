@@ -93,6 +93,40 @@ test("up to date is still said when there is something to compare against", () =
   assert.match(out, /up to date/);
 });
 
+test("a version above every release is named, not painted green", () => {
+  // `version.match` runs over the binary's whole output, so a pattern without
+  // a line anchor can capture a number that is not the version — a build date,
+  // a library version, a port. Whatever it captures then outranks every
+  // published release, nothing is ever "behind", and the tool reports itself
+  // current forever. Green is the one colour that must not cover that.
+  const out = renderReport([report({ installed: "20240101", latest: "2.96.0" })], {
+    engine,
+    missingPaths: [],
+  });
+  assert.doesNotMatch(out, /up to date/);
+  assert.match(out, /ahead of 2\.96\.0/);
+  assert.match(out, /version\.match/, "the reason has to point at the field that produced it");
+});
+
+test("a channel entry is never read as ahead of its own head", () => {
+  // A channel's `latest` is a commit hash, so comparing it as a version is
+  // meaningless — and hashes being unordered, roughly half of them would come
+  // out "ahead" and lose their green.
+  const out = renderReport(
+    [
+      report({
+        installed: "fff999888",
+        latest: "aaa111222",
+        channel: { tag: "tip", aheadBy: 0 },
+        behind: [],
+      }),
+    ],
+    { engine, missingPaths: [] },
+  );
+  assert.match(out, /up to date on tip/);
+  assert.doesNotMatch(out, /ahead of/);
+});
+
 test("a failed digest keeps the releases and names the failure", () => {
   // The engine dying must cost the summary, not the news.
   const out = renderReport(

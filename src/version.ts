@@ -64,22 +64,58 @@ export async function installedVersion(tool: ToolConfig): Promise<string | null>
   return m[1];
 }
 
-/** Numeric-segment comparison. Returns <0, 0, >0 like a sort comparator. */
+/**
+ * One dotted segment, split into the number it starts with and whatever
+ * trailed it — "5a" is 5 followed by "a".
+ *
+ * A segment with no digits at all counts as zero, which is what keeps a
+ * prerelease word from being read as a version number.
+ */
+function segment(s: string | undefined): { n: number; rest: string } {
+  const m = /^([0-9]*)(.*)$/.exec(s ?? "");
+  return { n: m?.[1] ? Number.parseInt(m[1], 10) : 0, rest: (m?.[2] ?? "").toLowerCase() };
+}
+
+/**
+ * Split a version into the dotted core and the prerelease tail after the
+ * first "-". Build metadata ("+abc") carries no precedence and is dropped.
+ */
+function parts(v: string): { core: string[]; pre: string } {
+  const noBuild = v.split("+")[0] ?? "";
+  const dash = noBuild.indexOf("-");
+  const core = dash < 0 ? noBuild : noBuild.slice(0, dash);
+  return { core: core.split("."), pre: dash < 0 ? "" : noBuild.slice(dash + 1).toLowerCase() };
+}
+
+/**
+ * Segment comparison. Returns <0, 0, >0 like a sort comparator.
+ *
+ * The core splits on "." only, and "-" starts a prerelease tail — because
+ * those two are opposite answers and one shared split erased the difference.
+ * A letter riding on a segment continues the sequence ("3.5a" is tmux's
+ * release after 3.5, "1.1.1w" is openssl's after 1.1.1t), while a word after a
+ * dash precedes it ("1.0.0-rc1" comes before "1.0.0"). Sending both into
+ * parseInt dropped the letter and answered "equal" for the first pair, and
+ * equal is what renders as a green "up to date" over a pending release.
+ *
+ * Prereleases are filtered out upstream, so the tail rarely decides anything —
+ * but `installedVersion` returns whatever the binary printed, which is not
+ * filtered by anything.
+ */
 export function compareVersions(a: string, b: string): number {
-  const pa = a.split(/[.-]/);
-  const pb = b.split(/[.-]/);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const na = Number.parseInt(pa[i] ?? "0", 10);
-    const nb = Number.parseInt(pb[i] ?? "0", 10);
-    // Non-numeric segments (rc, beta) sort before a bare number of the same
-    // position, which is enough for "is there something newer" — we never need
-    // full semver precedence because prereleases are filtered out upstream.
-    if (Number.isNaN(na) && Number.isNaN(nb)) continue;
-    if (Number.isNaN(na)) return -1;
-    if (Number.isNaN(nb)) return 1;
-    if (na !== nb) return na - nb;
+  const pa = parts(a);
+  const pb = parts(b);
+  for (let i = 0; i < Math.max(pa.core.length, pb.core.length); i++) {
+    const x = segment(pa.core[i]);
+    const y = segment(pb.core[i]);
+    if (x.n !== y.n) return x.n - y.n;
+    // No suffix sorts before one that is there: 3.5 precedes 3.5a.
+    if (x.rest !== y.rest) return x.rest < y.rest ? -1 : 1;
   }
-  return 0;
+  if (pa.pre === pb.pre) return 0;
+  if (pa.pre === "") return 1;
+  if (pb.pre === "") return -1;
+  return pa.pre < pb.pre ? -1 : 1;
 }
 
 /**
@@ -107,7 +143,14 @@ export function isComparable(r: Release): boolean {
  * nothing after the arrow.
  */
 export function latestComparable(all: Release[]): string | null {
-  return all.find(isComparable)?.version ?? null;
+  // The highest version, not the first one the API happened to list. GitHub
+  // answers newest-first, so `find` was right until a repo republished an old
+  // tag and moved it to the head — and this string is what the report prints
+  // after the arrow, so reading position instead of order points it at a
+  // version you are already past.
+  const comparable = all.filter(isComparable);
+  if (comparable.length === 0) return null;
+  return comparable.reduce((best, r) => (compareVersions(r.version, best.version) > 0 ? r : best)).version;
 }
 
 /**
