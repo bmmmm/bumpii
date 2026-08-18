@@ -1078,11 +1078,43 @@ async function dispatch(progress: Progress): Promise<number> {
 // Only run when invoked as the entrypoint. Without this guard, importing
 // anything from here (the tests import parseArgs) would execute the whole CLI
 // and exit the test runner mid-suite.
+/**
+ * Everything written, then exit — in that order.
+ *
+ * Node's stdout is synchronous on a file but asynchronous on a pipe, and
+ * `process.exit` drops whatever is still queued. Every consumer that reads a
+ * report through `$(bumpii --json)` is the pipe case, and past the 64 KiB pipe
+ * buffer it got a document that stopped mid-string — with an exit code saying
+ * the run had succeeded. Measured: `inbox --json` writes 93646 bytes to a file
+ * and exactly 65536 through a pipe, and the consumer's parser failed on it.
+ * Small reports fit in the buffer, which is why only the long ones ever showed
+ * it, and why it looked like anything but a size limit.
+ *
+ * The queued-write callback fires once everything ahead of it has been
+ * flushed. When the reader has already closed the pipe (`bumpii --json | head`)
+ * it fires with an error instead of never — measured, no hang — so this cannot
+ * deadlock the way out.
+ */
+function flushed(stream: NodeJS.WriteStream): Promise<void> {
+  return new Promise((resolve) => {
+    if (stream.writableLength === 0 || stream.writableEnded || stream.destroyed) {
+      resolve();
+      return;
+    }
+    stream.write("", () => resolve());
+  });
+}
+
+async function exitAfterFlush(code: number): Promise<never> {
+  await Promise.all([flushed(process.stdout), flushed(process.stderr)]);
+  process.exit(code);
+}
+
 if (import.meta.main) {
   main()
-    .then((code) => process.exit(code))
+    .then((code) => exitAfterFlush(code))
     .catch((err: unknown) => {
       process.stderr.write(`bumpii: ${err instanceof Error ? err.message : String(err)}\n`);
-      process.exit(2);
+      return exitAfterFlush(2);
     });
 }

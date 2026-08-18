@@ -501,7 +501,7 @@ after(() => {
   for (const s of servers) s.close();
 });
 
-async function stubForge(tags: string[]): Promise<string | null> {
+async function stubForge(tags: string[], body = ""): Promise<string | null> {
   const server = http.createServer((_req, res) => {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(
@@ -514,7 +514,7 @@ async function stubForge(tags: string[]): Promise<string | null> {
           tag_name,
           prerelease: false,
           draft: false,
-          body: "",
+          body,
           html_url: `https://example.invalid/${tag_name}`,
         })),
       ),
@@ -770,4 +770,26 @@ test("--yes exits 2 when an update command fails, not 0 for having tried", async
 
   const r = await runCli(["--yes", "--no-judge"], home);
   assert.equal(r.code, 2);
+});
+
+test("a --json report larger than the pipe buffer arrives whole", async (t) => {
+  // process.exit drops whatever Node still has queued for stdout, and stdout
+  // is asynchronous on a pipe — which is every consumer reading this with
+  // `$( )`. The report used to stop dead at 65536 bytes while the exit code
+  // still reported success: a truncated document, handed over as a complete
+  // one. runCli spawns with piped stdio, so this is the real case, not a
+  // simulation of it.
+  const url = await stubForge(["v2.0.0", "v1.0.0"], "x".repeat(80_000));
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  await writeConfig(home, [tool({ source: url })]);
+
+  const r = await runCli(["--json", "--no-judge"], home);
+  assert.doesNotThrow(
+    () => JSON.parse(r.stdout),
+    `a truncated report is a parse error for everything downstream (${r.stdout.length} bytes)`,
+  );
+  // Guards the fixture, not the fix: should the notes ever stop reaching past
+  // the buffer, the assertion above would pass without having tested anything.
+  assert.ok(r.stdout.length > 65536, `too small to reach the pipe buffer: ${r.stdout.length} bytes`);
 });

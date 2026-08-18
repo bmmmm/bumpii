@@ -71,6 +71,13 @@ Concretely: adding a code path that can fail quietly means adding a branch in
   Ctrl-C does nothing at all. `once`, so a second Ctrl-C gets the default back.
   Exit codes are 128+signal (130, 143); a shell reports those and scripts read
   them.
+- Node's stdout is synchronous on a file but **asynchronous on a pipe**, and
+  `process.exit` drops whatever is still queued — so every exit path goes
+  through `exitAfterFlush`. Before it did, a `--json` report longer than the
+  64 KiB pipe buffer reached its reader cut off mid-string (93646 bytes to a
+  file, exactly 65536 through a pipe) under an exit code that said the run had
+  succeeded. Short reports fit in the buffer, which is why only the long ones
+  ever showed it.
 - Send children **SIGTERM**, whatever signal arrived. A non-interactive
   `sh -c` defers SIGINT until its current foreground command finishes, so
   passing SIGINT through let a probe run to completion and write its output
