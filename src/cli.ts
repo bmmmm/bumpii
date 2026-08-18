@@ -130,10 +130,20 @@ interface Args {
  * Read the value belonging to an option, refusing to swallow the next flag.
  * `bumpii --model --json` used to set the model to "--json" and quietly drop
  * the flag that was meant to change the output.
+ *
+ * An empty value is refused for the same reason, one step further on: `--only
+ * ""` produced the same empty list as no --only at all, so a shell variable
+ * that expanded to nothing widened the run to every tracked tool instead of
+ * narrowing it to none. With --yes that is the difference between upgrading
+ * nothing and upgrading everything, and neither the report nor the exit code
+ * says which question was asked. Refused here, in the one place all four
+ * value-taking options pass through.
  */
 function takeValue(argv: string[], i: number, opt: string): string {
   const v = argv[i];
-  if (v === undefined || v.startsWith("-")) throw new Error(`${opt} needs a value`);
+  if (v === undefined || v.startsWith("-") || v.trim() === "") {
+    throw new Error(`${opt} needs a value`);
+  }
   return v;
 }
 
@@ -215,8 +225,16 @@ export function parseArgs(argv: string[]): Args {
     else if (v === "--brew-upgrade") a.brewUpgrade = true;
     else if (v === "--since") a.sinceDays = parseWindow(takeValue(argv, ++i, v));
     else if (v === "--source") a.source = takeValue(argv, ++i, v);
-    else if (v === "--only") a.only = takeValue(argv, ++i, v).split(",").filter(Boolean);
-    else if (v === "--model") a.model = takeValue(argv, ++i, v);
+    else if (v === "--only") {
+      const raw = takeValue(argv, ++i, v);
+      a.only = raw
+        .split(",")
+        .map((n) => n.trim())
+        .filter(Boolean);
+      // "," and ", ," clear takeValue but name nothing, and an empty list here
+      // means "no filter" everywhere downstream.
+      if (a.only.length === 0) throw new Error(`${v} needs a value`);
+    } else if (v === "--model") a.model = takeValue(argv, ++i, v);
     else if (v.startsWith("-")) throw new Error(`unknown option: ${v}`);
     else a.rest.push(v);
   }
@@ -729,12 +747,14 @@ async function dispatch(progress: Progress): Promise<number> {
       // Only threads whose releases were actually shown; an entry that errored
       // showed nothing, and its notification is the only reminder it exists.
       const threads = shownThreads(inbox.entries);
-      const failures = await markThreadsRead(threads);
+      const failures = await markThreadsRead(threads, { dryRun: args.dryRun });
       for (const f of failures) process.stderr.write(`mark-read failed: ${f}\n`);
       if (threads.length > 0 && failures.length === 0) {
-        process.stdout.write(
-          `marked ${threads.length} release notification${threads.length === 1 ? "" : "s"} read\n`,
-        );
+        const what = `${threads.length} release notification${threads.length === 1 ? "" : "s"}`;
+        // stderr under --json, so stdout carries the document and nothing else:
+        // a line glued after it is a parse error for whatever reads it.
+        const say = args.json ? process.stderr : process.stdout;
+        say.write(args.dryRun ? `would mark ${what} read\n` : `marked ${what} read\n`);
       }
       // A cron that relies on --mark-read has to be able to say it did not
       // happen — otherwise the same releases arrive again as "new" next run.
@@ -1024,6 +1044,12 @@ async function dispatch(progress: Progress): Promise<number> {
     return 0;
   }
 
+  // Under --json, everything a human reads goes to stderr, because stdout has
+  // already carried the document and a line appended after it is a parse error
+  // for whatever is reading. `bumpii digest --json --yes | jq` is precisely the
+  // combination an unattended run uses, and it is the one that was broken.
+  const say = args.json ? (t: string) => progress.err(t) : (t: string) => progress.out(t);
+
   if (args.yes) {
     // Picked back up rather than started fresh: the report is printed but the
     // command is not over, and `brew upgrade` is the longest silence in it.
@@ -1036,7 +1062,7 @@ async function dispatch(progress: Progress): Promise<number> {
       // skipping it is routine, not a failure, and must not turn the exit
       // code red the way an unfinished placeholder does.
       if (isManualUpdate(r.tool.update)) {
-        progress.out(`${r.tool.name}: ${r.tool.update.trim()} — skipped\n`);
+        say(`${r.tool.name}: ${r.tool.update.trim()} — skipped\n`);
         progress.step();
         continue;
       }
@@ -1051,10 +1077,10 @@ async function dispatch(progress: Progress): Promise<number> {
         progress.step();
         continue;
       }
-      progress.out(`\n$ ${r.tool.update}\n`);
+      say(`\n$ ${r.tool.update}\n`);
       try {
         const out = await run("/bin/sh", ["-c", r.tool.update], { timeout: 600_000 });
-        progress.out(out.stdout);
+        say(out.stdout);
       } catch (err) {
         // Keep going: one formula failing to build should not block the others.
         updateFailures++;
@@ -1071,14 +1097,14 @@ async function dispatch(progress: Progress): Promise<number> {
   // "yes", so one flag cannot silently imply the other.
   if (args.brewUpgrade && !args.dryRun) {
     const cmd = "brew update && brew upgrade";
-    progress.out(`\n$ ${cmd}\n`);
+    say(`\n$ ${cmd}\n`);
     // Twenty minutes of allowance and not a byte of output until it returns —
     // the one place in this tool where a spinner is not decoration.
     progress.phase("update");
     progress.resume();
     try {
       const out = await run("/bin/sh", ["-c", cmd], { timeout: 1_200_000 });
-      progress.out(out.stdout);
+      say(out.stdout);
     } catch (err) {
       updateFailures++;
       progress.err(`brew update && brew upgrade failed: ${(err as Error).message}\n`);

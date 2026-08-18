@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { parseArgs } from "../src/cli.ts";
-import { brewJsonMany, installedFormulae } from "../src/discover.ts";
+import { brewJsonMany, discoverFormula, installedFormulae } from "../src/discover.ts";
 import { stripAnsi } from "../src/exec.ts";
 import { sourceFromUrls } from "../src/sources.ts";
 
@@ -72,6 +72,7 @@ test("parseArgs treats a subcommand-looking positional as an argument", () => {
 
 let brewDir: string | null = null;
 const realPath = process.env.PATH;
+const probeDirs: string[] = [];
 
 async function stubBrew(json: unknown): Promise<void> {
   brewDir ??= await mkdtemp(join(tmpdir(), "bumpii-brew-"));
@@ -96,6 +97,7 @@ async function stubFailingBrew(): Promise<void> {
 after(async () => {
   process.env.PATH = realPath;
   if (brewDir) await rm(brewDir, { recursive: true, force: true });
+  await Promise.all(probeDirs.map((d) => rm(d, { recursive: true, force: true })));
 });
 
 test("installedFormulae reads the version, time and why of each install", async () => {
@@ -180,4 +182,78 @@ test("brewJsonMany answers empty rather than throwing when brew refuses", async 
   // naming the formula; throwing here would take the good names down with it.
   await stubFailingBrew();
   assert.deepEqual(await brewJsonMany(["good", "bogus"]), new Map());
+});
+
+test("add probes the installed version, not the one brew is offering", async () => {
+  // The whole point of `add` is to track something that has an update waiting,
+  // and `scan`/`overview` recommend exactly the outdated names. But the probe
+  // was confirmed against `versions.stable` — brew's LATEST — and confirmProbe
+  // requires that string to appear verbatim in the binary's output. An
+  // installed 0.12.3 can never print 0.12.5, so every outdated formula failed
+  // with an error blaming its binaries. Measured on the real thing:
+  //   bumpii add uv --dry-run
+  //   uv: none of its binaries (uv, uvx) reported version 0.12.5
+  const dir = await mkdtemp(join(tmpdir(), "bumpii-add-"));
+  probeDirs.push(dir);
+  const name = "bumpii-fixture-cli";
+  // A brew whose --prefix points at the scratch tree, so binariesOf reads a
+  // real opt/<name>/bin the way it does on a machine with Homebrew.
+  await writeFile(
+    join(dir, "brew"),
+    `#!/bin/sh\n[ "$1" = "--prefix" ] && { printf '%s' '${dir}'; exit 0; }\nprintf '%s' '{}'\n`,
+  );
+  await chmod(join(dir, "brew"), 0o755);
+  await mkdir(join(dir, "opt", name, "bin"), { recursive: true });
+  const bin = join(dir, "opt", name, "bin", name);
+  await writeFile(bin, `#!/bin/sh\necho "${name} 0.12.3"\n`);
+  await chmod(bin, 0o755);
+  process.env.PATH = `${join(dir, "opt", name, "bin")}:${dir}:${realPath}`;
+
+  const known = new Map<string, Record<string, unknown>>([
+    [
+      name,
+      {
+        name,
+        full_name: name,
+        // brew has 0.12.5 waiting; 0.12.3 is what is on the machine.
+        versions: { stable: "0.12.5" },
+        installed: [{ version: "0.12.3" }],
+        homepage: "https://github.com/owner/app",
+      },
+    ],
+  ]);
+
+  const d = await discoverFormula(name, undefined, known);
+  assert.equal(d.version, "0.12.3", "the entry records what is installed, not what is on offer");
+  assert.equal(d.binary, name);
+  assert.match(d.entry.version.match, /0-9/, "the pattern is built from the line the binary printed");
+  // And it still resolves: the generated entry must read the version back out.
+  assert.match(`${name} 0.12.3`, new RegExp(d.entry.version.match));
+});
+
+test("add says a formula is not installed rather than blaming its binaries", async () => {
+  // Nothing installed means there is no binary to probe, so "none of its
+  // binaries reported version X" describes a probe that never had a chance.
+  const dir = await mkdtemp(join(tmpdir(), "bumpii-add-"));
+  probeDirs.push(dir);
+  await writeFile(join(dir, "brew"), `#!/bin/sh\nprintf '%s' '${dir}'\n`);
+  await chmod(join(dir, "brew"), 0o755);
+  process.env.PATH = `${dir}:${realPath}`;
+
+  const known = new Map<string, Record<string, unknown>>([
+    [
+      "never-installed",
+      {
+        name: "never-installed",
+        versions: { stable: "1.0.0" },
+        installed: [],
+        homepage: "https://github.com/owner/app",
+      },
+    ],
+  ]);
+  await assert.rejects(
+    () => discoverFormula("never-installed", undefined, known),
+    /not installed/,
+    "the reason has to name the actual state, not the probe",
+  );
 });

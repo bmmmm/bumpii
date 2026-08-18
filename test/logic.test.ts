@@ -246,6 +246,24 @@ test("parseArgs refuses to swallow the next flag as an option value", () => {
   assert.throws(() => parseArgs(["--only"]), /--only needs a value/);
 });
 
+test("parseArgs refuses an empty option value instead of widening the run", () => {
+  // `--only ""` parsed to the same empty list as no --only at all, so a shell
+  // variable that expanded to nothing silently ran every tracked tool. With
+  // --yes that is the difference between upgrading nothing and upgrading
+  // everything, and nothing in the output says which question was asked.
+  //
+  // Measured: two tools configured, `--only ""` digested both.
+  assert.throws(() => parseArgs(["--only", ""]), /--only needs a value/);
+  assert.throws(() => parseArgs(["--only", "   "]), /--only needs a value/);
+  assert.throws(() => parseArgs(["--only", ","]), /--only needs a value/);
+  // Same helper, so the other three options that take one are covered too.
+  assert.throws(() => parseArgs(["--model", ""]), /--model needs a value/);
+  assert.throws(() => parseArgs(["add", "--source", ""]), /--source needs a value/);
+  // And a real value still parses, including a list with a stray comma.
+  assert.deepEqual(parseArgs(["--only", "gh,uv"]).only, ["gh", "uv"]);
+  assert.deepEqual(parseArgs(["--only", "gh, uv,"]).only, ["gh", "uv"]);
+});
+
 test("isComparable rejects a tag that cannot be ordered", () => {
   assert.equal(isComparable(rel("2.96.0")), true);
   assert.equal(isComparable({ ...rel("x"), version: "nightly" }), false);

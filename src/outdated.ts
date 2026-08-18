@@ -194,6 +194,13 @@ export async function readSourceCache(path = sourceCachePath()): Promise<SourceC
     // never mentions it. Dropping the bad entry re-derives it instead.
     const out: SourceCache = {};
     for (const [k, v] of Object.entries(parsed)) {
+      // A null under a tap-qualified name is dropped rather than read, so it is
+      // asked again once. Those nulls were written by a lookup that could not
+      // succeed — brewSources keyed only on the short name — and `!(n in
+      // cache)` in resolveSources treats a null as a settled answer, so without
+      // this the fix would never reach a machine that already has one on disk.
+      // A plain name resolving to null is a real answer and stays.
+      if (v === null && k.includes("/")) continue;
       if (v === null || typeof v === "string") out[k] = v;
     }
     return out;
@@ -213,6 +220,12 @@ async function writeSourceCache(cache: SourceCache, path: string): Promise<void>
 /** Raw `brew info --json=v2` shapes, for the two fields a source comes out of. */
 interface RawInfoFormula {
   name?: string;
+  /**
+   * The tap-qualified name, present only for tapped formulae. Asked for as
+   * `jundot/omlx/omlx`, answered with `omlx` in `name` — so a map keyed on
+   * `name` alone cannot be looked up under the name the caller used.
+   */
+  full_name?: string;
   homepage?: string;
   urls?: { stable?: { url?: string }; head?: { url?: string } };
 }
@@ -251,7 +264,14 @@ export async function brewSources(names: string[]): Promise<SourceCache> {
   const out: SourceCache = {};
   for (const f of d.formulae ?? []) {
     if (!f.name) continue;
-    out[f.name] = sourceFromUrls([f.urls?.stable?.url ?? "", f.urls?.head?.url ?? "", f.homepage ?? ""]);
+    const source = sourceFromUrls([f.urls?.stable?.url ?? "", f.urls?.head?.url ?? "", f.homepage ?? ""]);
+    // Under both names it answers to, the same way discover.ts indexes its
+    // batch. A tapped formula is asked for by its full name and comes back
+    // with the short one in `name`, so keying on `name` alone made the lookup
+    // in resolveSources miss and cache a null for a forge brew had just named.
+    for (const key of [f.name, f.full_name]) {
+      if (key) out[key] = source;
+    }
   }
   for (const c of d.casks ?? []) {
     if (!c.token) continue;

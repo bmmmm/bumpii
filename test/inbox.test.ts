@@ -208,6 +208,22 @@ test("mark-read PATCHes exactly the given threads, never the whole inbox", async
   }
 });
 
+test("--dry-run marks nothing read, and says so instead of reporting success", async () => {
+  // The only irreversible remote write this tool makes, and --dry-run is the
+  // flag that promises none of them: `add --dry-run` and `--yes --dry-run`
+  // both print and stop. mark-read consulted the flag nowhere, so a dry run
+  // deleted the very notifications it was supposed to be previewing — and a
+  // notification, once read, is not something bumpii can put back.
+  const stub = stubFetch(() => ({ status: 205 }));
+  try {
+    const failures = await markThreadsRead(["11", "22"], { dryRun: true });
+    assert.deepEqual(failures, []);
+    assert.deepEqual(stub.calls, [], "a dry run must not reach GitHub at all");
+  } finally {
+    stub.restore();
+  }
+});
+
 test("an errored entry keeps its threads out of mark-read", async () => {
   // Its releases were never shown, so the notification is the only reminder
   // the release exists — marking it read would delete that reminder.

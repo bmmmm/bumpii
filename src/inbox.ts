@@ -281,7 +281,16 @@ export function shownThreads(entries: InboxEntry[]): string[] {
  * deliberately does not cover. Returns the failures instead of throwing, so
  * one refused thread does not abort the rest.
  */
-export async function markThreadsRead(threadIds: string[]): Promise<string[]> {
+export async function markThreadsRead(
+  threadIds: string[],
+  opts: { dryRun?: boolean } = {},
+): Promise<string[]> {
+  // The gate lives here rather than at the call site because this is the only
+  // irreversible remote write bumpii makes, and --dry-run is the flag that
+  // promises none: `add --dry-run` and `--yes --dry-run` both print and stop.
+  // Reading a notification cannot be undone from here, so a dry run that
+  // "previewed" by deleting the reminders was the worst version of this bug.
+  if (opts.dryRun) return [];
   const failures: string[] = [];
   await Promise.all(
     threadIds.map(async (id) => {

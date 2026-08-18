@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -164,4 +164,58 @@ test("a corrupt cache is an empty one, never a failed run", async () => {
 
 test("a missing cache file reads as empty", async () => {
   assert.deepEqual(await readSourceCache(join(await scratch(), "nope.json")), {});
+});
+
+test("a tapped formula resolves under the name it was asked for", async () => {
+  // brew is asked for `jundot/omlx/omlx` — the name its `brew upgrade` line
+  // carries — and answers with the short name in `name` and the full one only
+  // in `full_name`. brewSources keyed the map on `name` alone, so the lookup
+  // missed, resolveSources wrote null, and the `!(n in cache)` gate meant it
+  // was never asked again: overview printed "no forge repo in its brew URLs"
+  // for a formula whose forge brew had just named. Found in the real cache:
+  // `"jundot/omlx/omlx": null` sitting beside working entries.
+  //
+  // discover.ts already indexes both names (brewJsonMany); this is the same
+  // shape, in the module that never learned it.
+  const dir = await scratch();
+  await writeFile(
+    join(dir, "brew"),
+    `#!/bin/sh\nprintf '%s' '${JSON.stringify({
+      formulae: [
+        {
+          name: "omlx",
+          full_name: "jundot/omlx/omlx",
+          homepage: "https://github.com/jundot/omlx",
+          urls: { stable: { url: "https://github.com/jundot/omlx/archive/v0.5.7.tar.gz" } },
+        },
+      ],
+    })}'\n`,
+    "utf8",
+  );
+  await chmod(join(dir, "brew"), 0o755);
+  const realPath = process.env.PATH;
+  process.env.PATH = `${dir}:${realPath}`;
+  try {
+    const path = join(dir, "sources.json");
+    const got = await resolveSources(["jundot/omlx/omlx"], path);
+    assert.equal(got["jundot/omlx/omlx"], "github:jundot/omlx", "the name asked for must carry the answer");
+  } finally {
+    process.env.PATH = realPath;
+  }
+});
+
+test("a null cached under a tap-qualified name is asked again, not kept", async () => {
+  // The nulls already on disk were written by the bug above, and `!(n in
+  // cache)` treats them as settled answers — so the fix alone would never
+  // reach the machines that need it.
+  const path = join(await scratch(), "sources.json");
+  await writeFile(
+    path,
+    JSON.stringify({ glib: null, "jundot/omlx/omlx": null, gh: "github:cli/cli" }),
+    "utf8",
+  );
+  const cache = await readSourceCache(path);
+  assert.equal("glib" in cache, true, "a plain name brew genuinely could not place stays settled");
+  assert.equal("jundot/omlx/omlx" in cache, false, "a tapped null is dropped so it gets one more chance");
+  assert.equal(cache.gh, "github:cli/cli", "a name that did resolve is untouched");
 });

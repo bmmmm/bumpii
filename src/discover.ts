@@ -256,12 +256,30 @@ export async function discoverFormula(
   // caller that has no batch — or a batch that failed — still works unchanged.
   const f = known?.get(formula) ?? (await brewJson(formula));
   const versions = (f.versions ?? {}) as { stable?: string };
-  const version = versions.stable;
-  if (!version)
+  if (!versions.stable)
     throw new Error(
       `${formula}: brew reports no stable version — a HEAD-only formula has nothing to compare against; ` +
         "track its repo by hand instead",
     );
+
+  // The INSTALLED version, not the one brew is offering. confirmProbe requires
+  // this string to appear verbatim in the binary's own output, so passing
+  // `versions.stable` meant every formula with an update waiting failed — and
+  // an update waiting is the entire reason to add one. `scan` and `overview`
+  // recommend exactly those names. Measured: `bumpii add uv` with 0.12.3
+  // installed and 0.12.5 on offer exited 2 with "none of its binaries (uv,
+  // uvx) reported version 0.12.5".
+  //
+  // Last entry, matching installedFormulae: brew keeps every kept version in
+  // the array and the newest one is what the links point at.
+  const installed = (f.installed ?? []) as { version?: string }[];
+  const version = installed.at(-1)?.version;
+  if (!version) {
+    throw new Error(
+      `${formula}: brew has ${versions.stable} but the formula is not installed — there is no binary to ` +
+        "probe, so bumpii cannot work out how it reports its version. Install it first, or add the entry by hand",
+    );
+  }
 
   const urls = (f.urls ?? {}) as { stable?: { url?: string }; head?: { url?: string } };
   const source =

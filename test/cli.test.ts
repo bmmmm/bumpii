@@ -812,3 +812,24 @@ test("a --json report larger than the pipe buffer arrives whole", async (t) => {
   // the buffer, the assertion above would pass without having tested anything.
   assert.ok(r.stdout.length > 65536, `too small to reach the pipe buffer: ${r.stdout.length} bytes`);
 });
+
+test("--json --yes keeps stdout to one document", async (t) => {
+  // The report is written first and the update loop writes to stdout after it,
+  // so `bumpii digest --json --yes | jq` got a JSON document with shell output
+  // glued onto the end — a parse error for every consumer, and exactly the
+  // combination an unattended run uses. The update output is still shown; it
+  // moves to stderr, where the progress line and every other human-facing line
+  // already live.
+  const url = await stubForge(["v2.0.0", "v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  await writeConfig(home, [tool({ source: url, update: "echo pretending-to-upgrade" })]);
+
+  const r = await runCli(["digest", "--json", "--yes", "--no-judge"], home);
+  assert.doesNotThrow(
+    () => JSON.parse(r.stdout),
+    `stdout must be the document alone, got: ${r.stdout.slice(-200)}`,
+  );
+  assert.match(r.stderr, /pretending-to-upgrade/, "the update output still has to be shown");
+  assert.equal(r.code, 0, "the update itself succeeded");
+});
