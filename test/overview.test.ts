@@ -10,6 +10,7 @@ import {
   bucketFor,
   compareFor,
   expandOnly,
+  isMechanical,
   namesOf,
   type Overview,
   type OverviewEntry,
@@ -122,6 +123,28 @@ test("an empty usagePaths config is called out in the overview", () => {
   assert.match(out, /no usagePaths configured/);
   assert.match(out, /buckets above mean nothing/);
   assert.doesNotMatch(renderOverview(overview({})), /no usagePaths configured/);
+});
+
+test("the mechanical flag requires notes that could be read", () => {
+  const rel = (version: string, notes: string) => ({
+    tag: version,
+    version,
+    publishedAt: null,
+    notes,
+    url: `https://example.invalid/${version}`,
+  });
+  // The ordinary no-engine path: notes exist, nothing judged them, so the hits
+  // came out of the text mechanically.
+  assert.equal(isMechanical(0, [rel("2.0.0", "Fixed `gh pr view --json`")]), true);
+  // htop's shape. There was no text to pass over, and `hits` is empty either
+  // way — but a --json consumer reads the flag, not the empty list.
+  assert.equal(isMechanical(0, [rel("3.5.3", "")]), false);
+  assert.equal(isMechanical(0, [rel("3.5.3", "   \n\t ")]), false);
+  // One readable release among empty ones is still a mechanical read.
+  assert.equal(isMechanical(0, [rel("3.5.3", ""), rel("3.5.2", "Added `htop --tree`")]), true);
+  // An engine that produced items owns the hits, whatever the notes look like.
+  assert.equal(isMechanical(3, [rel("2.0.0", "Fixed `gh pr view --json`")]), false);
+  assert.equal(isMechanical(0, []), false);
 });
 
 test("releases published without notes say so, instead of blaming the engine", () => {

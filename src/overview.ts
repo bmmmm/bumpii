@@ -222,6 +222,22 @@ export function bucketFor(f: {
   return f.itemCount > 0 ? "digested" : "undigested";
 }
 
+/**
+ * Whether this entry's hits were read out of the notes with no engine involved.
+ *
+ * Pulled out of the async flow for the same reason as {@link bucketFor}: it is
+ * a claim, it ends up in `--json`, and this is the only thing deciding it.
+ *
+ * Requires notes to read. A release published with an empty body — htop tags
+ * every version and writes nothing — offers nothing to extract, and saying the
+ * mechanical read happened there describes a pass over no text. The `hits` come
+ * out empty either way, so this decides what the entry claims rather than what
+ * it shows.
+ */
+export function isMechanical(itemCount: number, behind: Release[]): boolean {
+  return itemCount === 0 && behind.some((r) => r.notes.trim() !== "");
+}
+
 export interface OverviewOptions {
   engine: Engine;
   /** Restrict to these names, as `--only` does for the digest. */
@@ -373,7 +389,7 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
         // grepped and the entry would carry a version and a link and nothing
         // else. Reading the notes mechanically keeps the one thing this tool is
         // for — does this touch me — working without an engine at all.
-        const mechanical = items.length === 0 && behind.length > 0;
+        const mechanical = isMechanical(items.length, behind);
         const commands = mechanical
           ? behind.flatMap((r) => commandsFromNotes(pkg.name, r.notes))
           : items.flatMap((i) => i.commands);
