@@ -527,10 +527,10 @@ scheduled run can act on it:
 publishes both the layout of your machine and the tool inventory it was judged
 against. `tools.json` says the same thing more directly, in its `usagePaths`
 and its list of everything you watch. Neither is written into a working tree by
-default (the config and the resolved-source cache live under
-`~/.config/bumpii/`), but a redirect like the one above is one `cd` away from
-landing in a project, so this repo's `.gitignore` names them and yours should
-too:
+default — the config and the resolved-source cache live under
+`~/.config/bumpii/`, and judged release notes under `~/.cache/bumpii/digests/`
+— but a redirect like the one above is one `cd` away from landing in a project,
+so this repo's `.gitignore` names them and yours should too:
 
 ```gitignore
 tools.json
@@ -619,6 +619,25 @@ overrides. Without `OPENAI_BASE_URL`, the `claude` CLI is used if present. The
 engine is always named in the footer, because a summary is worth exactly as
 much as your trust in who wrote it.
 
+### The same notes are judged once
+
+Judging is where nearly all of a run's time goes — one model call per tool with
+news. Each answer is kept under `~/.cache/bumpii/digests/`, so a second run over
+releases already judged reads them back instead of asking again. On one machine
+with 24 packages pending that took a repeat run from two and a half minutes to
+four seconds.
+
+The key is a hash over the engine, the model, **and the whole prompt** — not
+over the tool and version. A published tag's notes do not change, so a hit is
+the same answer rather than a stale one; and because the prompt is part of the
+key, switching models or changing how the prompt is built produces a fresh
+judgement instead of replaying one made under different conditions. Nothing
+expires and nothing is invalidated by age. Delete the directory to have every
+judgement made again — it is derived data, like `sources.json`.
+
+An answer that does not parse is never stored, so a model having a bad day
+costs one run rather than every run after it.
+
 ### Without any engine at all
 
 `bumpii` is useful with no model anywhere, and that is not an afterthought.
@@ -665,8 +684,10 @@ bare `fetch failed` while `curl` works fine. The launcher sets
 
 ## Rate limits
 
-Every run fetches releases fresh — no cache, no conditional requests — so an
-unauthenticated forge caps how much this scales. GitHub's anonymous limit is
+Every run fetches the release *lists* fresh — no cache, no conditional requests
+— so an unauthenticated forge caps how much this scales. (Judgements are cached,
+but that happens after the forge has already answered, so it saves model calls
+rather than requests.) GitHub's anonymous limit is
 60 requests/hour, one per tracked tool per run: fine for a handful of tools
 run on a cron, tight if you track two dozen and also iterate on the config by
 hand.

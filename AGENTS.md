@@ -19,7 +19,7 @@ pnpm only; npm is blocked by a `preinstall` guard. Node 24+. No build step —
 
 `cli.ts` orchestration and exit codes · `config.ts` the tools.json file ·
 `sources.ts` forge APIs · `version.ts` probing and comparison · `judge.ts`
-engine and digest · `usage.ts` grep verdict · `render.ts` the report ·
+engine, digest and its cache · `usage.ts` grep verdict · `render.ts` the report ·
 `discover.ts` brew → config entry · `exec.ts` the execFile wrapper ·
 `progress.ts` the stderr progress line · `quips.ts` what that line may say ·
 `types.ts` shared shapes, read first.
@@ -88,6 +88,20 @@ Concretely: adding a code path that can fail quietly means adding a branch in
   duration). Use the `advance()` helper in `test/progress.test.ts`, or the
   assertions after it measure a single frame while reading as if they covered
   five seconds.
+- `digest` answers from `~/.cache/bumpii/digests/` before it calls anything, so
+  a test that does not point `XDG_CACHE_HOME` at a scratch directory reads
+  whatever the last real run left behind. The key hashes the engine, the model
+  and the **whole prompt**, which is why there is no schema version to bump:
+  editing `prompt` retires exactly the entries it invalidates. Store the raw
+  text rather than parsed items — a later fix to `parseItems` then reaches what
+  is already cached — and store it only *after* it parses, or an unusable
+  answer is pinned for every future run.
+- Releases whose body is empty never reach the engine. htop tags every version
+  and writes no notes, so its entire prompt was the line `### htop 3.5.3`; the
+  model asked for the notes in prose, that did not parse, and the report said
+  "digest failed" about an engine that had done the only thing it could. Empty
+  bodies are dropped before the prompt is built, and `render.ts` names that
+  case rather than folding it into the engine-failure branch.
 
 ## Definition of done
 
