@@ -1070,7 +1070,18 @@ async function dispatch(progress: Progress): Promise<number> {
   // An unattended --yes/--brew-upgrade run has to be able to say it did not
   // work; reporting success while something failed to build is how a broken
   // cron goes unseen.
-  if (args.yes || args.brewUpgrade) return updateFailures > 0 ? 2 : 0;
+  //
+  // The error check is not optional here, and it is the same one the --dry-run
+  // branch above makes: `updateFailures` counts only what the update loop hit,
+  // and that loop skips every report carrying an error before it can count
+  // anything. Without this line a run that reached no forge at all upgraded
+  // nothing, failed at nothing, and exited 0 — measured, on the same config
+  // that exits 2 without --yes.
+  if (args.yes || args.brewUpgrade) {
+    if (updateFailures > 0) return 2;
+    if (reports.some((r) => r.error)) return 2;
+    return 0;
+  }
   // Non-zero when something is pending, so a scheduled run can act on it.
   if (reports.some((r) => !r.error && r.behind.length > 0)) return 1;
   // Nothing is pending — but a `0` here means "checked, and nothing was

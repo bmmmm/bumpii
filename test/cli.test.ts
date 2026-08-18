@@ -594,6 +594,25 @@ test("a run that could not reach anything must not exit 0", async (t) => {
   assert.equal(r.code, 2, "0 would claim a check that never happened");
 });
 
+test("--yes on a run that could not reach anything must not exit 0 either", async (t) => {
+  // The same blind run as above, one flag further along. updateFailures is only
+  // ever incremented inside the update loop, and that loop's first statement
+  // skips every report carrying an error — so nothing counts the failures and
+  // the run reports success. Measured before the fix: identical config, exit 2
+  // without --yes and exit 0 with it, over a report full of "error" lines.
+  //
+  // --yes is the unattended flag, so this is the exact shape that goes unseen:
+  // the cron that upgrades nightly is the one with no human reading stdout.
+  const url = await stubForgeFailing();
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  await writeConfig(home, [tool({ source: url })]);
+
+  const r = await runCli(["digest", "--yes", "--no-judge"], home);
+  assert.match(r.stdout, /error/, "the report itself has to name the failure");
+  assert.equal(r.code, 2, "--yes must not be a quieter exit code than the read-only run");
+});
+
 test("one broken tool among current ones still exits non-zero", async (t) => {
   // The mixed case: nothing is pending, one forge failed. "Nothing pending"
   // is only true of the eleven that answered.
