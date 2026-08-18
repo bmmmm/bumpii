@@ -48,12 +48,30 @@ function capture(stream: NodeJS.WriteStream, fn: () => void): string {
   return chunks.join("");
 }
 
-/** Run fn with stderr claiming to be a terminal of the given width. */
+/**
+ * Every environment variable that turns the progress line off, so a test can
+ * state the tty case without the runner's own environment answering for it.
+ */
+const OPT_OUT_VARS = ["BUMPII_NO_PROGRESS", "CI", "TERM"] as const;
+
+/**
+ * Run fn with stderr claiming to be a terminal of the given width — and with
+ * the opt-outs cleared.
+ *
+ * Faking `isTTY` alone is not enough, and the gap was invisible on a developer
+ * machine: `enabled()` also returns false for CI, for TERM=dumb, and for
+ * BUMPII_NO_PROGRESS, so under GitHub Actions (which sets CI=true) every one of
+ * these tests was handed the SILENT progress object and asserted about a
+ * spinner that was never supposed to draw. Six of them failed there while all
+ * fourteen passed locally. Reproduce with `CI=1 node --test`.
+ */
 function asTty<T>(columns: number, fn: () => T): T {
   const tty = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
   const cols = Object.getOwnPropertyDescriptor(process.stderr, "columns");
+  const env = OPT_OUT_VARS.map((k) => [k, process.env[k]] as const);
   Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
   Object.defineProperty(process.stderr, "columns", { value: columns, configurable: true });
+  for (const [k] of env) delete process.env[k];
   try {
     return fn();
   } finally {
@@ -61,6 +79,10 @@ function asTty<T>(columns: number, fn: () => T): T {
     else delete (process.stderr as { isTTY?: boolean }).isTTY;
     if (cols) Object.defineProperty(process.stderr, "columns", cols);
     else delete (process.stderr as { columns?: number }).columns;
+    for (const [k, v] of env) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
   }
 }
 
@@ -89,21 +111,33 @@ test("without a terminal, not one byte is written", (t) => {
   assert.equal(written, "");
 });
 
-test("BUMPII_NO_PROGRESS silences it even on a terminal", () => {
-  const before = process.env.BUMPII_NO_PROGRESS;
-  process.env.BUMPII_NO_PROGRESS = "1";
-  try {
-    const written = asTty(120, () =>
-      capture(process.stderr, () => {
+test("a terminal is not enough: CI, TERM=dumb and BUMPII_NO_PROGRESS each opt out", (t) => {
+  // `enabled()` has four conditions and `asTty` clears three of them, so
+  // without this test nothing exercises them at all — which is how a real
+  // breakage got in: under GitHub Actions every drawing test was silently
+  // handed SILENT, and six of them failed on a check that passed locally.
+  //
+  // The clock runs here for the reason the tty test above spells out: with no
+  // frame ever firing, this stays green with all three checks deleted, because
+  // the warm-up alone draws nothing.
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  for (const [key, value] of [
+    ["CI", "true"],
+    ["TERM", "dumb"],
+    ["BUMPII_NO_PROGRESS", "1"],
+  ] as const) {
+    const written = asTty(120, () => {
+      // asTty clears all of them; put back exactly the one under test, so each
+      // opt-out is asserted on its own rather than as a group.
+      process.env[key] = value;
+      return capture(process.stderr, () => {
         const p = startProgress();
-        p.phase("fetch");
+        p.phase("judge", { total: 12, done: 0 });
+        advance(t, 5000);
         p.stop();
-      }),
-    );
-    assert.equal(written, "");
-  } finally {
-    if (before === undefined) delete process.env.BUMPII_NO_PROGRESS;
-    else process.env.BUMPII_NO_PROGRESS = before;
+      });
+    });
+    assert.equal(written, "", `${key}=${value} must silence the line even on a terminal`);
   }
 });
 
