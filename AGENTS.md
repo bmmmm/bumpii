@@ -38,13 +38,27 @@ Concretely: adding a code path that can fail quietly means adding a branch in
 
 ## Traps in this codebase
 
-- `compareVersions` sends non-numeric segments into a NaN branch that answers
-  "not newer" — which is indistinguishable from being current. Filter with
-  `isComparable` before ordering anything.
+- `compareVersions` splits the core on `.` and treats `-` as the start of a
+  prerelease tail, and the two are opposite answers: a letter riding on a
+  segment continues the sequence (tmux tags `3.5a` after `3.5`, openssl went
+  `1.1.1t` → `1.1.1w`), a word after a dash precedes it (`1.0.0-rc1` before
+  `1.0.0`). One shared `/[.-]/` split erased that difference and answered
+  "equal" for the first pair — which renders as a green "up to date" over a
+  pending security release. Assert both cases together or the next rewrite
+  fixes one by breaking the other. A tag that is not orderable at all
+  (`nightly`, `latest`) is still filtered with `isComparable` before ordering.
 - `installedVersion` runs `version.match` over the binary's **whole** output,
-  not the matching line. Patterns need a line anchor.
+  not the matching line. Patterns need a line anchor — `^` works, `$` does not,
+  because stderr is appended after stdout and there is no `m` flag. A pattern
+  that captures the wrong number outranks every release and pins the entry at
+  "ahead of", which `render.ts` names rather than painting green.
 - grep exits 1 for "no matches" and 2 for a real failure. Treating them alike
   is how a missing directory became a confident "affects you: none".
+  `resolveUsagePaths` catches the path that is already gone; every other exit 2
+  — a directory this user may not read, one that disappeared mid-run, a walk
+  killed on its timeout — comes back from the three wrappers in `usage.ts` as
+  `incomplete`, and the report says "affects you: unknown" rather than a zero.
+  Whatever matches did arrive are kept: incomplete is a floor, not a wipe.
 - `execFile` promisified drops stdout on error; `exec.ts` reattaches it,
   because a non-zero exit often still printed the version.
 - Tests must not touch the network. Stub `fetch`.
@@ -101,7 +115,26 @@ Concretely: adding a code path that can fail quietly means adding a branch in
   model asked for the notes in prose, that did not parse, and the report said
   "digest failed" about an engine that had done the only thing it could. Empty
   bodies are dropped before the prompt is built, and `render.ts` names that
-  case rather than folding it into the engine-failure branch.
+  case rather than folding it into the engine-failure branch — in all three
+  reports, through the one `noDigestReason`. It was fixed in `overview.ts`
+  first and the digest and inbox paths kept the old wording for a while, with a
+  test pinning it, so a shared function is what keeps them from drifting again.
+- The `claude` CLI is invoked as `-p <prompt> --model M --allowedTools ""`, and
+  the flag order is load-bearing: `--allowedTools` takes a variadic
+  `<tools...>`, so a prompt placed after it is read as a tool name and the call
+  dies with "Input must be provided either through stdin or as a prompt
+  argument". Measured both ways.
+- The renderers strip control bytes from everything of forge or model origin,
+  at the point the data enters them (`safeReport`/`safeEntry` in `render.ts`)
+  rather than at each interpolation — there are about thirty, and the one that
+  gets forgotten is the hole. `stripAnsi` in `exec.ts` is a different job:
+  cleaning a local binary's output before a regex reads a version out of it,
+  and it only handles SGR, which cannot move a cursor.
+- `Math.sign(0)` is `0` and `-Math.sign(0)` is `-0`, which `assert.equal`
+  tells apart. An antisymmetry check has to sum the two signs, not negate one.
+- Read env vars that name a path with `||`, never `??`: an exported-but-empty
+  `XDG_CONFIG_HOME` is not a value, and `??` only falls back on undefined —
+  which put `tools.json` in whatever directory the command ran from.
 
 ## Definition of done
 
