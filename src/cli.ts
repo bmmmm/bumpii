@@ -37,6 +37,14 @@ import { installedVersion, isTruncated, latestComparable, releasesBehind } from 
  * Low enough that a local single-model server (oMLX, Ollama) is not asked to
  * hold this many requests in flight at once, high enough that a hosted engine
  * still overlaps several tools instead of running the whole digest serially.
+ *
+ * Raising it does not make a cold run faster, which is worth knowing before
+ * trying: measured on claude-cli/haiku over 24 pending packages, 3 → 109.6s,
+ * 6 → 107.9s, 12 → 103.6s, with every arm judging the same five tools. The
+ * wall-clock is one call, not a queue — uv's notes alone took 115.7s, because
+ * it documents 23 distinct changes and the model has to write all of them, so
+ * no amount of overlap gets below the slowest single tool. The cache is what
+ * addresses this, by making the second run skip the call entirely.
  */
 const JUDGE_CONCURRENCY = 3;
 
