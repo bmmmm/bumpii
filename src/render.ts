@@ -378,17 +378,24 @@ function renderEntry(e: OverviewEntry, engine: Engine, prefix: string, cont: str
   }
 
   if (e.items.length === 0) {
-    // Three different states read as an empty list, and only the middle one is
+    // Four different states read as an empty list, and only the second is
     // "nothing changed". A repo that publishes no versioned releases at all
     // cannot be compared — saying "no release notes between these versions"
-    // there reports a silence as a finding.
+    // there reports a silence as a finding. Releases that exist but carry no
+    // body are a third: there is genuinely nothing to read, and attributing
+    // that to the engine blames a tool for what the forge did not write.
     body(
       dim(
         e.published === 0
           ? `${e.source} publishes no versioned releases — bumpii cannot tell what changed, only that brew has a newer build`
           : e.behind.length === 0
             ? "brew has a newer build, but the forge published no release between these versions"
-            : `${noDigestReason(e.error, engine)}; raw notes:`,
+            : // An error that did happen outranks this: the engine having tried
+              // and failed is a different thing from there being nothing to try
+              // on, and swallowing it would be the same silence in reverse.
+              !e.error && e.behind.every((r) => r.notes.trim() === "")
+              ? `the forge published ${e.behind.length === 1 ? "this release" : "these releases"} without notes — there is nothing to read beyond the version number`
+              : `${noDigestReason(e.error, engine)}; raw notes:`,
       ),
     );
     for (const rel of e.behind) body(dim(`  ${rel.version}  ${link(rel.url, rel.url)}`));

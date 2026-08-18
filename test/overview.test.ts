@@ -124,6 +124,69 @@ test("an empty usagePaths config is called out in the overview", () => {
   assert.doesNotMatch(renderOverview(overview({})), /no usagePaths configured/);
 });
 
+test("releases published without notes say so, instead of blaming the engine", () => {
+  // htop's real shape: it tags every version and writes no body. There is
+  // nothing to read, which is a fact about the forge — reporting it as a failed
+  // digest sends the reader to check a model that did exactly what it could.
+  const bare = (version: string) => ({
+    tag: version,
+    version,
+    publishedAt: null,
+    notes: "",
+    url: `https://github.com/htop-dev/htop/releases/tag/${version}`,
+  });
+  const out = renderOverview(
+    overview({
+      entries: [
+        entry({
+          name: "htop",
+          refs: 1,
+          source: "github:htop-dev/htop",
+          bucket: "undigested",
+          behind: [bare("3.5.3")],
+          published: 4,
+        }),
+      ],
+    }),
+  );
+  assert.match(out, /the forge published this release without notes/);
+  assert.doesNotMatch(out, /raw notes:/);
+  // The two neighbouring silences make different claims and must not be
+  // borrowed for this one.
+  assert.doesNotMatch(out, /publishes no versioned releases/);
+  assert.doesNotMatch(out, /published no release between these versions/);
+});
+
+test("a release that does carry notes still reports why it was not digested", () => {
+  // The engine-failure branch has to survive the one added above it: a real
+  // digest failure over real notes is still the engine's to explain.
+  const out = renderOverview(
+    overview({
+      entries: [
+        entry({
+          name: "gh",
+          refs: 1,
+          source: "github:cli/cli",
+          bucket: "undigested",
+          behind: [
+            {
+              tag: "v2.97.0",
+              version: "2.97.0",
+              publishedAt: null,
+              notes: "Fixed `gh pr view --json`",
+              url: "https://github.com/cli/cli/releases/tag/v2.97.0",
+            },
+          ],
+          published: 4,
+          error: "engine exploded",
+        }),
+      ],
+    }),
+  );
+  assert.match(out, /raw notes:/);
+  assert.doesNotMatch(out, /without notes/);
+});
+
 test("a tool answers to its binary name and its formula name alike", () => {
   // The shipped default config: keyed on the binary, upgraded by the formula.
   // Losing either name is what let brew's `forgejo-cli` be counted while every

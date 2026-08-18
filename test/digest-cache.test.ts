@@ -44,25 +44,32 @@ const ANSWER =
   '[{"kind":"fix","summary":"Handle empty input","commands":["tool run --strict"],"version":"1.2.0"}]';
 
 /**
- * Point the engine and the cache at test-local state, and count the calls that
- * reach the model — the number this whole feature exists to hold down.
+ * Point the engine and the cache at test-local state, and record both the
+ * number of calls that reach the model — the number this whole feature exists
+ * to hold down — and the prompts they carried, so a test can assert on what was
+ * asked rather than only on how often.
  */
 function withEngine(reply: () => string | Error): {
   calls: number;
+  prompts: string[];
   restore: () => void;
   dir: Promise<string>;
 } {
   const realFetch = globalThis.fetch;
   const prevBase = process.env.OPENAI_BASE_URL;
   const prevCache = process.env.XDG_CACHE_HOME;
-  const state = { calls: 0 };
+  const state = { calls: 0, prompts: [] as string[] };
   process.env.OPENAI_BASE_URL = "http://engine.invalid/v1";
   const dir = scratch().then((d) => {
     process.env.XDG_CACHE_HOME = d;
     return d;
   });
-  globalThis.fetch = (async () => {
+  globalThis.fetch = (async (_url: string | URL, init?: RequestInit) => {
     state.calls += 1;
+    const sent = JSON.parse(String(init?.body ?? "{}")) as {
+      messages?: { content?: string }[];
+    };
+    state.prompts.push(sent.messages?.[0]?.content ?? "");
     const body = reply();
     if (body instanceof Error) throw body;
     return {
@@ -75,6 +82,9 @@ function withEngine(reply: () => string | Error): {
   return {
     get calls() {
       return state.calls;
+    },
+    get prompts() {
+      return state.prompts;
     },
     dir,
     restore: () => {
@@ -187,6 +197,41 @@ test("an engine that judges nothing is never consulted or cached", async () => {
     // No releases means nothing to judge, whatever the engine is.
     assert.deepEqual(await digest(OPENAI, "tool", []), []);
     assert.equal(env.calls, 0);
+  } finally {
+    env.restore();
+  }
+});
+
+test("releases with no notes are never sent to the engine", async () => {
+  const env = withEngine(() => ANSWER);
+  try {
+    await env.dir;
+    // htop's real shape: plain tags, every body empty. The prompt would be the
+    // version header and nothing else, which no model can turn into JSON.
+    const items = await digest(OPENAI, "htop", [release("3.5.3", ""), release("3.5.2", "   \n  ")]);
+    assert.deepEqual(items, []);
+    assert.equal(env.calls, 0, "an empty body cannot be summarised, so asking costs a call for nothing");
+  } finally {
+    env.restore();
+  }
+});
+
+test("a mixed set asks only about the releases that carry notes", async () => {
+  const env = withEngine(() => ANSWER);
+  try {
+    await env.dir;
+    const items = await digest(OPENAI, "tool", [
+      release("1.2.0", "Fixed `tool run --strict` on empty input"),
+      release("1.1.0", ""),
+    ]);
+    assert.equal(items.length, 1);
+    assert.equal(env.calls, 1);
+    // Asserted on the prompt that was actually sent, not on the call count:
+    // the empty release must not appear in it as a bare header, and a test
+    // that only counts calls passes whether it was dropped or not.
+    const sent = env.prompts[0] ?? "";
+    assert.match(sent, /### tool 1\.2\.0/);
+    assert.doesNotMatch(sent, /### tool 1\.1\.0/, "an empty release must not reach the prompt at all");
   } finally {
     env.restore();
   }

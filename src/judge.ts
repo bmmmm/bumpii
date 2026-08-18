@@ -276,7 +276,16 @@ export async function writeCachedDigest(key: string, raw: string, dir = digestCa
  */
 export async function digest(engine: Engine, tool: string, releases: Release[]): Promise<DigestItem[]> {
   if (engine.kind === "none" || releases.length === 0) return [];
-  const text = prompt(tool, releases);
+  // A release with an empty body carries nothing to summarise, and plenty of
+  // projects tag every version that way — htop publishes plain tags, so its
+  // whole prompt was the line "### htop 3.5.3". A model handed that answers by
+  // asking for the notes, in prose, which fails to parse and surfaces in the
+  // report as "digest failed: the model answered in prose" — an engine problem
+  // where there is none. Dropped before the prompt is built rather than after
+  // the answer comes back, because the call could not have produced anything.
+  const readable = releases.filter((r) => r.notes.trim() !== "");
+  if (readable.length === 0) return [];
+  const text = prompt(tool, readable);
   const key = digestKey(engine, text);
 
   const cached = await readCachedDigest(key);
