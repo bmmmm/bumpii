@@ -30,6 +30,7 @@ after(async () => {
 interface Call {
   url: string;
   headers: Record<string, string>;
+  signal?: AbortSignal | null;
 }
 
 /**
@@ -46,7 +47,11 @@ function stubFetch(
   const real = globalThis.fetch;
   const calls: Call[] = [];
   globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
-    calls.push({ url: String(url), headers: (init?.headers ?? {}) as Record<string, string> });
+    calls.push({
+      url: String(url),
+      headers: (init?.headers ?? {}) as Record<string, string>,
+      signal: init?.signal,
+    });
     return {
       ok: status >= 200 && status < 300,
       status,
@@ -180,6 +185,65 @@ test("a GitHub token never travels to a self-hosted forge", async () => {
     if (prev === undefined) delete process.env.GITHUB_TOKEN;
     else process.env.GITHUB_TOKEN = prev;
   }
+});
+
+test("a Codeberg token never travels to a host merely named like Codeberg", async () => {
+  // The check was `ref.api.startsWith("https://codeberg.org")`, a string
+  // prefix rather than a host, so "codeberg.org.evil.tld" and even
+  // "codeberg.orgevil.tld" matched. Measured against the real function before
+  // the fix: authHeaders returned `token CB-SECRET` for both.
+  //
+  // Reachable without touching the config: sourceFromUrls gated on a substring
+  // too, so a formula homepage or an OCI image.source label — neither of them
+  // written by the user — was enough to plant the host.
+  const prev = process.env.CODEBERG_TOKEN;
+  process.env.CODEBERG_TOKEN = "cb-token-value";
+  try {
+    for (const host of ["codeberg.org.evil.tld", "codeberg.orgevil.tld", "evil.tld"]) {
+      const stub = stubFetch([]);
+      try {
+        await listReleases(parseSource(`https://${host}/o/r`));
+        const sent = JSON.stringify(stub.calls[0]?.headers ?? {});
+        assert.doesNotMatch(sent, /cb-token-value/, `${host} is not codeberg.org`);
+      } finally {
+        stub.restore();
+      }
+    }
+    // And the real host still gets it, or the fix is just a removal.
+    const stub = stubFetch([]);
+    try {
+      await listReleases(parseSource("codeberg:o/r"));
+      assert.match(JSON.stringify(stub.calls[0]?.headers ?? {}), /cb-token-value/);
+    } finally {
+      stub.restore();
+    }
+  } finally {
+    if (prev === undefined) delete process.env.CODEBERG_TOKEN;
+    else process.env.CODEBERG_TOKEN = prev;
+  }
+});
+
+test("a host is recognised as a forge by its name, not by containing one", async () => {
+  const { sourceFromUrls } = await import("../src/sources.ts");
+  // The door in front of the token check: these URLs arrive from a brew
+  // formula's homepage and from an OCI image.source label, so accepting a
+  // lookalike host is how one gets into tools.json in the first place.
+  assert.equal(sourceFromUrls(["https://codeberg.org.evil.tld/a/b.git"]), null);
+  assert.equal(sourceFromUrls(["https://notgitea.evil.tld/a/b.git"]), null);
+  assert.equal(sourceFromUrls(["https://gitea.com.evil.tld/a/b.git"]), null);
+  // The hosts it is actually for still resolve.
+  assert.equal(sourceFromUrls(["https://codeberg.org/o/r.git"]), "codeberg:o/r");
+  assert.equal(sourceFromUrls(["https://gitea.com/gitea/tea.git"]), "https://gitea.com/gitea/tea");
+  assert.equal(sourceFromUrls(["https://git.example.com/o/r.git"]), "https://git.example.com/o/r");
+  // A self-hosted instance named after the software it runs is the case the
+  // loose test existed for, and it has to survive the tightening.
+  assert.equal(sourceFromUrls(["https://gitea.example.com/o/r.git"]), "https://gitea.example.com/o/r");
+  assert.equal(sourceFromUrls(["https://forgejo.example.com/o/r.git"]), "https://forgejo.example.com/o/r");
+  assert.equal(
+    sourceFromUrls(["https://codeberg.org/o/r/archive/v1.tar.gz"]),
+    "codeberg:o/r",
+    "the shorthand path still wins before the host test is reached",
+  );
 });
 
 test("each forge shape gets its own paging parameter", async () => {
@@ -402,6 +466,22 @@ test("a 403 that is not about the rate limit keeps its own message", async () =>
       assert.match(err.message, /403/);
       return true;
     });
+  } finally {
+    stub.restore();
+  }
+});
+
+test("a forge that never answers does not hold the run open forever", async () => {
+  // getJson had no timeout and no size limit. judge.ts already uses
+  // AbortSignal.timeout for the engine call, for the same reason: a socket that
+  // is neither refused nor answered is the failure mode that looks like the
+  // tool having hung, and there is no key to press.
+  const stub = stubFetch([]);
+  try {
+    await listReleases(parseSource("github:o/r"));
+    const signal = stub.calls[0]?.signal;
+    assert.ok(signal, "the request has to carry an abort signal");
+    assert.equal(typeof signal?.aborted, "boolean");
   } finally {
     stub.restore();
   }

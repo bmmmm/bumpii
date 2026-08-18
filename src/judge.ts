@@ -220,7 +220,16 @@ async function askOpenAi(engine: Engine, text: string): Promise<string> {
 }
 
 async function askClaudeCli(engine: Engine, text: string): Promise<string> {
-  const r = await run("claude", ["-p", "--model", engine.model, text], {
+  // `--allowedTools ""` leaves the agent with none. The prompt is release-note
+  // text written by whoever published the release, and summarising it needs no
+  // tool at all — so the cheapest answer to "what could an injected note make
+  // it do" is: nothing it has.
+  //
+  // The flag goes AFTER the prompt, and that is not a style choice: it takes a
+  // variadic `<tools...>`, so with the prompt behind it the prompt is read as a
+  // tool name and the call dies with "Input must be provided either through
+  // stdin or as a prompt argument" — measured, before this ordering.
+  const r = await run("claude", ["-p", text, "--model", engine.model, "--allowedTools", ""], {
     timeout: 180_000,
     maxBuffer: 16 * 1024 * 1024,
   });

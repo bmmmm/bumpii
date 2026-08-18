@@ -99,6 +99,21 @@ function tokenFromGhCli(): Promise<string | null> {
  * this tool makes anywhere, and it must ride the same rule: the token goes to
  * the host it belongs to and nowhere else.
  */
+/**
+ * The host a ForgeRef actually talks to.
+ *
+ * Parsed rather than string-matched. `ref.api.startsWith("https://codeberg.org")`
+ * was true for "codeberg.org.evil.tld" and for "codeberg.orgevil.tld", and
+ * neither of those is codeberg.org — measured, the token went to both.
+ */
+function apiHost(ref: ForgeRef): string {
+  try {
+    return new URL(ref.api).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
 export async function authHeaders(ref: ForgeRef): Promise<Record<string, string>> {
   const h: Record<string, string> = { accept: "application/json" };
   // Only ever send a token to the host it belongs to. Sending GitHub's token
@@ -112,7 +127,7 @@ export async function authHeaders(ref: ForgeRef): Promise<Record<string, string>
   if (ref.kind === "github") {
     const t = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || (await tokenFromGhCli());
     if (t) h.authorization = `Bearer ${t}`;
-  } else if (ref.api.startsWith("https://codeberg.org")) {
+  } else if (apiHost(ref) === "codeberg.org") {
     const t = process.env.CODEBERG_TOKEN;
     if (t) h.authorization = `token ${t}`;
   } else {
@@ -141,7 +156,7 @@ async function rateLimitMessage(res: Response, ref: ForgeRef): Promise<string | 
   const envVar =
     ref.kind === "github"
       ? "GITHUB_TOKEN"
-      : ref.api.startsWith("https://codeberg.org")
+      : apiHost(ref) === "codeberg.org"
         ? "CODEBERG_TOKEN"
         : "FORGEJO_TOKEN";
   // What to do about it depends on whether the request was authenticated at
@@ -183,10 +198,24 @@ export function describeFetchError(err: unknown): string {
   return detail && detail !== top ? `${top}: ${detail}` : top;
 }
 
+/**
+ * How long one forge request may take before it is abandoned.
+ *
+ * A socket that is neither refused nor answered is the failure this exists
+ * for: without a deadline the run simply stops, with the progress line still
+ * spinning and nothing to press. judge.ts already bounds its engine call the
+ * same way, and the probe has PROBE_TIMEOUT_MS — this was the one remote call
+ * with no ceiling at all.
+ */
+export const FETCH_TIMEOUT_MS = 30_000;
+
 export async function getJson(url: string, ref: ForgeRef): Promise<unknown> {
   let res: Response;
   try {
-    res = await fetch(url, { headers: await authHeaders(ref) });
+    res = await fetch(url, {
+      headers: await authHeaders(ref),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
   } catch (err) {
     // "gh error fetch failed" points at nothing; the host plus the cause
     // says whether it is DNS, a refused port, or a proxy in the way.
@@ -248,8 +277,22 @@ export function sourceFromUrls(urls: string[]): string | null {
   // produce an entry that 404s on every run. Returning null instead sends the
   // user to the "add it by hand" message, which is recoverable.
   const other = /https?:\/\/([^/\s]+)\/([^/\s]+\/[^/\s]+?)(?:\.git|\/archive|\/releases|[\s/]|$)/.exec(text);
-  const host = other?.[1] ?? "";
-  const forgeLike = /^git\./.test(host) || /(gitea|forgejo|codeberg)/.test(host);
+  const host = (other?.[1] ?? "").toLowerCase();
+  // Recognised by name, not by containing one — and these URLs are not the
+  // user's. They arrive from a brew formula's homepage and from an OCI
+  // image.source label, so this is the door in front of the token check in
+  // authHeaders rather than a second copy of it: a source accepted here is a
+  // source that later receives FORGEJO_TOKEN.
+  //
+  // The substring test this replaces accepted "codeberg.org.evil.tld", and so
+  // did a first attempt at fixing it, because "gitea.com.evil.tld" begins with
+  // "gitea." just as a self-hosted "gitea.example.com" does. What separates
+  // them is not the shape of the name but whether a public forge's host is
+  // being worn as a prefix, so that is what gets tested.
+  const known = ["codeberg.org", "gitea.com", "github.com"];
+  const isKnown = (k: string) => host === k || host.endsWith(`.${k}`);
+  const impersonates = known.some((k) => host.includes(k) && !isKnown(k));
+  const forgeLike = !impersonates && (/^(git|gitea|forgejo)\./.test(host) || known.some((k) => isKnown(k)));
   if (other?.[2] && forgeLike) return `https://${host}/${other[2]}`;
   return null;
 }

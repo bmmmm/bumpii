@@ -514,9 +514,10 @@ Exit codes: `0` nothing pending, `1` updates available, `2` error. `0` means
 *checked, and nothing was waiting* — so a run where a forge could not be
 reached exits `2` even though nothing came back pending, because nothing was
 checked either. Under `--yes` there is nothing left pending by definition, so
-it exits `0` when every update ran and `2` when any of them failed — an
-unattended run has to be able to say it did not work. The `1` is there so a
-scheduled run can act on it:
+it exits `0` when every update ran and `2` when any of them failed *or any tool
+could not be checked at all* — an unattended run has to be able to say it did
+not work, and a run that reached no forge upgraded nothing. The `1` is there so
+a scheduled run can act on it:
 
 ```console
 0 9 * * 1  bumpii --json > ~/tmp/bumpii.json || notify "tool updates pending"
@@ -539,14 +540,28 @@ bumpii.json
 bumpii-*.json
 ```
 
-Two states are deliberately not folded into "up to date", because both mean
+Four states are deliberately not folded into "up to date", because each means
 bumpii could not check rather than checked and found nothing:
 
 - **`unknown`** — the forge publishes no versioned release. A repo that only
   tags, or that ships a rolling `stable`/`nightly` pointer, gives nothing that
   can be ordered against your installed version.
+- **`ahead of <version>`** — what the binary reported is newer than every
+  release the forge published, so nothing was compared. Usually a
+  `version.match` without a line anchor that captured a build date or a bundled
+  library's version instead of the version; whatever it captured then outranks
+  every release for good.
 - **`usagePaths not found`** — a configured path does not exist, so nothing
   was searched there and every "affects you" verdict above it is incomplete.
+- **`usage search did not finish`** — grep did not get to the end: a directory
+  it may not read, one that disappeared mid-run, or a walk that hit its
+  timeout. The hits it did find are still shown, and "affects you" reads
+  **`unknown`** rather than **`none`**, because a zero out of an unfinished
+  search is not an answer.
+
+A release the forge published with an empty body is named as that — *the forge
+published this release without notes* — rather than reported as a failed
+digest. There was nothing to send, so the engine was never asked.
 
 A count reads as **`30+`** when the forge's first page of releases was full
 and every one of them was pending — the page boundary ended the list, not your

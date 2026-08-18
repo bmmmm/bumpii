@@ -2,8 +2,33 @@
 import type { Inbox } from "./inbox.ts";
 import type { Engine } from "./judge.ts";
 import type { Overview, OverviewEntry } from "./overview.ts";
-import type { ItemKind, Release, ToolReport, UsageHit } from "./types.ts";
+import type { DigestItem, ItemKind, Release, ToolReport, UsageHit } from "./types.ts";
 import { compareVersions } from "./version.ts";
+
+/**
+ * Strip anything that would drive the terminal rather than fill it.
+ *
+ * Everything this report prints about a release — its summary, the commands
+ * extracted from it, its version, its URL, the error a forge returned — is
+ * written by whoever published that release. `ESC[1A` moves the cursor up and
+ * `ESC[2K` erases a line, which together are enough to paint over the lines
+ * already printed and leave a forged "up to date" where a security item stood.
+ *
+ * Measured on the path with no model in it at all: commandsFromNotes ->
+ * toNeedles -> mechanicalHits carried the bytes through verbatim, so
+ * `--no-judge` was exposed exactly as much as a judged run.
+ *
+ * Stripped rather than escaped, and never dropped whole: the reader still has
+ * to see what the note said, and a note that is silently not shown is its own
+ * kind of wrong answer. Tab survives because it is layout, not control.
+ *
+ * exec.ts has stripAnsi for a different job — cleaning a local binary's output
+ * before a regex reads a version out of it — and it only handles SGR, which is
+ * the one sequence that cannot move a cursor.
+ */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: the control bytes are exactly what this removes.
+const CONTROL = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g;
+const safe = (s: string): string => s.replace(CONTROL, "");
 
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
 const c = (code: string, s: string) => (useColor ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -22,7 +47,18 @@ const yellow = (s: string) => c("33", s);
  * the text; one that does gets both. Piped output has neither, which is what
  * makes `bumpii overview | grep https` work at all.
  */
-const link = (url: string, text: string) => (useColor ? `\x1b]8;;${url}\x1b\\${text}\x1b]8;;\x1b\\` : text);
+/**
+ * Whether a URL may be put inside an OSC 8 sequence.
+ *
+ * `html_url` is whatever the forge chose to send, and a self-hosted one can
+ * send anything — including its own ESC. Only the two schemes a release link
+ * is ever written in are wrapped; everything else is printed as plain text, so
+ * nothing is hidden and nothing is executed.
+ */
+const linkable = (url: string) => /^https?:\/\//.test(url) && safe(url) === url;
+
+const link = (url: string, text: string) =>
+  useColor && linkable(url) ? `\x1b]8;;${url}\x1b\\${text}\x1b]8;;\x1b\\` : text;
 
 const MARK: Record<ItemKind, string> = {
   security: "!",
@@ -100,7 +136,53 @@ function noDigestReason(releases: Release[], digestError: string | undefined, en
   return "engine returned nothing usable; raw notes:";
 }
 
-export function renderReport(reports: ToolReport[], opts: RenderOptions): string {
+/**
+ * Run every field of forge or model origin through {@link safe} once, at the
+ * point the data enters a renderer.
+ *
+ * Done here rather than at each interpolation because there are about thirty of
+ * them across three reports, and the one that gets forgotten is the hole. The
+ * colour helpers cannot do it: they are handed strings that already contain the
+ * OSC 8 escape this file builds, and stripping there would take the links with
+ * it.
+ *
+ * Matching still works — `items[].commands` and `hits[].command` are cleaned
+ * the same way, so the two sides of `includes` stay comparable.
+ */
+function safeRelease(r: Release): Release {
+  return { ...r, tag: safe(r.tag), version: safe(r.version), url: safe(r.url) };
+}
+
+function safeItem(i: DigestItem): DigestItem {
+  return { ...i, summary: safe(i.summary), version: safe(i.version), commands: i.commands.map(safe) };
+}
+
+function safeHit(h: UsageHit): UsageHit {
+  return { ...h, command: safe(h.command), file: safe(h.file) };
+}
+
+function safeReport(r: ToolReport): ToolReport {
+  return {
+    ...r,
+    tool: {
+      ...r.tool,
+      name: safe(r.tool.name),
+      source: safe(r.tool.source),
+      update: safe(r.tool.update),
+    },
+    installed: r.installed === null ? null : safe(r.installed),
+    latest: r.latest === null ? null : safe(r.latest),
+    channel: r.channel ? { ...r.channel, tag: safe(r.channel.tag) } : undefined,
+    behind: r.behind.map(safeRelease),
+    items: r.items.map(safeItem),
+    hits: r.hits.map(safeHit),
+    error: r.error === undefined ? undefined : safe(r.error),
+    digestError: r.digestError === undefined ? undefined : safe(r.digestError),
+  };
+}
+
+export function renderReport(rawReports: ToolReport[], opts: RenderOptions): string {
+  const reports = rawReports.map(safeReport);
   const out: string[] = [""];
 
   for (const r of reports) {
@@ -251,7 +333,7 @@ export function renderReport(reports: ToolReport[], opts: RenderOptions): string
   // disappeared mid-run, or a walk killed on its timeout.
   if (opts.usageIncomplete) {
     out.push(
-      `${yellow("usage search did not finish")}: ${opts.usageIncomplete}`,
+      `${yellow("usage search did not finish")}: ${safe(opts.usageIncomplete)}`,
       dim("  some of your files were never read, so every “affects you” above is a floor"),
       "",
     );
@@ -299,7 +381,23 @@ function mechanicalHits(hits: UsageHit[], indent: string): string[] {
   return out;
 }
 
-export function renderInbox(inbox: Inbox): string {
+export function renderInbox(raw: Inbox): string {
+  // Same boundary pass as renderReport: repo names, release tags and the
+  // judge's summary of a stranger's release notes all reach the terminal here.
+  const inbox: Inbox = {
+    ...raw,
+    usageIncomplete: raw.usageIncomplete === undefined ? undefined : safe(raw.usageIncomplete),
+    entries: raw.entries.map((e) => ({
+      ...e,
+      repo: safe(e.repo),
+      tool: safe(e.tool),
+      releases: e.releases.map(safeRelease),
+      items: e.items.map(safeItem),
+      hits: e.hits.map(safeHit),
+      error: e.error === undefined ? undefined : safe(e.error),
+      digestError: e.digestError === undefined ? undefined : safe(e.digestError),
+    })),
+  };
   const out: string[] = [""];
 
   if (inbox.entries.length === 0) {
@@ -508,7 +606,30 @@ function section(title: string, entries: OverviewEntry[], engine: Engine, out: s
   out.push("");
 }
 
-export function renderOverview(o: Overview): string {
+function safeEntry(e: OverviewEntry): OverviewEntry {
+  return {
+    ...e,
+    name: safe(e.name),
+    installed: safe(e.installed),
+    latest: safe(e.latest),
+    source: e.source === null ? null : safe(e.source),
+    update: safe(e.update),
+    behind: e.behind.map(safeRelease),
+    items: e.items.map(safeItem),
+    hits: e.hits.map(safeHit),
+    compare: e.compare === null ? null : safe(e.compare),
+    error: e.error === undefined ? undefined : safe(e.error),
+  };
+}
+
+export function renderOverview(raw: Overview): string {
+  const o: Overview = {
+    ...raw,
+    usageIncomplete: raw.usageIncomplete === undefined ? undefined : safe(raw.usageIncomplete),
+    entries: raw.entries.map(safeEntry),
+    current: raw.current.map((c) => ({ ...c, name: safe(c.name) })),
+    unchecked: raw.unchecked.map((u) => ({ ...u, name: safe(u.name) })),
+  };
   const out: string[] = [""];
   const of = (b: OverviewEntry["bucket"]) => o.entries.filter((e) => e.bucket === b);
 

@@ -5,8 +5,14 @@ import { dirname, join } from "node:path";
 import type { Config } from "./types.ts";
 
 export function configPath(): string {
-  const xdg = process.env.XDG_CONFIG_HOME;
-  return join(xdg ?? join(homedir(), ".config"), "bumpii", "tools.json");
+  // `||`, never `??`: an exported-but-empty XDG_CONFIG_HOME is not a value, and
+  // `??` only falls back on undefined — so `XDG_CONFIG_HOME=` made join("")
+  // resolve relative to the working directory, putting tools.json and the
+  // source cache wherever the command happened to be run from. AGENTS.md
+  // states the same rule for process.stderr.columns; this is the second place
+  // it applies.
+  const xdg = process.env.XDG_CONFIG_HOME?.trim();
+  return join(xdg || join(homedir(), ".config"), "bumpii", "tools.json");
 }
 
 /**

@@ -3,10 +3,10 @@
 // rewrites it. That combination is where a tool quietly destroys work.
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import { test } from "node:test";
-import { addTools, loadConfig, removeTools, setToolField } from "../src/config.ts";
+import { addTools, configPath, loadConfig, removeTools, setToolField } from "../src/config.ts";
 import type { ToolConfig } from "../src/types.ts";
 
 const gh: ToolConfig = {
@@ -158,4 +158,31 @@ test("loadConfig defaults usagePaths but keeps the rest verbatim", async () => {
   const cfg = await loadConfig(p);
   assert.deepEqual(cfg.usagePaths, []);
   assert.deepEqual(cfg.tools, [gh]);
+});
+
+test("an empty XDG_CONFIG_HOME falls back to ~/.config, not to the working directory", async () => {
+  // `??` only falls back on undefined, so `XDG_CONFIG_HOME=` — which is what an
+  // unset-but-exported variable looks like, and what a systemd unit or a `env -i`
+  // wrapper produces — made join("") resolve relative to wherever the command
+  // happened to run. The config and the source cache then land in whatever
+  // directory you were standing in, and the next run reads a different file.
+  //
+  // AGENTS.md already states this rule for process.stderr.columns: a reported
+  // zero means unknown, so `||`, never `??`. Same class, second place.
+  const prev = process.env.XDG_CONFIG_HOME;
+  try {
+    process.env.XDG_CONFIG_HOME = "";
+    const p = configPath();
+    assert.ok(isAbsolute(p), `an empty value must not produce a relative path: ${p}`);
+    assert.equal(p, join(homedir(), ".config", "bumpii", "tools.json"));
+
+    process.env.XDG_CONFIG_HOME = "   ";
+    assert.equal(configPath(), join(homedir(), ".config", "bumpii", "tools.json"));
+
+    process.env.XDG_CONFIG_HOME = "/somewhere";
+    assert.equal(configPath(), join("/somewhere", "bumpii", "tools.json"), "a real value still wins");
+  } finally {
+    if (prev === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prev;
+  }
 });

@@ -331,3 +331,44 @@ test("a missing usage path says what to do about it, like every other state", ()
   });
   assert.match(out, /correct it in usagePaths, or remove it/);
 });
+
+// Built from a named constant: an ESC byte inside a regex literal is a lint
+// error here, and the assertions below have to talk about the byte itself.
+const ESC = "\x1b";
+
+test("a release note cannot drive the terminal it is printed into", () => {
+  // Release notes and the judge's summary of them are written by whoever
+  // publishes the release. Printed unescaped, `ESC[1A` and `ESC[2K` move the
+  // cursor up and erase — which is enough to overwrite the report's own lines
+  // and leave a forged "up to date" where a security item stood.
+  //
+  // Measured before the fix on the path with no model in it at all:
+  // commandsFromNotes -> toNeedles -> mechanicalHits carried the bytes through
+  // verbatim, so `--no-judge` was as exposed as a judged run.
+  const evil = `${ESC}[2K${ESC}[1Agh 9.9.9  up to date`;
+  const out = renderReport(
+    [
+      report({
+        behind: [rel("2.96.0", "notes")],
+        items: [{ kind: "security", summary: evil, commands: [evil], version: "2.96.0" }],
+        hits: [{ command: evil, file: `/tmp/${evil}.sh`, line: 1 }],
+      }),
+    ],
+    { engine, missingPaths: [] },
+  );
+  assert.ok(!out.includes(`${ESC}[2K`), "an erase-line from a release note must not reach the terminal");
+  assert.ok(!out.includes(`${ESC}[1A`), "nor a cursor move");
+  // Stripped, not dropped: the reader still has to see what the note said.
+  assert.match(out, /gh 9\.9\.9/);
+});
+
+test("a forge-supplied URL is not spliced into a terminal escape unchecked", () => {
+  // link() wraps the release URL in OSC 8, and that URL is whatever the forge
+  // put in html_url — a self-hosted one can put anything there. A javascript:
+  // target or an embedded ESC has no business inside a control sequence.
+  const bad = rel("2.96.0");
+  bad.url = `javascript:alert(1)${ESC}]8;;`;
+  const out = renderReport([report({ behind: [bad] })], { engine: noEngine, missingPaths: [] });
+  assert.ok(!out.includes(`${ESC}]8;;`), "no OSC 8 sequence may be built from that");
+  assert.match(out, /javascript:alert\(1\)/, "the text is still shown, so nothing is hidden");
+});

@@ -29,6 +29,12 @@ exposure is narrower than a package manager's — but not zero:
 - **Prompt content reaching an engine it should not.** With `OPENAI_BASE_URL`
   set, notes go to that server and nowhere else. A path that sends them
   elsewhere — or sends more than the notes — is in scope.
+- **Terminal control from forge content.** Release notes, the summary a model
+  writes about them and everything a forge returns are stripped of control
+  bytes before being printed, and a release URL is only wrapped in a hyperlink
+  escape when it is `http(s)` and carries none. A way to make bumpii emit an
+  escape sequence it did not build itself — overwriting its own output, for
+  instance to hide a security item — is in scope.
 
 ## What is not
 
@@ -41,7 +47,9 @@ exposure is narrower than a package manager's — but not zero:
   [comparereleaseii](https://github.com/bmmmm/comparereleaseii).
 - **What a judge model writes in a summary.** A wrong or manipulated summary
   is a correctness bug — file it as one. The commands it extracts are only
-  ever used as fixed-string grep needles, never executed.
+  ever used as fixed-string grep needles, never executed, and the `claude` CLI
+  is invoked with `--allowedTools ""` so an injected note has no tool to reach
+  for in the first place.
 - **Vulnerabilities in the tools bumpii tracks.** Report those upstream.
 
 ## Supported versions
