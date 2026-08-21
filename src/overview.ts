@@ -22,7 +22,7 @@ import type { Progress } from "./progress.ts";
 import { listReleases, parseSource } from "./sources.ts";
 import type { Config, DigestItem, Release, ToolConfig, UsageHit } from "./types.ts";
 import { commandsFromNotes, findUsageAcross, referenceCounts, resolveUsagePaths } from "./usage.ts";
-import { isComparable, isTruncated, releasesBehind } from "./version.ts";
+import { compareVersions, isComparable, isOrderable, isTruncated, releasesBehind } from "./version.ts";
 
 /** Why an entry ended up where it did. Each bucket renders differently. */
 export type Bucket =
@@ -179,8 +179,26 @@ export function untrackedOutdatedCount(outdated: OutdatedPackage[], tools: ToolC
  * published. Returns null rather than a guess: a compare URL built from an
  * invented tag 404s, which reads as a broken tool rather than as missing data.
  */
+/**
+ * The tag the forge published for a version, or null if it published none.
+ *
+ * Two passes, and the exact match keeps its place at the front so nothing that
+ * resolves today can start resolving differently. The second pass exists
+ * because brew and the forge write the same version differently often enough
+ * to matter: brew says `2026.7.4`, yt-dlp tags `2026.07.04`. `compareVersions`
+ * has always called those equal — that is why "1 release behind" was right —
+ * so a string comparison here meant the report knew the release existed and
+ * still dropped the link to it.
+ *
+ * `isComparable` guards both sides because this list is not filtered: two tags
+ * that are not orderable at all (`nightly`, `latest`) parse to the same empty
+ * version, and `compareVersions` would call them equal.
+ */
 export function tagFor(releases: Release[], version: string): string | null {
-  return releases.find((r) => r.version === version)?.tag ?? null;
+  const exact = releases.find((r) => r.version === version);
+  if (exact) return exact.tag;
+  if (!isOrderable(version)) return null;
+  return releases.find((r) => isComparable(r) && compareVersions(r.version, version) === 0)?.tag ?? null;
 }
 
 /**
@@ -202,6 +220,51 @@ export function compareFor(
   const from = tagFor(releases, installed);
   const to = tagFor(releases, latest);
   return from && to ? compareUrl(source, from, to) : null;
+}
+
+/**
+ * Why the search behind the verdicts did not finish — from both greps, not one.
+ *
+ * Two independent walks run per report: the reference count that decides which
+ * bucket every package lands in, and the command search that decides what
+ * "affects you" says. Reporting only the second (`search ?? refs`) dropped the
+ * one with the wider blast radius: a truncated reference count ranks a package
+ * as unreferenced, which is what stops it from being judged at all.
+ *
+ * The reference count is named first for that reason. Identical messages —
+ * the usual case, since both greps walk the same roots and fail the same way —
+ * collapse to one.
+ */
+export function whyUsageIncomplete(refs?: string, search?: string): string | undefined {
+  const why = [...new Set([refs, search].filter((r): r is string => !!r))];
+  return why.length > 0 ? why.join("; ") : undefined;
+}
+
+/**
+ * The order entries are reported in: bucket first, then most-referenced, then
+ * name.
+ *
+ * Every bucket has to be named here. A bucket the list forgets gets `-1` from
+ * `indexOf` and sorts ahead of everything, which is invisible in the text
+ * report — render.ts filters per bucket and prints the sections in its own
+ * fixed order — and plainly wrong in `--json`, which hands out this array as
+ * it stands.
+ */
+const ORDER: Bucket[] = ["digested", "undigested", "no-repo", "unreachable", "no-signal"];
+
+/**
+ * Report order for two entries.
+ *
+ * Pulled out of `buildOverview` for the same reason as {@link bucketFor}: the
+ * ranking is the point of this command, and inside the async flow it can only
+ * be checked by standing brew, a forge and an engine up behind it — so nothing
+ * ever checked it.
+ *
+ * Most-referenced first inside each bucket, because alphabetical order would
+ * bury the tool you live in under a font.
+ */
+export function compareEntries(a: OverviewEntry, b: OverviewEntry): number {
+  return ORDER.indexOf(a.bucket) - ORDER.indexOf(b.bucket) || b.refs - a.refs || a.name.localeCompare(b.name);
 }
 
 /**
@@ -465,13 +528,7 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
     }
   }
 
-  // Most-referenced first inside each bucket: the ranking is the point, and
-  // alphabetical order would bury the tool you live in under a font.
-  const ORDER: Bucket[] = ["digested", "no-repo", "unreachable", "no-signal"];
-  entries.sort(
-    (a, b) =>
-      ORDER.indexOf(a.bucket) - ORDER.indexOf(b.bucket) || b.refs - a.refs || a.name.localeCompare(b.name),
-  );
+  entries.sort(compareEntries);
   current.sort((a, b) => b.refs - a.refs || a.name.localeCompare(b.name));
   unchecked.sort((a, b) => b.refs - a.refs || a.name.localeCompare(b.name));
 
@@ -481,7 +538,7 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
     unchecked,
     missingUsagePaths: usage.missing,
     noUsagePaths: config.usagePaths.length === 0,
-    usageIncomplete: search.incomplete ?? refs.incomplete,
+    usageIncomplete: whyUsageIncomplete(refs.incomplete, search.incomplete),
     filteredOut: outdated.length - wanted.length,
     engine: opts.engine,
   };

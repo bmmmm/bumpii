@@ -128,7 +128,18 @@ export function compareVersions(a: string, b: string): number {
  * distinguish "nothing pending" from "nothing comparable to compare against".
  */
 export function isComparable(r: Release): boolean {
-  return /^[0-9]/.test(r.version);
+  return isOrderable(r.version);
+}
+
+/**
+ * The same question about a bare version string.
+ *
+ * Split out because callers that hold a version without a release around it —
+ * a brew-reported one, say — need exactly this test, and writing the regex a
+ * second time is how the two drift apart.
+ */
+export function isOrderable(version: string): boolean {
+  return /^[0-9]/.test(version);
 }
 
 /**

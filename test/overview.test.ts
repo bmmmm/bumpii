@@ -8,12 +8,14 @@ import { type Engine, isMechanical } from "../src/judge.ts";
 import type { OutdatedPackage } from "../src/outdated.ts";
 import {
   bucketFor,
+  compareEntries,
   compareFor,
   expandOnly,
   namesOf,
   type Overview,
   type OverviewEntry,
   untrackedOutdatedCount,
+  whyUsageIncomplete,
 } from "../src/overview.ts";
 import { renderOverview } from "../src/render.ts";
 import { referenceCounts } from "../src/usage.ts";
@@ -551,4 +553,140 @@ test("the release count carries a + when the forge page ran out first", () => {
     }),
   );
   assert.match(text, /30\+ releases/);
+});
+
+// The reassuring line is the one people read as a verdict, so it is the one
+// that has to know when the search behind it stopped short. renderReport has
+// carried this distinction for a while; renderOverview said "none" regardless.
+test("a digested entry whose usage search did not finish says unknown, not none", () => {
+  const text = renderOverview(
+    overview({
+      usageIncomplete: "grep: ~/gone: No such file or directory",
+      entries: [
+        entry({
+          name: "gh",
+          refs: 34,
+          tracked: true,
+          bucket: "digested",
+          source: "github:cli/cli",
+          items: [
+            {
+              kind: "security",
+              summary: "Authorization header leaked to TUF mirrors",
+              commands: ["gh attestation verify"],
+              version: "2.97.0",
+            },
+          ],
+          hits: [],
+        }),
+      ],
+    }),
+  );
+  assert.match(text, /affects you: unknown — the search of your files did not finish/);
+  // A zero out of a search that stopped short is not a verdict. If this string
+  // comes back, the entry is claiming a check that did not happen.
+  assert.doesNotMatch(text, /none of these touch commands you call/);
+});
+
+test("a partial usage search still qualifies the hits it did reach", () => {
+  const text = renderOverview(
+    overview({
+      usageIncomplete: "grep: ~/gone: No such file or directory",
+      entries: [
+        entry({
+          name: "gh",
+          refs: 34,
+          bucket: "digested",
+          source: "github:cli/cli",
+          items: [
+            {
+              kind: "security",
+              summary: "Authorization header leaked to TUF mirrors",
+              commands: ["gh attestation verify"],
+              version: "2.97.0",
+            },
+          ],
+          hits: [{ command: "gh attestation verify", file: "~/ops/scripts/x.sh", line: 3 }],
+        }),
+      ],
+    }),
+  );
+  assert.match(text, /affects you: 1 of 1 changes touch commands you call, and the search did not finish/);
+});
+
+// Nothing checked this order before, because it lived inside buildOverview and
+// every renderer test passes a single entry. That is how "undigested" came to
+// be missing from ORDER: indexOf returned -1 and sorted it ahead of everything,
+// which the text report hides (render.ts filters per bucket) and --json shows.
+test("entries sort by bucket, then by references, then by name", () => {
+  const e = (name: string, bucket: OverviewEntry["bucket"], refs: number) => entry({ name, bucket, refs });
+  const sorted = [
+    e("zulu", "no-signal", 99),
+    e("alpha", "unreachable", 1),
+    e("bravo", "no-repo", 3),
+    e("pending", "undigested", 50),
+    e("charlie", "digested", 2),
+    e("delta", "digested", 40),
+    e("echo", "digested", 40),
+  ]
+    .sort(compareEntries)
+    .map((x) => x.name);
+  assert.deepEqual(sorted, [
+    // digested first, most-referenced first, ties broken by name
+    "delta",
+    "echo",
+    "charlie",
+    // then the bucket that means "read, but nothing came back"
+    "pending",
+    "bravo",
+    "alpha",
+    // unreferenced last, however high its own count
+    "zulu",
+  ]);
+});
+
+// Two greps, two ways to come up short. Reporting only the command search hid
+// the one that decides whether a package is judged at all.
+test("both grep failures are named, not just the command search", () => {
+  assert.equal(whyUsageIncomplete(undefined, undefined), undefined);
+  assert.equal(whyUsageIncomplete("counting stopped", undefined), "counting stopped");
+  assert.equal(whyUsageIncomplete(undefined, "search stopped"), "search stopped");
+  // The reference count comes first: it is the one that ranks a package as
+  // unreferenced, which is what keeps it away from the engine.
+  assert.equal(whyUsageIncomplete("counting stopped", "search stopped"), "counting stopped; search stopped");
+  // Both walks cover the same roots, so the same message twice is the usual
+  // case, not a special one.
+  assert.equal(whyUsageIncomplete("permission denied", "permission denied"), "permission denied");
+});
+
+// brew prints yt-dlp as 2026.7.4, the forge tags it 2026.07.04. compareVersions
+// calls those equal — which is why "1 release behind" was right — but tagFor
+// compared the strings, found nothing, and dropped a compare link that resolves
+// perfectly. Two comparison rules for the same pair of versions.
+test("a compare link survives brew and the forge padding versions differently", () => {
+  const rel = (version: string, tag: string) => ({
+    tag,
+    version,
+    publishedAt: null,
+    notes: "",
+    url: `https://example.com/${tag}`,
+  });
+  const releases = [rel("2026.08.19", "2026.08.19"), rel("2026.07.04", "2026.07.04")];
+
+  assert.equal(
+    compareFor("github:yt-dlp/yt-dlp", releases, "2026.7.4", "2026.8.19"),
+    "https://github.com/yt-dlp/yt-dlp/compare/2026.07.04...2026.08.19",
+  );
+
+  // The other half of the pair, asserted here so a later rewrite cannot fix one
+  // by breaking the other: a revision bump is NOT the same version written
+  // differently, and still gets no link.
+  const tagged = [rel("1.2.4", "v1.2.4"), rel("1.2.3", "v1.2.3")];
+  assert.equal(compareFor("github:o/r", tagged, "1.2.3", "1.2.3_2"), null);
+  // Nor does a letter suffix collapse into its base version.
+  const lettered = [rel("3.5a", "v3.5a"), rel("3.5", "v3.5")];
+  assert.equal(
+    compareFor("github:o/r", lettered, "3.5", "3.5a"),
+    "https://github.com/o/r/compare/v3.5...v3.5a",
+  );
 });

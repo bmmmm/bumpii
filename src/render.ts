@@ -523,7 +523,17 @@ function entryHead(e: OverviewEntry): string {
   return `${name} ${e.installed} → ${bold(e.latest)}${count}   ${refs}${flags.length ? `   ${flags.join(" ")}` : ""}`;
 }
 
-function renderEntry(e: OverviewEntry, engine: Engine, prefix: string, cont: string, out: string[]): void {
+/**
+ * What every overview entry needs to know beyond itself.
+ *
+ * `usageIncomplete` travels with the engine rather than as one more positional
+ * parameter because the entry body needs both and neither belongs to the entry:
+ * the engine names who did the reading, and this names whether the search the
+ * verdict rests on actually finished.
+ */
+type OverviewCtx = { engine: Engine; usageIncomplete?: string };
+
+function renderEntry(e: OverviewEntry, ctx: OverviewCtx, prefix: string, cont: string, out: string[]): void {
   out.push(`${prefix} ${entryHead(e)}`);
   const body = (s: string) => out.push(`${cont}    ${s}`);
 
@@ -553,7 +563,7 @@ function renderEntry(e: OverviewEntry, engine: Engine, prefix: string, cont: str
           ? `${e.source} publishes no versioned releases — bumpii cannot tell what changed, only that brew has a newer build`
           : e.behind.length === 0
             ? "brew has a newer build, but the forge published no release between these versions"
-            : noDigestReason(e.behind, e.error, engine),
+            : noDigestReason(e.behind, e.error, ctx.engine),
       ),
     );
     for (const rel of e.behind) body(dim(`  ${rel.version}  ${link(rel.url, rel.url)}`));
@@ -582,17 +592,23 @@ function renderEntry(e: OverviewEntry, engine: Engine, prefix: string, cont: str
   }
   const touching = sorted.filter((i) => e.hits.some((h) => i.commands.includes(h.command))).length;
   body(
-    dim(
-      touching === 0
-        ? "affects you: none of these touch commands you call"
-        : `affects you: ${touching} of ${sorted.length} changes touch commands you call`,
-    ),
+    // A zero out of a search that stopped short is not a verdict, and this is
+    // the line people read as one — the same distinction renderReport draws.
+    // Whatever hits it did find are still counted and still named above; what
+    // changes is that the count stops calling itself the whole answer.
+    ctx.usageIncomplete && touching === 0
+      ? yellow("affects you: unknown — the search of your files did not finish")
+      : dim(
+          touching === 0
+            ? "affects you: none of these touch commands you call"
+            : `affects you: ${touching} of ${sorted.length} changes touch commands you call${ctx.usageIncomplete ? ", and the search did not finish" : ""}`,
+        ),
   );
   body(`${dim("→")} ${e.update}`);
 }
 
 /** One block of entries under a heading, connected by tree characters. */
-function section(title: string, entries: OverviewEntry[], engine: Engine, out: string[]): void {
+function section(title: string, entries: OverviewEntry[], ctx: OverviewCtx, out: string[]): void {
   if (entries.length === 0) return;
   out.push(bold(title));
   const width = Math.max(...entries.map((e) => e.name.length));
@@ -601,7 +617,7 @@ function section(title: string, entries: OverviewEntry[], engine: Engine, out: s
     // Padding is applied here rather than in entryHead so every section lines
     // its own names up, instead of against the longest name in the report.
     const padded = { ...e, name: e.name.padEnd(width) };
-    renderEntry(padded, engine, last ? BRANCH.last : BRANCH.mid, last ? BRANCH.blank : BRANCH.pipe, out);
+    renderEntry(padded, ctx, last ? BRANCH.last : BRANCH.mid, last ? BRANCH.blank : BRANCH.pipe, out);
   });
   out.push("");
 }
@@ -651,13 +667,14 @@ export function renderOverview(raw: Overview): string {
     );
   }
 
-  section("★ digested", of("digested"), o.engine, out);
+  const ctx: OverviewCtx = { engine: o.engine, usageIncomplete: o.usageIncomplete };
+  section("★ digested", of("digested"), ctx, out);
   // Its own heading, because these were not digested. The body says which of
   // the reasons applied; a shared "★ digested" heading over an entry reading
   // "digest failed" would be the report contradicting itself.
-  section("★ pending, not digested", of("undigested"), o.engine, out);
-  section("referenced, but bumpii found no repo to read", of("no-repo"), o.engine, out);
-  section("referenced, but its forge could not be read", of("unreachable"), o.engine, out);
+  section("★ pending, not digested", of("undigested"), ctx, out);
+  section("referenced, but bumpii found no repo to read", of("no-repo"), ctx, out);
+  section("referenced, but its forge could not be read", of("unreachable"), ctx, out);
 
   if (o.current.length > 0) {
     // "tracked", not "referenced": every entry here was checked and is current,
