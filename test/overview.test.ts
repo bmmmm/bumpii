@@ -123,6 +123,24 @@ test("an empty usagePaths config is called out in the overview", () => {
   assert.doesNotMatch(renderOverview(overview({})), /no usagePaths configured/);
 });
 
+test("a usage search that stopped early is named, so a zero reference count is not read as absence", () => {
+  // grep exits 2 for a real failure, and `usage.ts` passes the reason up rather
+  // than letting a short walk look like a finished one. It decides buckets: an
+  // entry sits under "no signal" because its ref count is 0, so a walk that
+  // never reached the files naming it produces exactly the heading below —
+  // "no file in your usagePaths names these" — about files nobody read.
+  const quiet = entry({ name: "restic", bucket: "no-signal", refs: 0 });
+  const out = renderOverview(overview({ entries: [quiet], usageIncomplete: "~/src: grep exited 2" }));
+  assert.match(out, /usage search did not finish/);
+  assert.match(out, /~\/src: grep exited 2/, "the reason is what tells the reader which paths to distrust");
+  assert.match(out, /a zero reference count may not be one/);
+  assert.doesNotMatch(
+    renderOverview(overview({ entries: [quiet] })),
+    /usage search did not finish/,
+    "a walk that finished must not warn, or the warning stops meaning anything",
+  );
+});
+
 test("releases published without notes say so, instead of blaming the engine", () => {
   // htop's real shape: it tags every version and writes no body. There is
   // nothing to read, which is a fact about the forge — reporting it as a failed
