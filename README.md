@@ -689,6 +689,11 @@ into security / breaking / feature / fix. That is a classification of the
 notes, not a claim about you — it says what kind of change shipped, and you
 decide whether it matters.
 
+A change the model labels with anything else shows up as `? unclassified`
+rather than being filed under one of the four. It sorts above `feature`, and
+the ten-item cap never trims it, because both would amount to calling it
+routine — which is the thing that did not happen.
+
 A local model makes that cheap: `ollama serve` or LM Studio, one
 `OPENAI_BASE_URL`, and `--judge` runs offline, free, and on your own hardware.
 

@@ -63,18 +63,28 @@ const link = (url: string, text: string) =>
 const MARK: Record<ItemKind, string> = {
   security: "!",
   breaking: "^",
+  unclassified: "?",
   feature: "+",
   fix: "·",
 };
 
 function paint(kind: ItemKind, s: string): string {
   if (kind === "security") return red(s);
-  if (kind === "breaking") return yellow(s);
+  // Yellow like breaking, not dim like a fix: what it could be is unknown, and
+  // the unknown half of that range is the alarming half.
+  if (kind === "breaking" || kind === "unclassified") return yellow(s);
   return s;
 }
 
-/** security first, then breaking, then features, then fixes. */
-const ORDER: ItemKind[] = ["security", "breaking", "feature", "fix"];
+/**
+ * security first, then breaking, then anything the engine did not classify,
+ * then features, then fixes.
+ *
+ * `unclassified` sits above feature because it could be either of the two above
+ * it, and sorting it down among the routine ones would answer a question the
+ * run never answered.
+ */
+const ORDER: ItemKind[] = ["security", "breaking", "unclassified", "feature", "fix"];
 
 /**
  * How many item lines one overview entry may print before the rest is counted
@@ -86,6 +96,15 @@ const ORDER: ItemKind[] = ["security", "breaking", "feature", "fix"];
  * overview's job is everything at once.
  */
 const ITEM_CAP = 10;
+
+/**
+ * The kinds a cap may not drop, however many of them there are.
+ *
+ * The two that make someone act, plus the one whose severity is unknown —
+ * trimming that one would be deciding it was routine, which is exactly what
+ * naming it `unclassified` refused to do.
+ */
+const NEVER_CAPPED: ItemKind[] = ["security", "breaking", "unclassified"];
 
 /**
  * An empty usagePaths config has to be said in every report that judges by
@@ -132,7 +151,14 @@ function noDigestReason(releases: Release[], digestError: string | undefined, en
   if (releases.length > 0 && releases.every((r) => r.notes.trim() === "")) {
     return `the forge published ${releases.length === 1 ? "this release" : "these releases"} without notes — there is nothing to read beyond the version number`;
   }
-  return "engine returned nothing usable; raw notes:";
+  // Reached when the engine answered and its answer held no items — which is
+  // not the same as an engine that failed, and the old wording ("returned
+  // nothing usable") said it was. An empty list can be the correct answer: the
+  // prompt tells the model to skip the project's own dependency bumps, so a
+  // release that is nothing but those has nothing left to report. Both
+  // possibilities are named because the code cannot tell them apart, and
+  // picking one would be the report deciding something it did not find out.
+  return "the engine read these notes and returned no items — either nothing here is user-visible, or it is all dependency bumps, which the prompt leaves out; raw notes:";
 }
 
 /**
@@ -458,7 +484,7 @@ function renderEntry(e: OverviewEntry, ctx: OverviewCtx, prefix: string, cont: s
   // tail the sort has already put last — security and breaking are the lines
   // that make someone act, so they are never what gets dropped, however many
   // there are. What is left out is counted and named rather than trimmed away.
-  const forced = sorted.filter((i) => i.kind === "security" || i.kind === "breaking");
+  const forced = sorted.filter((i) => NEVER_CAPPED.includes(i.kind));
   const shown = [
     ...forced,
     ...sorted.filter((i) => !forced.includes(i)).slice(0, Math.max(0, ITEM_CAP - forced.length)),

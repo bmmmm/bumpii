@@ -245,6 +245,40 @@ test("the key covers the engine kind, not only the model name", async () => {
   assert.notEqual(cli, openai);
 });
 
+test("the key covers which server answered, because a model name is not an identity", async () => {
+  // An Ollama box and a llama.cpp on another port both serve "llama3", and they
+  // do not answer alike. Without the address in the key the two hashed the same,
+  // so the second server's report was the first one's answers under its label.
+  const ollama = digestKey(
+    {
+      kind: "openai",
+      model: "llama3",
+      label: "openai-compatible/llama3 @ http://a:11434/v1",
+      base: "http://a:11434/v1",
+    },
+    "same prompt",
+  );
+  const llamacpp = digestKey(
+    {
+      kind: "openai",
+      model: "llama3",
+      label: "openai-compatible/llama3 @ http://b:8080/v1",
+      base: "http://b:8080/v1",
+    },
+    "same prompt",
+  );
+  assert.notEqual(ollama, llamacpp);
+
+  // The label is not what is hashed: it also carries why a probe failed, and an
+  // unrelated note in it must not throw away a cache that is still valid.
+  const noted = digestKey(
+    { kind: "claude-cli", model: "haiku", label: "claude-cli/haiku (OPENAI_BASE_URL unreachable)" },
+    "same prompt",
+  );
+  const plain = digestKey({ kind: "claude-cli", model: "haiku", label: "claude-cli/haiku" }, "same prompt");
+  assert.equal(noted, plain);
+});
+
 test("a missing or unreadable entry reads as absent", async () => {
   const dir = await scratch();
   assert.equal(await readCachedDigest("deadbeef", dir), null);

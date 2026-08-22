@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import type { Engine } from "../src/judge.ts";
+import { type Engine, parseItems } from "../src/judge.ts";
 import type { OutdatedPackage } from "../src/outdated.ts";
 import {
   bucketFor,
@@ -165,6 +165,51 @@ test("a long digest is capped, and what it left out is counted rather than dropp
     "the way to see the rest has to be a command, not a hint",
   );
   assert.equal(out.match(/fix number/g)?.length, 10, "ten shown, and the count is what says so");
+});
+
+test("a kind the engine invented is called unclassified, not filed under the mildest one", () => {
+  // parseItems mapped anything outside the four to "fix" — the least alarming
+  // of them — so a model answering "vulnerability" where the prompt said
+  // "security" had its item put under the heading a reader skims past. The
+  // classification did not happen, so the report says that instead of choosing
+  // one, and sorts it above feature because it could be either of the two above.
+  const items = parseItems('[{"kind":"vulnerability","summary":"a CVE by another name","version":"2.0.0"}]');
+  assert.equal(items[0]?.kind, "unclassified", "an unknown kind must not become the mildest known one");
+
+  const e = entry({
+    name: "odd",
+    bucket: "digested",
+    refs: 4,
+    items: [{ kind: "fix", summary: "a routine fix", version: "2.0.0" }, ...items],
+  });
+  const out = renderOverview(overview({ entries: [e] }));
+  assert.match(out, /\? unclassified a CVE by another name/);
+  assert.ok(
+    out.indexOf("a CVE by another name") < out.indexOf("a routine fix"),
+    "an unknown severity sorts above the routine ones, not among them",
+  );
+});
+
+test("a cap never drops an unclassified item either — trimming it would rate it", () => {
+  // Same argument as security and breaking: cutting it off would be the report
+  // deciding it was routine, which is the decision `unclassified` records as
+  // not having been made.
+  const e = entry({
+    name: "odd",
+    bucket: "digested",
+    refs: 4,
+    items: [
+      ...Array.from({ length: 12 }, (_, i) => ({
+        kind: "unclassified" as const,
+        summary: `unknown thing ${i}`,
+        version: "2.0.0",
+      })),
+      { kind: "fix" as const, summary: "a fix that can wait", version: "2.0.0" },
+    ],
+  });
+  const out = renderOverview(overview({ entries: [e] }));
+  assert.equal(out.match(/unknown thing \d+/g)?.length, 12, "all twelve survive a cap of ten");
+  assert.doesNotMatch(out, /a fix that can wait/);
 });
 
 test("a cap never drops a security or breaking item, however many there are", () => {
@@ -526,7 +571,7 @@ test("brew ahead of the forge is not rendered as a failed digest", () => {
     }),
   );
   assert.match(text, /forge published no release between these versions/);
-  assert.doesNotMatch(text, /engine returned nothing usable/);
+  assert.doesNotMatch(text, /read these notes and returned no items/);
 });
 
 test("a repo that publishes no releases is not reported as nothing having changed", () => {

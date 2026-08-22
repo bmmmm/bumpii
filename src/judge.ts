@@ -21,8 +21,19 @@ export interface Engine {
   model: string;
   /** Human-readable, for the report footer: you should always know who judged. */
   label: string;
+  /**
+   * The OpenAI-compatible server this resolved against, when there is one.
+   *
+   * Carried on the engine rather than read from the environment where it is
+   * needed, because it belongs to the identity of who judged: two servers can
+   * both serve a model called `llama3` and give different answers, and the
+   * cache key has to be able to tell them apart. Undefined for every other
+   * kind — the claude CLI has no address to vary.
+   */
+  base?: string;
 }
 
+/** The four the prompt asks for. `unclassified` is not one a model may name. */
 const KINDS: ItemKind[] = ["security", "breaking", "feature", "fix"];
 
 type EngineProbe = { reachable: true; models: string[] } | { reachable: false; reason: string };
@@ -66,7 +77,7 @@ export async function resolveEngine(opts: { model?: string } = {}): Promise<Engi
     const probe = await probeOpenAi(base);
     if (probe.reachable) {
       const model = opts.model ?? probe.models[0];
-      if (model) return { kind: "openai", model, label: `openai-compatible/${model} @ ${base}` };
+      if (model) return { kind: "openai", model, label: `openai-compatible/${model} @ ${base}`, base };
       note = `OPENAI_BASE_URL serves no models`;
     } else {
       note = `OPENAI_BASE_URL unreachable (${probe.reason})`;
@@ -146,7 +157,10 @@ export function parseItems(text: string): DigestItem[] {
     const summary = typeof o.summary === "string" ? o.summary.trim() : "";
     if (!summary) continue;
     items.push({
-      kind: KINDS.includes(kind) ? kind : "fix",
+      // Not "fix". A kind outside the four is a classification that did not
+      // happen, and filing it under the mildest of them is how a model writing
+      // "vulnerability" for "security" gets read as routine.
+      kind: KINDS.includes(kind) ? kind : "unclassified",
       summary,
       version: typeof o.version === "string" ? o.version : "",
     });
@@ -169,11 +183,20 @@ async function askOpenAi(engine: Engine, text: string): Promise<string> {
     }),
     signal: AbortSignal.timeout(180_000),
   });
-  if (!res.ok)
+  if (!res.ok) {
+    // Bounded, because this lands in the report as "digest failed: …" and the
+    // body is whatever the server chose to send — an HTML error page from a
+    // proxy in front of it is a plausible few hundred kilobytes, and the report
+    // is a thing someone reads in a terminal. The first 500 characters carry
+    // every message a server writes on purpose. render.ts strips the control
+    // bytes; this is the length half of the same problem.
+    const body = (await res.text()).trim();
+    const detail = body.length > 500 ? `${body.slice(0, 500)}… (${body.length} characters in total)` : body;
     throw new Error(
       `engine HTTP ${res.status} from ${base}/chat/completions — check OPENAI_BASE_URL and that ` +
-        `"${engine.model}" is one of the models it serves (/v1/models lists them): ${await res.text()}`,
+        `"${engine.model}" is one of the models it serves (/v1/models lists them): ${detail}`,
     );
+  }
   const body = (await res.json()) as { choices?: { message?: { content?: string } }[] };
   const out = body.choices?.[0]?.message?.content;
   if (!out)
@@ -226,10 +249,17 @@ export function digestCacheDir(): string {
  *
  * The engine is in the key because the answer is the model's, not the notes':
  * switching from haiku to a local model must produce that model's reading, not
- * a replay of the other one's.
+ * a replay of the other one's. Its address is in there for the same reason and
+ * was not: `openai` plus a model name is not an identity when two servers can
+ * both serve `llama3` — an Ollama box and a llama.cpp on another port hashed
+ * alike, and the second one's report was the first one's answers under its
+ * label. The label itself is not usable as the key, because it also carries
+ * why a probe failed, which would miss the cache over an unrelated note.
  */
 export function digestKey(engine: Engine, promptText: string): string {
-  return createHash("sha256").update(`${engine.kind}\0${engine.model}\0${promptText}`).digest("hex");
+  return createHash("sha256")
+    .update(`${engine.kind}\0${engine.model}\0${engine.base ?? ""}\0${promptText}`)
+    .digest("hex");
 }
 
 /**

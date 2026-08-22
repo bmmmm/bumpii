@@ -49,7 +49,16 @@ export interface Release {
   url: string;
 }
 
-export type ItemKind = "security" | "breaking" | "feature" | "fix";
+/**
+ * The four the engine is asked for, and the one it is not.
+ *
+ * `unclassified` is what a `kind` outside the other four becomes. It used to
+ * become `fix` — the least alarming of them — so a model answering
+ * "vulnerability" instead of "security" had its item filed under the heading
+ * a reader skims past. That is a classification the run never made, which is
+ * the one thing no report here is allowed to print.
+ */
+export type ItemKind = "security" | "breaking" | "unclassified" | "feature" | "fix";
 
 /** One digested change, as the engine classified it. */
 export interface DigestItem {

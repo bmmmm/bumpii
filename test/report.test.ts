@@ -156,8 +156,8 @@ test("a failed digest keeps the releases and names the failure", () => {
 
 test("no engine and a silent engine are not described the same way", () => {
   // Both releases carry notes on purpose: an empty body never reaches the
-  // engine, so asserting "returned nothing usable" over one would pin the
-  // wrong string — which is what this test did until the case below existed.
+  // engine, so asserting the silent-engine string over one would pin the
+  // wrong case — which is what this test did until the case below existed.
   const readable = [rel("2.96.0", "Fixed `gh pr view --json`")];
   const withoutEngine = renderReport([report({ behind: readable })], {
     engine: noEngine,
@@ -165,8 +165,14 @@ test("no engine and a silent engine are not described the same way", () => {
   assert.match(withoutEngine, /no engine reachable/);
 
   const silent = renderReport([report({ behind: readable })], { engine });
-  assert.match(silent, /returned nothing usable/);
+  assert.match(silent, /read these notes and returned no items/);
+  // An empty answer is not a broken engine: the prompt tells the model to skip
+  // the project's own dependency bumps, so a release that is only those has
+  // nothing left to report. The line names both possibilities and picks
+  // neither, because the code cannot tell them apart.
+  assert.match(silent, /or it is all dependency bumps/);
   assert.doesNotMatch(silent, /no engine/, "blaming a working engine sends you to fix the wrong thing");
+  assert.doesNotMatch(silent, /failed/, "an answer with no items in it is not a failure");
 });
 
 test("a release the forge published without notes is not the engine's fault", () => {
@@ -179,7 +185,7 @@ test("a release the forge published without notes is not the engine's fault", ()
   const out = renderReport([report({ behind: [rel("3.5.3")] })], { engine });
   assert.match(out, /published this release without notes/);
   assert.match(out, /nothing to read beyond the version number/);
-  assert.doesNotMatch(out, /engine returned nothing usable/);
+  assert.doesNotMatch(out, /read these notes and returned no items/);
   assert.doesNotMatch(out, /digest failed/);
   // The release is still real and still pending, so its link has to survive.
   assert.match(out, /https:\/\/example\.com\/3\.5\.3/);
@@ -234,9 +240,13 @@ test("parseItems repairs what it can and drops what it cannot", () => {
   );
   assert.deepEqual(
     items.map((i) => i.kind),
-    ["fix", "fix"],
-    "an unknown kind falls back to fix rather than sinking the item",
+    ["unclassified", "fix"],
+    "an unknown kind keeps its item, but is not filed as one of the four",
   );
+  // The item survives — that part was always right, and dropping it would lose
+  // a change the notes did describe. What changed is where it lands: "fix" is
+  // the mildest of the four and claimed a classification nothing performed.
+  assert.equal(items[0]?.summary, "x", "the summary is what carries the change; it must not be lost");
   assert.equal(items.length, 2, "an item with no summary carries no information");
 });
 
