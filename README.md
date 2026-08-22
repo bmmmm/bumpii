@@ -530,6 +530,12 @@ a scheduled run can act on it:
 0 9 * * 1  bumpii --json > ~/tmp/bumpii.json || notify "tool updates pending"
 ```
 
+One more code exists and is deliberately not one of the three: `141`, which is
+128+SIGPIPE, for a reader that closed the pipe before the report finished —
+`bumpii list | head`. Nothing was learned about any package in that case, and
+the alternative was worse than useless: it used to be an unhandled EPIPE, a
+stack trace, and exit `1` — the crash arriving as "updates available".
+
 **Keep the report and the config out of your repos.** A `--json` run carries
 your tool inventory and, from `overview`, the `usagePaths` it could not read —
 so committing one publishes what you run and something of how your machine is

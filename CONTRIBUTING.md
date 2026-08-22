@@ -80,7 +80,9 @@ Changing any of these is a breaking change and belongs in its own PR with the
 box in the template unticked and an explanation:
 
 - **Exit codes** — `0` nothing pending, `1` updates available, `2` error.
-  Under `--yes`: `0` every update ran, `2` any failed.
+  Under `--yes`: `0` every update ran, `2` any failed. `141` is 128+SIGPIPE and
+  means the reader closed the pipe (`bumpii | head`) — nothing was learned about
+  any package, which is why it is not one of the three.
 - **`--json` shape** — `{ engine: { kind, model, label }, missingUsagePaths,
   reports[] }`.
 - **Config format** — `usagePaths`, and `tools[].{ name, source, version: {

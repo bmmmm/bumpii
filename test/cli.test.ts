@@ -758,6 +758,39 @@ test("Ctrl-C exits 130 and takes the running child with it", async (t) => {
   await assert.rejects(readFile(marker), "the child outlived the run that started it");
 });
 
+test("a reader that walks away is not reported as updates being available", async () => {
+  // `bumpii list | head` — Node ignores SIGPIPE and raises an `error` event
+  // instead, which with no listener is an unhandled throw: a stack trace and
+  // exit 1. Every scheduled use reads 1 as "updates available", so the tool's
+  // own crash wore its most ordinary answer. Measured before the fix: a 240 KB
+  // report cut off after 60 bytes, exit 1.
+  //
+  // Enough entries that the report cannot fit in the 64 KB pipe buffer — a
+  // short one is written and buffered before the reader is gone, and nothing
+  // ever fails.
+  const home = await freshHome();
+  const many = Array.from({ length: 2000 }, (_, i) => tool({ name: `tool${i}`, source: `github:o/r${i}` }));
+  await writeConfig(home, many);
+
+  const p = spawnCli(["list"], home);
+  let bytes = 0;
+  let stderr = "";
+  p.stdout.on("data", (d) => {
+    bytes += d.length;
+    p.stdout.destroy(); // the reader leaves after the first chunk
+  });
+  p.stdout.on("error", () => {});
+  p.stderr.on("data", (d) => {
+    stderr += d;
+  });
+  const code = await new Promise<number | null>((resolve) => p.on("close", resolve));
+
+  assert.ok(bytes > 0 && bytes < 100_000, `the reader has to leave mid-report, got ${bytes} bytes`);
+  assert.notEqual(code, 1, "1 is what a scheduler acts on as pending updates");
+  assert.equal(code, 141, "128+SIGPIPE, the code a shell reports for a writer whose reader is gone");
+  assert.doesNotMatch(stderr, /EPIPE|Unhandled/, "a closed pipe must not print a stack trace");
+});
+
 test("a closed terminal takes the children with it, the way Ctrl-C does", async () => {
   // SIGHUP is what a closing terminal sends, and it is the case where stranded
   // children matter most — nobody is left watching a `claude` or a `brew

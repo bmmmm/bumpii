@@ -1167,7 +1167,34 @@ async function exitAfterFlush(code: number): Promise<never> {
   process.exit(code);
 }
 
+/**
+ * A reader that walked away is not a failed run, and above all not a pending one.
+ *
+ * Node ignores SIGPIPE and surfaces the closed reader as an `error` event
+ * instead, which with no listener is an unhandled throw — `bumpii list | head`
+ * printed a stack trace and exited **1**. Every scheduled use of this tool reads
+ * that 1 as "updates available", so piping the report into `head` or `grep -q`
+ * produced the tool's own crash wearing its most ordinary answer. Measured: a
+ * 240 KB report cut off after 60 bytes, exit 1.
+ *
+ * 141 is 128+SIGPIPE, what a shell reports for a writer a broken pipe killed,
+ * and it is the number the other signal paths here already follow. It is
+ * distinguishable from all three documented codes, which is the point: nothing
+ * about the packages was learned when the reader left.
+ */
+function exitQuietlyOnBrokenPipe(): void {
+  for (const stream of [process.stdout, process.stderr]) {
+    stream.on("error", (err: NodeJS.ErrnoException) => {
+      if (err.code !== "EPIPE") throw err;
+      // Not exitAfterFlush: the stream that would be flushed is the one that
+      // just went away, and waiting on it is how this hangs instead.
+      process.exit(141);
+    });
+  }
+}
+
 if (import.meta.main) {
+  exitQuietlyOnBrokenPipe();
   main()
     .then((code) => exitAfterFlush(code))
     .catch((err: unknown) => {
