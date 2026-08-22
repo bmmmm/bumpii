@@ -42,6 +42,22 @@ test("sourceFromUrls returns null rather than a wrong guess", () => {
   assert.equal(sourceFromUrls([""]), null);
 });
 
+test("a forge host named in a path or a query is not the host serving it", () => {
+  // The github/codeberg patterns searched the URLs joined into one string, so
+  // the name only had to appear somewhere — path, query, anywhere. Measured
+  // against the code before this: all three of these returned a source naming
+  // attacker/repo, and the report would then have shown a stranger's releases
+  // under the user's tool. These URLs come from a formula's homepage and an OCI
+  // image.source label; neither is written by the person reading the report.
+  assert.equal(sourceFromUrls(["https://evil.tld/github.com/attacker/repo"]), null);
+  assert.equal(sourceFromUrls(["https://evil.tld/path/codeberg.org/attacker/repo"]), null);
+  assert.equal(sourceFromUrls(["https://evil.tld/?q=github.com/attacker/repo"]), null);
+  // Still the shorthand when the host really is the forge, www and all.
+  assert.equal(sourceFromUrls(["https://github.com/real/tool"]), "github:real/tool");
+  assert.equal(sourceFromUrls(["https://www.github.com/real/tool"]), "github:real/tool");
+  assert.equal(sourceFromUrls(["https://codeberg.org/real/tool"]), "codeberg:real/tool");
+});
+
 test("stripAnsi removes SGR colour so a version regex stays portable", () => {
   // Real `tea --version` output: the number arrives bold.
   assert.equal(stripAnsi("Version: \x1b[1m0.14.2\x1b[0m\tgolang: 1.26.4"), "Version: 0.14.2\tgolang: 1.26.4");

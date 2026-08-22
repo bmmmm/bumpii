@@ -292,11 +292,36 @@ function toRelease(r: RawRelease, ref: ForgeRef): Release {
  * discovery module to do it.
  */
 export function sourceFromUrls(urls: string[]): string | null {
-  const text = urls.filter(Boolean).join(" ");
-  const gh = /github\.com\/([^/\s]+\/[^/\s]+?)(?:\.git|\/archive|\/releases|[\s/]|$)/.exec(text);
-  if (gh?.[1]) return `github:${gh[1]}`;
-  const cb = /codeberg\.org\/([^/\s]+\/[^/\s]+?)(?:\.git|\/archive|\/releases|[\s/]|$)/.exec(text);
-  if (cb?.[1]) return `codeberg:${cb[1]}`;
+  const list = urls.filter(Boolean).map((u) => u.trim());
+  const text = list.join(" ");
+  /**
+   * owner/repo from the first URL actually served by `host`.
+   *
+   * Anchored at the scheme, which is the whole point: the pattern used to run
+   * over the URLs joined into one string, so `github.com/o/r` appearing in a
+   * path or a query — `https://evil.tld/github.com/attacker/repo` — resolved as
+   * that repo. These URLs are not the user's, they come from a formula's
+   * homepage and an OCI image.source label, so the report would then show a
+   * stranger's releases under the user's tool. Verified against the old code:
+   * all three shapes above returned `github:attacker/repo`.
+   *
+   * Each URL is tried whole rather than the batch being searched once, so a
+   * second URL still answers when the first is not a forge at all.
+   */
+  const repoOn = (host: string): string | null => {
+    const re = new RegExp(
+      `^https?://(?:www\\.)?${host.replace(/\./g, "\\.")}/([^/\\s]+/[^/\\s]+?)(?:\\.git|/archive|/releases|[\\s/]|$)`,
+    );
+    for (const u of list) {
+      const m = re.exec(u);
+      if (m?.[1]) return m[1];
+    }
+    return null;
+  };
+  const gh = repoOn("github.com");
+  if (gh) return `github:${gh}`;
+  const cb = repoOn("codeberg.org");
+  if (cb) return `codeberg:${cb}`;
   // gitea.com and self-hosted Forgejo/Gitea instances speak the same API — but
   // only accept hosts that plausibly ARE one. Plenty of formulae ship from a
   // plain tarball mirror whose path plausibly looks like owner/repo
