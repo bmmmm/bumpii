@@ -46,6 +46,14 @@ function validate(cfg: unknown): Config {
   if (c.usagePaths !== undefined && !Array.isArray(c.usagePaths)) {
     throw new Error("config: `usagePaths` must be an array of paths");
   }
+  // The members too, not just the array. A number in here reached expansion as
+  // `p.startsWith is not a function` — a stack trace naming neither the file
+  // nor the field, for a config the user can fix in one line once told which.
+  for (const [i, p] of (c.usagePaths ?? []).entries()) {
+    if (typeof p !== "string" || !p) {
+      throw new Error(`config: usagePaths[${i}] must be a non-empty path string`);
+    }
+  }
   for (const [i, t] of c.tools.entries()) {
     for (const field of ["name", "update"] as const) {
       if (typeof t?.[field] !== "string" || !t[field]) {
@@ -83,6 +91,22 @@ function validate(cfg: unknown): Config {
     } catch (err) {
       throw new Error(`config: tools[${i}].version.match is not a valid regex — ${(err as Error).message}`);
     }
+  }
+  // Two entries under one name make every lookup ambiguous, and each caller
+  // resolves it differently and silently: `setToolField` finds the first and
+  // reports the change as done, while the overview's alias map keeps the last.
+  // Refusing the config is the only answer that cannot be quietly wrong, and it
+  // names the index so the duplicate is one edit away.
+  const seen = new Map<string, number>();
+  for (const [i, t] of c.tools.entries()) {
+    const first = seen.get(t.name);
+    if (first !== undefined) {
+      throw new Error(
+        `config: tools[${i}].name "${t.name}" is already used by tools[${first}] — ` +
+          `two entries under one name cannot both be edited or reported on`,
+      );
+    }
+    seen.set(t.name, i);
   }
   return { ...c, usagePaths: c.usagePaths ?? [], tools: c.tools };
 }

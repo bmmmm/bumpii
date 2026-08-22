@@ -77,6 +77,31 @@ test("an entry may carry an empty source, but not a missing one", async () => {
   await assert.rejects(loadConfig(bad), /source must be a string/);
 });
 
+test("a usagePaths member that is not a path is named as one, not thrown from expansion", async () => {
+  // A number in the array reached expansion as "p.startsWith is not a function":
+  // a stack trace naming neither the file nor the field, for something the user
+  // fixes in one line once told which one.
+  const bad = await configFile({ tools: [gh], usagePaths: ["~/src", 42] });
+  await assert.rejects(loadConfig(bad), /usagePaths\[1\] must be a non-empty path string/);
+
+  const blank = await configFile({ tools: [gh], usagePaths: [""] });
+  await assert.rejects(loadConfig(blank), /usagePaths\[0\]/);
+
+  const ok = await configFile({ tools: [gh], usagePaths: ["~/src"] });
+  assert.deepEqual((await loadConfig(ok)).usagePaths, ["~/src"]);
+});
+
+test("two entries cannot share a name, because every lookup would pick a different one", async () => {
+  // `setToolField` finds the first and reports the edit as done; the overview's
+  // alias map keeps the last. Neither is wrong on its own and they disagree, so
+  // the config is what gets refused — naming the index, since that is the edit.
+  const dupe = await configFile({ tools: [gh, { ...jq, name: "gh" }] });
+  await assert.rejects(loadConfig(dupe), /tools\[1\]\.name "gh" is already used by tools\[0\]/);
+
+  const fine = await configFile({ tools: [gh, jq] });
+  assert.equal((await loadConfig(fine)).tools.length, 2);
+});
+
 test("a channel must be a tag name, and must have a repo to live in", async () => {
   // A channel names a tag in the source repo; without a source the entry
   // would sit there watching nothing while reading as configured.
