@@ -27,10 +27,12 @@ test/` looks for a *module* called `test` and fails with MODULE_NOT_FOUND):
 node --test
 ```
 
-**A green run with skips is not a green run.** Sixteen tests stand up a
+**A green run with skips is not a green run.** Seventeen tests stand up a
 loopback HTTP server as a stub forge, and a sandbox that cannot bind a port
-skips them — the summary then reads `pass 277, skipped 16` and every forge
-integration path went unchecked. Read the `skipped` line, not just `fail 0`.
+skips them — the summary then reads `fail 0` with every forge integration path
+unchecked. Read the `skipped` line, not just `fail 0`. Whether they can bind
+varies between runs of the same suite in the same session, so a run reporting
+`skipped 0` is the one to trust and neither is a reason to suspect the code.
 
 ## Module map
 
@@ -129,6 +131,16 @@ Concretely: adding a code path that can fail quietly means adding a branch in
   text rather than parsed items — a later fix to `parseItems` then reaches what
   is already cached — and store it only *after* it parses, or an unusable
   answer is pinned for every future run.
+- How many items a digest produces is not stable across runs, and nothing in
+  the code decides it. Measured: five cold runs of the same 18.7k of notes
+  through `claude-cli/haiku` returned 27/28/29/30/31 items — ±2 around the mean,
+  every run reading the same text. Two other packages came back 30/30/31 and
+  49/52/52. So do not read a changed count as a regression, and do not pin an
+  exact one in a test against a live engine. The same notes judged twice are one
+  answer only because the digest cache makes them one; a cache miss re-rolls it.
+  The OpenAI path already sends `temperature: 0`, and the `claude` CLI has no
+  equivalent to set. An overview entry shows ten items whatever the count is,
+  which is what keeps this out of the report.
 - Releases whose body is empty never reach the engine. htop tags every version
   and writes no notes, so its entire prompt was the line `### htop 3.5.3`; the
   model asked for the notes in prose, that did not parse, and the report said
