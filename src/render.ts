@@ -16,7 +16,7 @@ import { compareVersions } from "./version.ts";
  *
  * Measured on the path with no model in it at all: commandsFromNotes ->
  * toNeedles -> mechanicalHits carried the bytes through verbatim, so
- * `--no-judge` was exposed exactly as much as a judged run.
+ * an unjudged run was exposed exactly as much as a judged one.
  *
  * Stripped rather than escaped, and never dropped whole: the reader still has
  * to see what the note said, and a note that is silently not shown is its own
@@ -108,8 +108,8 @@ export interface RenderOptions {
  */
 function noDigestReason(releases: Release[], digestError: string | undefined, engine: Engine): string {
   if (digestError) return `digest failed: ${digestError}; raw notes:`;
-  // The label carries why there is no engine — "skipped (--no-judge)" when you
-  // turned it off yourself, which is not something to report as unavailable.
+  // The label carries why there is no engine — "not asked for" on an ordinary
+  // run, which is not something to report as unavailable.
   // Ahead of the empty-notes case on purpose: you asked for no digest, so that
   // is the answer to what you typed, whatever the bodies happened to contain.
   if (engine.kind === "none") return `no digest — ${engine.label}; raw notes:`;

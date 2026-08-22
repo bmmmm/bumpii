@@ -131,12 +131,12 @@ export function parseItems(text: string): DigestItem[] {
   if (start < 0 || end <= start)
     throw new Error(
       `no JSON array in engine output — the model answered in prose. Try a larger model with ` +
-        `--model, or --no-judge to keep the release list without a summary: ${text.slice(0, 200)}`,
+        `--model, or drop --judge to keep the release list without a summary: ${text.slice(0, 200)}`,
     );
   const parsed = JSON.parse(text.slice(start, end + 1)) as unknown;
   if (!Array.isArray(parsed))
     throw new Error(
-      "engine output parsed as JSON but not as an array — try a larger model with --model, or --no-judge",
+      "engine output parsed as JSON but not as an array — try a larger model with --model, or drop --judge",
     );
 
   const items: DigestItem[] = [];
@@ -179,7 +179,7 @@ async function askOpenAi(engine: Engine, text: string): Promise<string> {
   if (!out)
     throw new Error(
       `engine accepted the request but returned an empty message — "${engine.model}" may not be loaded; ` +
-        "check /v1/models, or run with --no-judge",
+        "check /v1/models, or run without --judge",
     );
   return out;
 }
@@ -271,7 +271,7 @@ export async function writeCachedDigest(key: string, raw: string, dir = digestCa
  *
  * Answered from cache when the same notes have already been judged by the same
  * model. This is where nearly all of a run's wall-clock goes — measured at 140s
- * for `overview` against 4s with `--no-judge`, one `claude -p` subprocess per
+ * for `overview` against 4s unjudged, one `claude -p` subprocess per
  * tool — and the notes for a published tag do not change, so a hit is not a
  * stale answer but the same answer without the wait.
  */
