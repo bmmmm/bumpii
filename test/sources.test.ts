@@ -20,7 +20,7 @@ chmodSync(join(ghDir, "gh"), 0o755);
 const realPath = process.env.PATH;
 process.env.PATH = ghDir;
 
-const { channelStatus, listReleases, parseSource } = await import("../src/sources.ts");
+const { channelStatus, FETCH_CONCURRENCY, listReleases, parseSource } = await import("../src/sources.ts");
 
 after(async () => {
   process.env.PATH = realPath;
@@ -484,5 +484,39 @@ test("a forge that never answers does not hold the run open forever", async () =
     assert.equal(typeof signal?.aborted, "boolean");
   } finally {
     stub.restore();
+  }
+});
+
+test("a wide fan-out reaches the forge as a stream of requests, not as one burst", async () => {
+  // How many packages are pending is the machine's number: the callers map over
+  // brew's outdated list inside a single Promise.all. Forty of those leaving in
+  // the same instant is what a secondary rate limit exists to refuse, and the
+  // refusal lands on every one of them — forty entries reading "could not read
+  // its releases", one cause, and the hour's budget spent either way.
+  const real = globalThis.fetch;
+  let inFlight = 0;
+  let peak = 0;
+  globalThis.fetch = async (): Promise<Response> => {
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    // Held open long enough that a request which was *not* queued is still in
+    // flight when the rest start — otherwise an uncapped fan-out could pass
+    // here just by resolving fast enough.
+    await new Promise((r) => setTimeout(r, 10));
+    inFlight--;
+    return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    const ref = parseSource("github:o/r");
+    await Promise.all(Array.from({ length: 40 }, () => listReleases(ref)));
+    assert.ok(
+      peak <= FETCH_CONCURRENCY,
+      `${peak} requests were in flight at once, the cap is ${FETCH_CONCURRENCY}`,
+    );
+    // A ceiling, not a queue: serialising forty forge reads would trade one
+    // visible failure for a run nobody waits out.
+    assert.ok(peak > 1, "the cap must still let requests overlap");
+  } finally {
+    globalThis.fetch = real;
   }
 });

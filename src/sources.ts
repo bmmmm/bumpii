@@ -6,6 +6,7 @@
 // is a GET with a token header. Pulling an SDK for that would add a supply
 // chain to a tool whose whole job is telling you what changed in your tools.
 import { run } from "./exec.ts";
+import { limiter } from "./limit.ts";
 import type { Release } from "./types.ts";
 
 export interface ForgeRef {
@@ -209,7 +210,33 @@ export function describeFetchError(err: unknown): string {
  */
 export const FETCH_TIMEOUT_MS = 30_000;
 
+/**
+ * How many forge requests may be in flight at once.
+ *
+ * The callers fan out over whatever brew reports as outdated — one `Promise.all`
+ * per run, no ceiling — so the width of the burst is a number the user's machine
+ * picks, not one this code chose. Eight pending packages went unnoticed; forty
+ * is a burst GitHub answers with a secondary rate limit, and because every
+ * entry is fetched in the same instant, every entry gets that refusal. The
+ * report then carries forty copies of "could not read its releases" for one
+ * cause, and the primary limit those forty requests also spent is gone for the
+ * hour whether or not the answers were used.
+ *
+ * The cap lives here rather than at each fan-out because there are three of
+ * them (overview, digest, inbox) and a fourth would have to remember. Wrapping
+ * `getJson` and not its callers is what keeps it deadlock-free: nothing inside
+ * a queued request queues another.
+ */
+export const FETCH_CONCURRENCY = 8;
+const limitFetch = limiter(FETCH_CONCURRENCY);
+
 export async function getJson(url: string, ref: ForgeRef): Promise<unknown> {
+  // Queued, not started: `AbortSignal.timeout` is created inside, so a request
+  // waiting its turn is not spending the deadline it has not begun.
+  return limitFetch(() => fetchJson(url, ref));
+}
+
+async function fetchJson(url: string, ref: ForgeRef): Promise<unknown> {
   let res: Response;
   try {
     res = await fetch(url, {
