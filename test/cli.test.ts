@@ -565,6 +565,27 @@ test("a tool with nothing newer exits 0", async (t) => {
   assert.equal(r.code, 0, "nothing pending is the only case a scheduler should read as quiet");
 });
 
+test("a plain run asks no engine, and --no-judge is still accepted", async (t) => {
+  // The default flipped: reading the notes is opted into, not out of. Proven
+  // through the engine label, which only says this when args.judge is false —
+  // resolveEngine would otherwise have probed OPENAI_BASE_URL or started a
+  // `claude --version` subprocess before knowing whether anything is pending.
+  const url = await stubForge(["v2.0.0", "v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  await writeConfig(home, [tool({ source: url })]);
+
+  const plain = await runCli(["digest"], home);
+  assert.match(plain.stdout, /engine: not asked for/);
+
+  // Kept working on purpose: claudii's statusline refresh passes --no-judge
+  // from a repo that does not ship with this one, so retiring the flag would
+  // break the indicator rather than this tool.
+  const legacy = await runCli(["digest", "--no-judge"], home);
+  assert.equal(legacy.code, plain.code, "the old flag must not become an argument error");
+  assert.match(legacy.stdout, /engine: not asked for/);
+});
+
 test("--yes skips a manual entry as routine, not as a failure", async (t) => {
   // A manual entry is complete — there is simply no command to run — so a
   // scheduled `--yes` must not exit red over it the way it does for an

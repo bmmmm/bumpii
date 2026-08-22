@@ -270,25 +270,11 @@ test("a full page is reported as capped", async () => {
   }
 });
 
-test("renderInbox: an empty usagePaths config is called out", () => {
-  const out = renderInbox({
-    entries: [],
-    other: {},
-    capped: false,
-    missingUsagePaths: [],
-    noUsagePaths: true,
-    engine: { kind: "none", model: "", label: "none" },
-  });
-  assert.match(out, /no usagePaths configured/);
-});
-
 test("renderInbox: empty inbox says so, and the rest of the queue stays a count", () => {
   const out = renderInbox({
     entries: [],
     other: { Issue: 2, PullRequest: 1 },
     capped: false,
-    missingUsagePaths: [],
-    noUsagePaths: false,
     engine: NONE,
   });
   assert.match(out, /no unread release notifications/);

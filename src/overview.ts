@@ -9,7 +9,7 @@
 // yours names gets a version and a link and nothing more, because there is no
 // usage to judge a release note against, and running a model over it would
 // produce an opinion rather than a verdict.
-import { digest, type Engine, isMechanical } from "./judge.ts";
+import { digest, type Engine } from "./judge.ts";
 import { limiter } from "./limit.ts";
 import {
   brewInstalledVersions,
@@ -20,8 +20,8 @@ import {
 } from "./outdated.ts";
 import type { Progress } from "./progress.ts";
 import { listReleases, parseSource } from "./sources.ts";
-import type { Config, DigestItem, Release, ToolConfig, UsageHit } from "./types.ts";
-import { commandsFromNotes, findUsageAcross, referenceCounts, resolveUsagePaths } from "./usage.ts";
+import type { Config, DigestItem, Release, ToolConfig } from "./types.ts";
+import { referenceCounts, resolveUsagePaths } from "./usage.ts";
 import { compareVersions, isComparable, isOrderable, isTruncated, releasesBehind } from "./version.ts";
 
 /** Why an entry ended up where it did. Each bucket renders differently. */
@@ -73,9 +73,6 @@ export interface OverviewEntry {
    */
   truncated: boolean;
   items: DigestItem[];
-  hits: UsageHit[];
-  /** `hits` were read out of the notes mechanically, with no engine involved. */
-  mechanical: boolean;
   /** Diff between the installed and the newest tag, when both tags are known. */
   compare: string | null;
   /** Why this landed in "unreachable", or why its digest came back empty. */
@@ -223,24 +220,6 @@ export function compareFor(
 }
 
 /**
- * Why the search behind the verdicts did not finish — from both greps, not one.
- *
- * Two independent walks run per report: the reference count that decides which
- * bucket every package lands in, and the command search that decides what
- * "affects you" says. Reporting only the second (`search ?? refs`) dropped the
- * one with the wider blast radius: a truncated reference count ranks a package
- * as unreferenced, which is what stops it from being judged at all.
- *
- * The reference count is named first for that reason. Identical messages —
- * the usual case, since both greps walk the same roots and fail the same way —
- * collapse to one.
- */
-export function whyUsageIncomplete(refs?: string, search?: string): string | undefined {
-  const why = [...new Set([refs, search].filter((r): r is string => !!r))];
-  return why.length > 0 ? why.join("; ") : undefined;
-}
-
-/**
  * The order entries are reported in: bucket first, then most-referenced, then
  * name.
  *
@@ -365,12 +344,8 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
   const done = (): void => progress?.set({ done: ++finished });
   progress?.phase("fetch", { total: wanted.length, done: 0, tools: wanted.length });
 
-  // Built in two passes: everything each entry can say on its own first, then
-  // ONE grep for the commands all of them extracted. Grepping inside the map
-  // walked the usagePaths once per pending package — the same trees, for one
-  // question, as many times as brew had news.
-  const built: { entry: OverviewEntry; commands: string[] }[] = await Promise.all(
-    wanted.map(async (pkg): Promise<{ entry: OverviewEntry; commands: string[] }> => {
+  const built: { entry: OverviewEntry }[] = await Promise.all(
+    wanted.map(async (pkg): Promise<{ entry: OverviewEntry }> => {
       const tool = trackedBy.get(pkg.name);
       const count = refsFor(pkg);
       // A tracked entry's own source wins: it may have been corrected by hand
@@ -391,19 +366,16 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
         published: 0,
         truncated: false,
         items: [],
-        hits: [],
-        mechanical: false,
         compare: null,
       };
       if (count === 0) {
         done();
-        return { entry: base, commands: [] };
+        return { entry: base };
       }
       if (!source) {
         done();
         return {
           entry: { ...base, bucket: bucketFor({ refs: count, source, itemCount: 0 }) },
-          commands: [],
         };
       }
 
@@ -438,19 +410,10 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
         } catch (err) {
           error = err instanceof Error ? err.message : String(err);
         }
-        // With no items there are no extracted commands, so nothing would be
-        // grepped and the entry would carry a version and a link and nothing
-        // else. Reading the notes mechanically keeps the one thing this tool is
-        // for — does this touch me — working without an engine at all.
-        const mechanical = isMechanical(items.length, behind);
-        const commands = mechanical
-          ? behind.flatMap((r) => commandsFromNotes(pkg.name, r.notes))
-          : items.flatMap((i) => i.commands);
         return {
           entry: {
             ...base,
             bucket: bucketFor({ refs: count, source, itemCount: items.length }),
-            mechanical,
             behind,
             published,
             truncated,
@@ -458,7 +421,6 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
             compare,
             error,
           },
-          commands,
         };
       } catch (err) {
         return {
@@ -467,7 +429,6 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
             bucket: bucketFor({ refs: count, source, unreachable: true, itemCount: 0 }),
             error: err instanceof Error ? err.message : String(err),
           },
-          commands: [],
         };
       } finally {
         // Counted on the failing path too: an unreachable forge is one fewer
@@ -478,15 +439,7 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
     }),
   );
 
-  progress?.phase("grep", {
-    commands: built.reduce((n, b) => n + b.commands.length, 0),
-    roots: usage.roots.length,
-  });
-  const search = await findUsageAcross(
-    usage.roots,
-    built.map((b) => b.commands),
-  );
-  const entries: OverviewEntry[] = built.map((b, i) => ({ ...b.entry, hits: search.hits[i] ?? [] }));
+  const entries: OverviewEntry[] = built.map((b) => b.entry);
 
   // Tracked and not in brew's outdated list. Split on whether brew was in a
   // position to say so at all: an entry whose update command is not a brew one
@@ -538,7 +491,7 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
     unchecked,
     missingUsagePaths: usage.missing,
     noUsagePaths: config.usagePaths.length === 0,
-    usageIncomplete: whyUsageIncomplete(refs.incomplete, search.incomplete),
+    usageIncomplete: refs.incomplete,
     filteredOut: outdated.length - wanted.length,
     engine: opts.engine,
   };

@@ -4,35 +4,41 @@
 
 # bumpii
 
-Read what actually changed in the CLI tools and containers you run — judged
-against your own usage — then bump them.
+See what actually changed in the CLI tools and containers you run, then bump
+them.
 
-Release notes are long, and most of them are not about you. `bumpii` collects
-every release between the version you have installed and the newest one,
-digests them into security / breaking / feature / fix, and then answers the
-question the notes cannot: **do any of these touch commands I actually call?**
+`bumpii` collects every release between the version you have installed and the
+newest one, and tells you where to read about it — the compare link across the
+exact range, and the release notes themselves.
 
 ```console
 $ bumpii digest
 gh 2.92.0 → 2.96.0  4 releases behind
-  ! security Authorization header incorrectly included in requests to TUF mirrors (2.93.0)
-  ! security Command execution when connecting to a malicious Codespace (2.96.0)
-  + feature  Read repository files without cloning (2.95.0)
-      you use this: ~/.claude/skills/gh-repo-audit/SKILL.md
-  · fix      Print 'gh auth refresh' suggestion for 401 responses (2.93.0)
-  affects you: 3 of 26 changes touch commands you call
+  https://github.com/cli/cli/compare/v2.92.0...v2.96.0
+    2.93.0  https://github.com/cli/cli/releases/tag/v2.93.0
+    2.96.0  https://github.com/cli/cli/releases/tag/v2.96.0
   → brew upgrade gh
 
 fj 0.6.0  up to date
 
-engine: claude-cli/haiku
+engine: not asked for
 ```
 
-The relevance verdict is not the model's opinion. The model extracts which CLI
-surface each note talks about; `bumpii` then greps your own scripts for exactly
-those strings. "affects you: none" means the commands were searched for and not
-found — which is why the two security items above carry no file list: nothing
-here calls `gh attestation` or `gh release verify`.
+That is the whole default: four seconds, no model, nothing guessed. Ask for
+`--judge` and the notes get read and sorted into security / breaking / feature
+/ fix, which is what turns a long changelog into a line you can act on:
+
+```console
+$ bumpii digest --judge
+gh 2.92.0 → 2.96.0  4 releases behind
+  ! security Authorization header incorrectly included in requests to TUF mirrors (2.93.0)
+  ! security Command execution when connecting to a malicious Codespace (2.96.0)
+  + feature  Read repository files without cloning (2.95.0)
+  · fix      Print 'gh auth refresh' suggestion for 401 responses (2.93.0)
+  → brew upgrade gh
+
+engine: claude-cli/haiku
+```
 
 ## Install
 
@@ -48,17 +54,18 @@ sources directly, so there is no build either. `pnpm install` is only needed to
 work on the code (typescript, `@types/node` and biome, all dev-only).
 
 Optional, and only for what they enable: `brew` for `bumpii add`/`scan`,
-`podman` or `docker` for `bumpii add --image`, `grep` for the usage verdict
-(present everywhere), and an engine for the digest — see below.
+`podman` or `docker` for `bumpii add --image`, `grep` for `scan --unref` and the
+reference counts (present everywhere), and an engine for `--judge` — see below.
 
 ## Commands
 
 | | |
 | --- | --- |
 | `bumpii` | this help — the digest is asked for by name |
-| `bumpii digest` | digest pending releases for everything tracked |
+| `bumpii digest` | pending releases for everything tracked |
+| `bumpii digest --judge` | …and read the notes with a model, sorted into security / breaking / feature / fix |
 | `bumpii overview` | everything brew has pending, ranked by your own usage |
-| `bumpii inbox` | unread GitHub release notifications, digested |
+| `bumpii inbox` | unread GitHub release notifications |
 | `bumpii init` | write a starter config |
 | `bumpii add <formula>…` | derive entries from installed Homebrew formulae |
 | `bumpii add --image <container>…` | derive entries from running containers |
@@ -83,14 +90,13 @@ Homebrew already knows is pending — every formula and cask, tracked or not —
 and sorts it by whether it can say anything useful about it:
 
 ```console
-$ bumpii overview
+$ bumpii overview --judge
 
 ★ digested
 ├─ gh     2.96.0 → 2.97.0   4 releases   12 refs
 │    https://github.com/cli/cli/compare/v2.96.0...v2.97.0
 │    ! security Authorization header incorrectly included in TUF mirror requests (2.97.0)
-│      you use this: ~/ops/scripts/release.sh
-│    affects you: 1 of 26 changes touch commands you call
+│    + feature  Read repository files without cloning (2.95.0)
 │    → brew upgrade gh
 └─ docker 29.6.2 → 29.7.2   2 releases    7 refs   untracked
      https://github.com/docker/cli/compare/v29.6.2...v29.7.2
@@ -127,10 +133,9 @@ engine: claude-cli/haiku
 
 **What decides the buckets is your own files, not a list of important
 packages.** The reference count is how many files in `usagePaths` name each
-one, and a package no file names never reaches the engine: with no usage to
-check a release note against, a model asked anyway would return an opinion
-rather than the verdict the rest of this tool is built on. Those still get a
-version and a link, because that is what the data supports.
+one, and a package no file names never reaches the forge or the engine —
+there is no reason to spend either on a package nothing of yours mentions.
+Those still get a version and a link, because that is what the data supports.
 
 Being untracked is no reason to skip the digest — `docker` above gets the same
 treatment as `gh` — so `tools.json` decides what `bumpii` watches, not what
@@ -179,26 +184,21 @@ exactly that queue — your unread notifications of type Release — and digests
 it like everything else:
 
 ```console
-$ bumpii inbox
+$ bumpii inbox --judge
 anthropics/claude-code → v2.1.226  3 releases  tracked as claude
   ! security  Sandbox deny entries with a trailing slash were silently bypassable (v2.1.224)
-      you use this: ~/ops/scripts/worker.sh
   · fix       Transient 401 no longer replaces a long-lived OAuth token (v2.1.225)
-  affects you: 1 of 12 changes touch commands you call
 
 jundot/omlx → v0.5.8.dev2  2 releases  prerelease
   + feature  Ling 3.0 Flash support for FP8 and mixed FP4/FP8 checkpoints (v0.5.8.dev1)
-  affects you: none of these touch commands you call
 
 5 other unread notifications — 3 Issue · 2 PullRequest — github.com/notifications
 engine: claude-cli/haiku
 ```
 
-A repo a `tools.json` entry already points at is searched under that entry's
-name — `anthropics/claude-code` is called `claude` in scripts, and searching
-its notes under the repo name would miss every span the search exists to find.
-An untracked repo falls back to its short name, which under-reports relevance
-when the binary is named differently — the safe direction for a guess.
+A repo a `tools.json` entry already points at is named after that entry —
+`anthropics/claude-code` is called `claude` here, because that is what you would
+recognise in a list. An untracked repo falls back to its short name.
 
 Prereleases are flagged, never filtered. The other commands drop them because
 `brew upgrade` will never hand you one; here the subscription is you saying
@@ -382,13 +382,6 @@ image, and how depends on how you run it. Until you complete that line,
 calling it a success — which is what `sh -c` would otherwise do, happily and
 with exit 0.
 
-One honest limitation: the "affects you" verdict is weaker here. It works by
-grepping your files for the commands a change touches, and a service usually
-has no commands that appear in your scripts — so expect "affects you: none"
-more often, and read it as "nothing to grep for" rather than "nothing that
-matters". The digest itself is unaffected: what changed, and whether any of it
-is a security or breaking change, is the same question either way.
-
 A container update is also exactly what
 [revertii](https://github.com/bmmmm/revertii) is for: it applies the change,
 checks health, and puts the old image back if the service does not return.
@@ -483,11 +476,11 @@ typo you would otherwise never see.
 
 ```console
 $ bumpii                  # this help — nothing is fetched, nothing is judged
-$ bumpii digest           # digest everything, change nothing (exit 1 if anything is pending)
+$ bumpii digest           # everything pending, change nothing (exit 1 if anything is)
 $ bumpii --only gh        # one tool
-$ bumpii --no-judge       # no model: just list pending releases and their URLs
+$ bumpii --judge          # read the notes with a model and classify them
 $ bumpii --json           # machine-readable, for a scheduled run
-$ bumpii digest --yes     # digest, then run each update command
+$ bumpii digest --yes     # report, then run each update command
 $ bumpii digest --yes --dry-run   # print those commands, run none of them
 ```
 
@@ -524,9 +517,9 @@ a scheduled run can act on it:
 ```
 
 **Keep the report and the config out of your repos.** A `--json` run carries
-`hits[].file` — absolute paths into your own scripts — so committing one
-publishes both the layout of your machine and the tool inventory it was judged
-against. `tools.json` says the same thing more directly, in its `usagePaths`
+your tool inventory and, from `overview`, the `usagePaths` it could not read —
+so committing one publishes what you run and something of how your machine is
+laid out. `tools.json` says the same thing more directly, in its `usagePaths`
 and its list of everything you watch. Neither is written into a working tree by
 default — the config and the resolved-source cache live under
 `~/.config/bumpii/`, and judged release notes under `~/.cache/bumpii/digests/`
@@ -551,13 +544,13 @@ bumpii could not check rather than checked and found nothing:
   `version.match` without a line anchor that captured a build date or a bundled
   library's version instead of the version; whatever it captured then outranks
   every release for good.
-- **`usagePaths not found`** — a configured path does not exist, so nothing
-  was searched there and every "affects you" verdict above it is incomplete.
+- **`usagePaths not found`** — a configured path does not exist, so nothing was
+  searched there and every reference count above it is a floor.
 - **`usage search did not finish`** — grep did not get to the end: a directory
   it may not read, one that disappeared mid-run, or a walk that hit its
-  timeout. The hits it did find are still shown, and "affects you" reads
-  **`unknown`** rather than **`none`**, because a zero out of an unfinished
-  search is not an answer.
+  timeout. Said out loud because the count decides buckets: an entry may be
+  sitting under `no signal` only because the files naming it were never
+  reached.
 
 A release the forge published with an empty body is named as that — *the forge
 published this release without notes* — rather than reported as a failed
@@ -655,41 +648,38 @@ costs one run rather than every run after it.
 
 ### Without any engine at all
 
-`bumpii` is useful with no model anywhere, and that is not an afterthought.
-Everything mechanical still works — what is outdated, which of it your own
-files name, the compare and release links, the exit codes — and instead of a
-digest you get the notes' own URLs plus this:
+This is the ordinary case, not a fallback: without `--judge` no model is asked
+for, none is discovered, and nothing is guessed. What you get is everything the
+forge and brew already know — what is outdated, how many releases deep, the
+compare link across the exact range, the release notes' own URLs, the reference
+counts, and the exit codes:
 
 ```console
 $ bumpii digest
 gh 2.95.0 → 2.97.0  2 releases behind
-  no digest — none (no engine reachable); raw notes:
+  https://github.com/cli/cli/compare/v2.95.0...v2.97.0
     2.96.0  https://github.com/cli/cli/releases/tag/v2.96.0
     2.97.0  https://github.com/cli/cli/releases/tag/v2.97.0
-  mentions commands you call, though nothing judged which change:
-    gh auth status — ~/ops/scripts/release.sh, ~/ops/scripts/setup.sh +8 more
-    gh pr diff — ~/ops/scripts/merge.sh, ~/ops/scripts/review.sh +2 more
   → brew upgrade gh
+
+engine: not asked for
 ```
 
-Those command strings are read straight out of the notes' inline code spans —
-no model involved — and grepped against your files exactly as the digested
-verdict is. A span is kept only when it names the tool as a word and clears the
-same specificity bar the model's output has to: on gh's real 2.97.0 notes that
-keeps `gh auth status` and `gh attestation verify` while dropping `gh api` (a
-group, not a surface) and `github_pat_*`, `ghs_*`, `ghu_*` (token formats that
-merely contain "gh").
+Four seconds against roughly two minutes for a cold judged run, and the
+discovery itself is skipped too — no `OPENAI_BASE_URL` probe, no
+`claude --version` subprocess before anything knows whether a package is even
+pending.
 
-**The wording is the point.** It says *mentions*, not *affects you*: nothing
-here knows which change a string belongs to, so the claim stops exactly where
-the evidence does. What it can support is that the string is in the notes and
-in that file — which, in the run above, is how a machine with no LLM finds that
-the 2.97.0 token-leak fix is about the one gh command it calls ten times over.
+`--judge` adds one thing to this: the notes are read and each change is sorted
+into security / breaking / feature / fix. That is a classification of the
+notes, not a claim about you — it says what kind of change shipped, and you
+decide whether it matters.
 
-A local model is still worth the ten minutes: `ollama serve` or LM Studio, one
-`OPENAI_BASE_URL`, and the digest runs offline, free, and on your own hardware.
-`--no-judge` takes this same path deliberately when you have an engine and do
-not want to spend it.
+A local model makes that cheap: `ollama serve` or LM Studio, one
+`OPENAI_BASE_URL`, and `--judge` runs offline, free, and on your own hardware.
+
+`--no-judge` is still accepted and does nothing — it was how you asked for this
+behaviour before it was the default.
 
 ## Behind a proxy
 
@@ -737,7 +727,7 @@ $ pnpm test            # node:test
 
 CI runs all three on Linux and macOS. macOS is not redundant: `add`/`scan` are
 built on brew, the launcher resolves symlinks in POSIX `sh` without GNU
-`readlink`, and the usage verdict shells out to grep — none of which Linux
+`readlink`, and the reference counts shell out to grep — none of which Linux
 exercises against the userland they actually ship on.
 
 Three languages, and only one of them is load-bearing:
@@ -763,7 +753,7 @@ re-run the script instead of editing the GIF.
 ## Contributing
 
 Bug reports want particular evidence — the raw output of a version probe, the
-project's real tag names, whether grep finds a string bumpii did not. The
+project's real tag names, the release the compare link should have spanned. The
 [issue forms](https://github.com/bmmmm/bumpii/issues/new/choose) ask for it
 per report class, and [CONTRIBUTING.md](CONTRIBUTING.md) explains why each
 one settles the question it does. Security issues go

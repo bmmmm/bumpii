@@ -2,7 +2,7 @@
 import type { Inbox } from "./inbox.ts";
 import type { Engine } from "./judge.ts";
 import type { Overview, OverviewEntry } from "./overview.ts";
-import type { DigestItem, ItemKind, Release, ToolReport, UsageHit } from "./types.ts";
+import type { DigestItem, ItemKind, Release, ToolReport } from "./types.ts";
 import { compareVersions } from "./version.ts";
 
 /**
@@ -16,7 +16,7 @@ import { compareVersions } from "./version.ts";
  *
  * Measured on the path with no model in it at all: commandsFromNotes ->
  * toNeedles -> mechanicalHits carried the bytes through verbatim, so
- * `--no-judge` was exposed exactly as much as a judged run.
+ * an unjudged run was exposed exactly as much as a judged one.
  *
  * Stripped rather than escaped, and never dropped whole: the reader still has
  * to see what the note said, and a note that is silently not shown is its own
@@ -93,18 +93,6 @@ function noUsagePathsWarning(consequence: string): string[] {
 
 export interface RenderOptions {
   engine: Engine;
-  /** Configured usagePaths that do not exist — named, because they silently
-   * turn every "affects you" verdict into "none". */
-  missingPaths: string[];
-  /** The config names no usagePaths at all — a different silence from
-   * `missingPaths`, and one no other line of the report betrays. */
-  noUsagePaths?: boolean;
-  /**
-   * grep did not get to the end of the walk, so every "affects you" below is a
-   * floor. One grep serves the whole run, so this is a property of the run
-   * rather than of any one tool.
-   */
-  usageIncomplete?: string;
   /**
    * Brew-outdated packages this digest never looked at, because nothing in
    * tools.json tracks them. `undefined` when the brew check itself failed or
@@ -120,8 +108,8 @@ export interface RenderOptions {
  */
 function noDigestReason(releases: Release[], digestError: string | undefined, engine: Engine): string {
   if (digestError) return `digest failed: ${digestError}; raw notes:`;
-  // The label carries why there is no engine — "skipped (--no-judge)" when you
-  // turned it off yourself, which is not something to report as unavailable.
+  // The label carries why there is no engine — "not asked for" on an ordinary
+  // run, which is not something to report as unavailable.
   // Ahead of the empty-notes case on purpose: you asked for no digest, so that
   // is the answer to what you typed, whatever the bodies happened to contain.
   if (engine.kind === "none") return `no digest — ${engine.label}; raw notes:`;
@@ -154,11 +142,7 @@ function safeRelease(r: Release): Release {
 }
 
 function safeItem(i: DigestItem): DigestItem {
-  return { ...i, summary: safe(i.summary), version: safe(i.version), commands: i.commands.map(safe) };
-}
-
-function safeHit(h: UsageHit): UsageHit {
-  return { ...h, command: safe(h.command), file: safe(h.file) };
+  return { ...i, summary: safe(i.summary), version: safe(i.version) };
 }
 
 function safeReport(r: ToolReport): ToolReport {
@@ -175,7 +159,6 @@ function safeReport(r: ToolReport): ToolReport {
     channel: r.channel ? { ...r.channel, tag: safe(r.channel.tag) } : undefined,
     behind: r.behind.map(safeRelease),
     items: r.items.map(safeItem),
-    hits: r.hits.map(safeHit),
     error: r.error === undefined ? undefined : safe(r.error),
     digestError: r.digestError === undefined ? undefined : safe(r.digestError),
   };
@@ -275,7 +258,6 @@ export function renderReport(rawReports: ToolReport[], opts: RenderOptions): str
       // to read when the body was empty.
       out.push(dim(`  ${noDigestReason(r.behind, r.digestError, opts.engine)}`));
       for (const rel of r.behind) out.push(dim(`    ${rel.version}  ${link(rel.url, rel.url)}`));
-      if (r.mechanical) out.push(...mechanicalHits(r.hits, "  "));
       out.push(`  ${dim("→")} ${r.tool.update}`, "");
       continue;
     }
@@ -285,59 +267,11 @@ export function renderReport(rawReports: ToolReport[], opts: RenderOptions): str
       const mark = paint(item.kind, MARK[item.kind]);
       const kindLabel = paint(item.kind, item.kind.padEnd(8));
       out.push(`  ${mark} ${kindLabel} ${item.summary}${item.version ? dim(` (${item.version})`) : ""}`);
-
-      // The whole point: which of these you actually call.
-      const own = r.hits.filter((h) => item.commands.includes(h.command));
-      if (own.length > 0) {
-        const files = [...new Set(own.map((h) => h.file))];
-        const shown = files.slice(0, 3).join(", ");
-        const more = files.length > 3 ? dim(` +${files.length - 3} more`) : "";
-        out.push(`      ${yellow("you use this")}: ${shown}${more}`);
-      }
     }
 
-    // Count changes that touch your usage, not raw grep hits: "57 references"
-    // is a number nobody can act on, "2 of 24 changes" is.
-    const touching = sorted.filter((i) => r.hits.some((h) => i.commands.includes(h.command))).length;
-    out.push(
-      // A zero out of a search that stopped short is not a verdict, and this is
-      // the line people read as one. Any hits it did find are still counted and
-      // still named above — what changes is that the count stops calling itself
-      // the whole answer.
-      opts.usageIncomplete && touching === 0
-        ? yellow(`  affects you: unknown — the search of your files did not finish`)
-        : touching === 0
-          ? dim(`  affects you: none of these touch commands you call`)
-          : dim(
-              `  affects you: ${touching} of ${sorted.length} changes touch commands you call${opts.usageIncomplete ? ", and the search did not finish" : ""}`,
-            ),
-    );
     out.push(`  ${dim("→")} ${r.tool.update}`, "");
   }
 
-  if (opts.noUsagePaths) {
-    out.push(...noUsagePathsWarning('every "affects you" above answered an empty question'));
-  }
-  // Loud rather than dim: an unsearched path makes every "affects you" verdict
-  // above meaningless, and it is the kind of typo that otherwise goes years.
-  if (opts.missingPaths.length > 0) {
-    out.push(
-      `${yellow("usagePaths not found")}: ${opts.missingPaths.join(", ")}`,
-      dim("  nothing was searched there, so every “affects you” above is incomplete"),
-      dim("  correct it in usagePaths, or remove it, so the verdict means something again"),
-      "",
-    );
-  }
-  // The same statement as the block above, for the half grep reports rather
-  // than the half a stat can: a directory this user may not read, one that
-  // disappeared mid-run, or a walk killed on its timeout.
-  if (opts.usageIncomplete) {
-    out.push(
-      `${yellow("usage search did not finish")}: ${safe(opts.usageIncomplete)}`,
-      dim("  some of your files were never read, so every “affects you” above is a floor"),
-      "",
-    );
-  }
   if (opts.otherPending) {
     const plural = opts.otherPending === 1;
     out.push(
@@ -350,50 +284,17 @@ export function renderReport(rawReports: ToolReport[], opts: RenderOptions): str
   return out.join("\n");
 }
 
-/**
- * Commands found in the notes that also appear in your files, with no engine
- * behind the finding.
- *
- * Worded as "mentions", never as "affects you": nothing here knows which change
- * a string belongs to, or whether the note was announcing a fix or a heading.
- * What it does know is checkable — the string is in the notes and in that file —
- * and saying exactly that much is what separates it from a guess.
- */
-function mechanicalHits(hits: UsageHit[], indent: string): string[] {
-  if (hits.length === 0) return [];
-  const byCommand = new Map<string, Set<string>>();
-  for (const h of hits) {
-    let files = byCommand.get(h.command);
-    if (!files) {
-      files = new Set();
-      byCommand.set(h.command, files);
-    }
-    files.add(h.file);
-  }
-  const out: string[] = [
-    `${indent}${yellow("mentions commands you call")}${dim(", though nothing judged which change:")}`,
-  ];
-  for (const [command, files] of byCommand) {
-    const shown = [...files].slice(0, 2).join(", ");
-    const more = files.size > 2 ? dim(` +${files.size - 2} more`) : "";
-    out.push(`${indent}  ${command}${dim(" — ")}${shown}${more}`);
-  }
-  return out;
-}
-
 export function renderInbox(raw: Inbox): string {
   // Same boundary pass as renderReport: repo names, release tags and the
   // judge's summary of a stranger's release notes all reach the terminal here.
   const inbox: Inbox = {
     ...raw,
-    usageIncomplete: raw.usageIncomplete === undefined ? undefined : safe(raw.usageIncomplete),
     entries: raw.entries.map((e) => ({
       ...e,
       repo: safe(e.repo),
       tool: safe(e.tool),
       releases: e.releases.map(safeRelease),
       items: e.items.map(safeItem),
-      hits: e.hits.map(safeHit),
       error: e.error === undefined ? undefined : safe(e.error),
       digestError: e.digestError === undefined ? undefined : safe(e.digestError),
     })),
@@ -427,7 +328,6 @@ export function renderInbox(raw: Inbox): string {
     if (e.items.length === 0) {
       out.push(dim(`  ${noDigestReason(e.releases, e.digestError, inbox.engine)}`));
       for (const rel of e.releases) out.push(dim(`    ${rel.tag}  ${link(rel.url, rel.url)}`));
-      if (e.mechanical) out.push(...mechanicalHits(e.hits, "  "));
       out.push("");
       continue;
     }
@@ -441,22 +341,8 @@ export function renderInbox(raw: Inbox): string {
       const rel = e.releases.find((r) => r.version === item.version || r.tag === item.version);
       const where = item.version ? dim(` (${rel ? link(rel.url, item.version) : item.version})`) : "";
       out.push(`  ${mark} ${paint(item.kind, item.kind.padEnd(8))} ${item.summary}${where}`);
-      const own = e.hits.filter((h) => item.commands.includes(h.command));
-      if (own.length > 0) {
-        const files = [...new Set(own.map((h) => h.file))];
-        const more = files.length > 3 ? dim(` +${files.length - 3} more`) : "";
-        out.push(`      ${yellow("you use this")}: ${files.slice(0, 3).join(", ")}${more}`);
-      }
     }
-    const touching = sorted.filter((i) => e.hits.some((h) => i.commands.includes(h.command))).length;
-    out.push(
-      dim(
-        touching === 0
-          ? "  affects you: none of these touch commands you call"
-          : `  affects you: ${touching} of ${sorted.length} changes touch commands you call`,
-      ),
-      "",
-    );
+    out.push("");
   }
 
   // The rest of the inbox is named, never expanded: this command reads release
@@ -477,23 +363,6 @@ export function renderInbox(raw: Inbox): string {
     out.push(dim("the first page of notifications was full — the queue holds more than this"));
   }
 
-  if (inbox.noUsagePaths) {
-    out.push(...noUsagePathsWarning('every "affects you" above answered an empty question'));
-  }
-  if (inbox.missingUsagePaths.length > 0) {
-    out.push(
-      `${yellow("usagePaths not found")}: ${inbox.missingUsagePaths.join(", ")}`,
-      dim("  nothing was searched there, so every “affects you” above is incomplete"),
-    );
-  }
-  // The half a stat cannot catch: a directory grep may not read, one that went
-  // away mid-run, or a walk killed on its timeout.
-  if (inbox.usageIncomplete) {
-    out.push(
-      `${yellow("usage search did not finish")}: ${inbox.usageIncomplete}`,
-      dim("  some of your files were never read, so every “affects you” above is a floor"),
-    );
-  }
   out.push(dim(`engine: ${inbox.engine.label}`), "");
   return out.join("\n");
 }
@@ -567,7 +436,6 @@ function renderEntry(e: OverviewEntry, ctx: OverviewCtx, prefix: string, cont: s
       ),
     );
     for (const rel of e.behind) body(dim(`  ${rel.version}  ${link(rel.url, rel.url)}`));
-    if (e.mechanical) for (const line of mechanicalHits(e.hits, "")) body(line);
     body(`${dim("→")} ${e.update}`);
     return;
   }
@@ -583,27 +451,7 @@ function renderEntry(e: OverviewEntry, ctx: OverviewCtx, prefix: string, cont: s
     const rel = e.behind.find((r) => r.version === item.version);
     const where = item.version ? dim(` (${rel ? link(rel.url, item.version) : item.version})`) : "";
     body(`${mark} ${paint(item.kind, item.kind.padEnd(8))} ${item.summary}${where}`);
-    const own = e.hits.filter((h) => item.commands.includes(h.command));
-    if (own.length > 0) {
-      const files = [...new Set(own.map((h) => h.file))];
-      const more = files.length > 3 ? dim(` +${files.length - 3} more`) : "";
-      body(`  ${yellow("you use this")}: ${files.slice(0, 3).join(", ")}${more}`);
-    }
   }
-  const touching = sorted.filter((i) => e.hits.some((h) => i.commands.includes(h.command))).length;
-  body(
-    // A zero out of a search that stopped short is not a verdict, and this is
-    // the line people read as one — the same distinction renderReport draws.
-    // Whatever hits it did find are still counted and still named above; what
-    // changes is that the count stops calling itself the whole answer.
-    ctx.usageIncomplete && touching === 0
-      ? yellow("affects you: unknown — the search of your files did not finish")
-      : dim(
-          touching === 0
-            ? "affects you: none of these touch commands you call"
-            : `affects you: ${touching} of ${sorted.length} changes touch commands you call${ctx.usageIncomplete ? ", and the search did not finish" : ""}`,
-        ),
-  );
   body(`${dim("→")} ${e.update}`);
 }
 
@@ -632,7 +480,6 @@ function safeEntry(e: OverviewEntry): OverviewEntry {
     update: safe(e.update),
     behind: e.behind.map(safeRelease),
     items: e.items.map(safeItem),
-    hits: e.hits.map(safeHit),
     compare: e.compare === null ? null : safe(e.compare),
     error: e.error === undefined ? undefined : safe(e.error),
   };

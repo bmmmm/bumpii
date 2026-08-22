@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { type Engine, isMechanical } from "../src/judge.ts";
+import type { Engine } from "../src/judge.ts";
 import type { OutdatedPackage } from "../src/outdated.ts";
 import {
   bucketFor,
@@ -15,7 +15,6 @@ import {
   type Overview,
   type OverviewEntry,
   untrackedOutdatedCount,
-  whyUsageIncomplete,
 } from "../src/overview.ts";
 import { renderOverview } from "../src/render.ts";
 import { referenceCounts } from "../src/usage.ts";
@@ -49,8 +48,6 @@ function entry(over: Partial<OverviewEntry> & { name: string }): OverviewEntry {
     published: 1,
     truncated: false,
     items: [],
-    hits: [],
-    mechanical: false,
     compare: null,
     ...over,
   };
@@ -124,28 +121,6 @@ test("an empty usagePaths config is called out in the overview", () => {
   assert.match(out, /no usagePaths configured/);
   assert.match(out, /buckets above mean nothing/);
   assert.doesNotMatch(renderOverview(overview({})), /no usagePaths configured/);
-});
-
-test("the mechanical flag requires notes that could be read", () => {
-  const rel = (version: string, notes: string) => ({
-    tag: version,
-    version,
-    publishedAt: null,
-    notes,
-    url: `https://example.invalid/${version}`,
-  });
-  // The ordinary no-engine path: notes exist, nothing judged them, so the hits
-  // came out of the text mechanically.
-  assert.equal(isMechanical(0, [rel("2.0.0", "Fixed `gh pr view --json`")]), true);
-  // htop's shape. There was no text to pass over, and `hits` is empty either
-  // way — but a --json consumer reads the flag, not the empty list.
-  assert.equal(isMechanical(0, [rel("3.5.3", "")]), false);
-  assert.equal(isMechanical(0, [rel("3.5.3", "   \n\t ")]), false);
-  // One readable release among empty ones is still a mechanical read.
-  assert.equal(isMechanical(0, [rel("3.5.3", ""), rel("3.5.2", "Added `htop --tree`")]), true);
-  // An engine that produced items owns the hits, whatever the notes look like.
-  assert.equal(isMechanical(3, [rel("2.0.0", "Fixed `gh pr view --json`")]), false);
-  assert.equal(isMechanical(0, []), false);
 });
 
 test("releases published without notes say so, instead of blaming the engine", () => {
@@ -390,7 +365,7 @@ test("missing usagePaths are reported as undermining the buckets themselves", ()
   assert.match(text, /buckets they sort into — are incomplete/);
 });
 
-test("digested entries show the compare link and what it touches", () => {
+test("digested entries show the compare link and the classified items", () => {
   const text = renderOverview(
     overview({
       entries: [
@@ -416,11 +391,9 @@ test("digested entries show the compare link and what it touches", () => {
             {
               kind: "security",
               summary: "Authorization header leaked to TUF mirrors",
-              commands: ["gh attestation verify"],
               version: "2.97.0",
             },
           ],
-          hits: [{ command: "gh attestation verify", file: "~/ops/scripts/x.sh", line: 3 }],
         }),
       ],
     }),
@@ -428,8 +401,10 @@ test("digested entries show the compare link and what it touches", () => {
   assert.match(text, /★ digested/);
   assert.match(text, /https:\/\/github\.com\/cli\/cli\/compare\/v2\.96\.0\.\.\.v2\.97\.0/);
   assert.match(text, /! security/);
-  assert.match(text, /you use this: ~\/ops\/scripts\/x\.sh/);
-  assert.match(text, /affects you: 1 of 1 changes/);
+  // The command layer is gone: a report that classifies changes must not also
+  // claim to know which of them touch you. If this string comes back, half a
+  // layer came back with it.
+  assert.doesNotMatch(text, /affects you|you use this|mentions commands/);
 });
 
 test("an untracked package that was judged is offered for tracking", () => {
@@ -555,65 +530,6 @@ test("the release count carries a + when the forge page ran out first", () => {
   assert.match(text, /30\+ releases/);
 });
 
-// The reassuring line is the one people read as a verdict, so it is the one
-// that has to know when the search behind it stopped short. renderReport has
-// carried this distinction for a while; renderOverview said "none" regardless.
-test("a digested entry whose usage search did not finish says unknown, not none", () => {
-  const text = renderOverview(
-    overview({
-      usageIncomplete: "grep: ~/gone: No such file or directory",
-      entries: [
-        entry({
-          name: "gh",
-          refs: 34,
-          tracked: true,
-          bucket: "digested",
-          source: "github:cli/cli",
-          items: [
-            {
-              kind: "security",
-              summary: "Authorization header leaked to TUF mirrors",
-              commands: ["gh attestation verify"],
-              version: "2.97.0",
-            },
-          ],
-          hits: [],
-        }),
-      ],
-    }),
-  );
-  assert.match(text, /affects you: unknown — the search of your files did not finish/);
-  // A zero out of a search that stopped short is not a verdict. If this string
-  // comes back, the entry is claiming a check that did not happen.
-  assert.doesNotMatch(text, /none of these touch commands you call/);
-});
-
-test("a partial usage search still qualifies the hits it did reach", () => {
-  const text = renderOverview(
-    overview({
-      usageIncomplete: "grep: ~/gone: No such file or directory",
-      entries: [
-        entry({
-          name: "gh",
-          refs: 34,
-          bucket: "digested",
-          source: "github:cli/cli",
-          items: [
-            {
-              kind: "security",
-              summary: "Authorization header leaked to TUF mirrors",
-              commands: ["gh attestation verify"],
-              version: "2.97.0",
-            },
-          ],
-          hits: [{ command: "gh attestation verify", file: "~/ops/scripts/x.sh", line: 3 }],
-        }),
-      ],
-    }),
-  );
-  assert.match(text, /affects you: 1 of 1 changes touch commands you call, and the search did not finish/);
-});
-
 // Nothing checked this order before, because it lived inside buildOverview and
 // every renderer test passes a single entry. That is how "undigested" came to
 // be missing from ORDER: indexOf returned -1 and sorted it ahead of everything,
@@ -643,20 +559,6 @@ test("entries sort by bucket, then by references, then by name", () => {
     // unreferenced last, however high its own count
     "zulu",
   ]);
-});
-
-// Two greps, two ways to come up short. Reporting only the command search hid
-// the one that decides whether a package is judged at all.
-test("both grep failures are named, not just the command search", () => {
-  assert.equal(whyUsageIncomplete(undefined, undefined), undefined);
-  assert.equal(whyUsageIncomplete("counting stopped", undefined), "counting stopped");
-  assert.equal(whyUsageIncomplete(undefined, "search stopped"), "search stopped");
-  // The reference count comes first: it is the one that ranks a package as
-  // unreferenced, which is what keeps it away from the engine.
-  assert.equal(whyUsageIncomplete("counting stopped", "search stopped"), "counting stopped; search stopped");
-  // Both walks cover the same roots, so the same message twice is the usual
-  // case, not a special one.
-  assert.equal(whyUsageIncomplete("permission denied", "permission denied"), "permission denied");
 });
 
 // brew prints yt-dlp as 2026.7.4, the forge tags it 2026.07.04. compareVersions

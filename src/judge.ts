@@ -108,19 +108,12 @@ function prompt(tool: string, releases: Release[]): string {
   return `You are summarising release notes for someone who uses the \`${tool}\` CLI daily and needs to know what is newly available or newly broken.
 
 Return ONLY a JSON array, no prose, no code fence. Each element:
-{"kind":"security|breaking|feature|fix","summary":"one line","commands":["<cli surface>"],"version":"<x.y.z>"}
+{"kind":"security|breaking|feature|fix","summary":"one line","version":"<x.y.z>"}
 
 Rules:
 - Cover every user-visible change. Skip the project's own dependency bumps
   (e.g. "bump actions/checkout", "chore(deps)") — those are not usable by a
   consumer of the CLI.
-- "commands" lists the CLI surface a change touches, as a user would type it,
-  at the MOST SPECIFIC level the notes support: "gh pr view --json" beats
-  "gh pr view", which beats "gh pr". A bare top-level group like "gh" or
-  "gh pr" matches half the user's scripts and tells them nothing — leave
-  "commands" empty rather than naming a group that broad. Use [] when a change
-  is not tied to a specific command at all. These strings are grepped verbatim
-  against the user's own scripts, so never invent flags the notes do not name.
 - "summary" is one factual line. No marketing, no "improved experience".
 - Prefer kind "security" for anything describing a vulnerability or CVE, and
   "breaking" for renamed/removed commands and changed defaults.
@@ -128,33 +121,6 @@ Rules:
 Release notes:
 
 ${body}`;
-}
-
-/**
- * Whether any of these releases carries something an engine could read.
- *
- * The one predicate behind three different claims, which is why it lives here
- * rather than beside any of them: {@link digest} drops empty bodies before it
- * builds a prompt, the renderers have to say so instead of blaming the engine
- * for a call that never happened, and `mechanical` must not claim a pass over
- * text that was not there. Answering it three times is how the three answers
- * drifted apart in the first place.
- */
-export function hasReadableNotes(releases: Release[]): boolean {
-  return releases.some((r) => r.notes.trim() !== "");
-}
-
-/**
- * Whether this entry's hits were read out of the notes with no engine involved.
- *
- * Requires notes to read. A release published with an empty body — htop tags
- * every version and writes nothing — offers nothing to extract, and saying the
- * mechanical read happened there describes a pass over no text. The `hits` come
- * out empty either way, so this decides what the entry claims rather than what
- * it shows.
- */
-export function isMechanical(itemCount: number, behind: Release[]): boolean {
-  return itemCount === 0 && hasReadableNotes(behind);
 }
 
 export function parseItems(text: string): DigestItem[] {
@@ -165,12 +131,12 @@ export function parseItems(text: string): DigestItem[] {
   if (start < 0 || end <= start)
     throw new Error(
       `no JSON array in engine output — the model answered in prose. Try a larger model with ` +
-        `--model, or --no-judge to keep the release list without a summary: ${text.slice(0, 200)}`,
+        `--model, or drop --judge to keep the release list without a summary: ${text.slice(0, 200)}`,
     );
   const parsed = JSON.parse(text.slice(start, end + 1)) as unknown;
   if (!Array.isArray(parsed))
     throw new Error(
-      "engine output parsed as JSON but not as an array — try a larger model with --model, or --no-judge",
+      "engine output parsed as JSON but not as an array — try a larger model with --model, or drop --judge",
     );
 
   const items: DigestItem[] = [];
@@ -182,7 +148,6 @@ export function parseItems(text: string): DigestItem[] {
     items.push({
       kind: KINDS.includes(kind) ? kind : "fix",
       summary,
-      commands: Array.isArray(o.commands) ? o.commands.filter((c): c is string => typeof c === "string") : [],
       version: typeof o.version === "string" ? o.version : "",
     });
   }
@@ -214,7 +179,7 @@ async function askOpenAi(engine: Engine, text: string): Promise<string> {
   if (!out)
     throw new Error(
       `engine accepted the request but returned an empty message — "${engine.model}" may not be loaded; ` +
-        "check /v1/models, or run with --no-judge",
+        "check /v1/models, or run without --judge",
     );
   return out;
 }
@@ -306,7 +271,7 @@ export async function writeCachedDigest(key: string, raw: string, dir = digestCa
  *
  * Answered from cache when the same notes have already been judged by the same
  * model. This is where nearly all of a run's wall-clock goes — measured at 140s
- * for `overview` against 4s with `--no-judge`, one `claude -p` subprocess per
+ * for `overview` against 4s unjudged, one `claude -p` subprocess per
  * tool — and the notes for a published tag do not change, so a hit is not a
  * stale answer but the same answer without the wait.
  */

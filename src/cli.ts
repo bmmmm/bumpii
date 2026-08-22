@@ -20,7 +20,7 @@ import {
 import { killChildren, run } from "./exec.ts";
 import { discoverImage, untrackedContainers } from "./images.ts";
 import { buildInbox, markThreadsRead, shownThreads } from "./inbox.ts";
-import { digest, isMechanical, resolveEngine } from "./judge.ts";
+import { digest, type Engine, resolveEngine } from "./judge.ts";
 import { limiter } from "./limit.ts";
 import { brewOutdated } from "./outdated.ts";
 import { buildOverview, untrackedOutdatedCount } from "./overview.ts";
@@ -28,7 +28,7 @@ import { type Progress, startProgress } from "./progress.ts";
 import { renderInbox, renderOverview, renderReport } from "./render.ts";
 import { channelStatus, listReleases, parseSource } from "./sources.ts";
 import type { DigestItem, Release, ToolConfig, ToolReport } from "./types.ts";
-import { commandsFromNotes, findUsageAcross, mentioned, resolveUsagePaths } from "./usage.ts";
+import { mentioned, resolveUsagePaths } from "./usage.ts";
 import { installedVersion, isTruncated, latestComparable, releasesBehind } from "./version.ts";
 
 /**
@@ -85,7 +85,8 @@ Options:
   --only <name,...>   restrict to these tools, or with overview these packages
   --model <id>        force a judge model instead of discovering one
   --json              machine-readable report
-  --no-judge          skip the model; list pending releases and their URLs
+  --judge             read the notes with a model and classify them;
+                      without it a run lists pending releases and their URLs
   --dry-run           with add: show the entries, write nothing
                       with --yes/--brew-upgrade: print the update commands
                       that would run, and run none of them
@@ -101,7 +102,7 @@ interface Args {
   cmd: "digest" | "overview" | "inbox" | "init" | "add" | "scan" | "list" | "set" | "rm" | "help";
   yes: boolean;
   json: boolean;
-  noJudge: boolean;
+  judge: boolean;
   dryRun: boolean;
   /** With `add`: the positionals are container names, not brew formulae. */
   image: boolean;
@@ -172,7 +173,7 @@ export function parseArgs(argv: string[]): Args {
     cmd: "digest",
     yes: false,
     json: false,
-    noJudge: false,
+    judge: false,
     dryRun: false,
     image: false,
     onlyNew: false,
@@ -215,8 +216,12 @@ export function parseArgs(argv: string[]): Args {
     } else if (v === "-h" || v === "--help") a.cmd = "help";
     else if (v === "--yes" || v === "-y") a.yes = true;
     else if (v === "--json") a.json = true;
-    else if (v === "--no-judge") a.noJudge = true;
-    else if (v === "--dry-run" || v === "-n") a.dryRun = true;
+    else if (v === "--judge") a.judge = true;
+    // Accepted and ignored: it was the way to ask for this default before the
+    // default was this, and claudii's statusline refresh still passes it from
+    // a repo that does not ship with this one.
+    else if (v === "--no-judge") {
+    } else if (v === "--dry-run" || v === "-n") a.dryRun = true;
     else if (v === "--image") a.image = true;
     else if (v === "--new") a.onlyNew = true;
     else if (v === "--unref") a.unreferenced = true;
@@ -308,6 +313,24 @@ export function containerOf(tool: ToolConfig): string[] {
  * animation from start to finish — the ball keeps bouncing across resolving an
  * engine, reading forges and judging, instead of a fresh spinner per step.
  */
+/**
+ * The engine this run judges with, or the one that judges nothing.
+ *
+ * Reading the notes is asked for, not assumed. Most runs want to know what is
+ * pending and where to read about it, and that answer needs no model at all —
+ * it costs one forge request per package and comes back in seconds, against
+ * the ~130s a cold judged run takes. Discovery itself is not free either: it
+ * probes OPENAI_BASE_URL or starts a `claude --version` subprocess, and it did
+ * that before anything knew whether a single package was even pending.
+ *
+ * One function rather than the three copies of this ternary that used to sit
+ * at the three call sites.
+ */
+async function engineFor(args: Args): Promise<Engine> {
+  if (!args.judge) return { kind: "none", model: "", label: "not asked for" };
+  return resolveEngine({ model: args.model });
+}
+
 async function main(): Promise<number> {
   const progress = startProgress();
   installSignalHandlers(progress);
@@ -735,9 +758,7 @@ async function dispatch(progress: Progress): Promise<number> {
       throw new Error("inbox takes no arguments — it reads your unread GitHub notifications as they are");
     }
     progress.phase("engine");
-    const engine = args.noJudge
-      ? { kind: "none" as const, model: "", label: "skipped (--no-judge)" }
-      : await resolveEngine({ model: args.model });
+    const engine = await engineFor(args);
     progress.set({ engine: engine.kind });
     const inbox = await buildInbox(config, { engine, concurrency: JUDGE_CONCURRENCY, progress });
     progress.pause();
@@ -774,9 +795,7 @@ async function dispatch(progress: Progress): Promise<number> {
       );
     }
     progress.phase("engine");
-    const engine = args.noJudge
-      ? { kind: "none" as const, model: "", label: "skipped (--no-judge)" }
-      : await resolveEngine({ model: args.model });
+    const engine = await engineFor(args);
     progress.set({ engine: engine.kind });
     const overview = await buildOverview(config, {
       engine,
@@ -825,14 +844,8 @@ async function dispatch(progress: Progress): Promise<number> {
   // Probing a model server is one of the two places a run can sit still before
   // it has anything to show for it, so it gets said out loud.
   progress.phase("engine", { tools: tools.length });
-  const engine = args.noJudge
-    ? { kind: "none" as const, model: "", label: "skipped (--no-judge)" }
-    : await resolveEngine({ model: args.model });
+  const engine = await engineFor(args);
   progress.set({ engine: engine.kind });
-
-  // Resolved once, not per tool: a usage path that does not exist would make
-  // every grep come back empty and every tool report "affects you: none".
-  const usage = await resolveUsagePaths(config.usagePaths);
 
   // Fetching stays fully concurrent — it is a GET per tool, and the forges
   // rate-limit that themselves. Judging does not: a stampede of concurrent
@@ -858,14 +871,14 @@ async function dispatch(progress: Progress): Promise<number> {
   const done = (): void => progress.set({ done: ++finished });
 
   progress.phase("fetch", { total: tools.length, done: 0, tools: tools.length });
-  const built: { report: ToolReport; commands: string[] }[] = await Promise.all(
-    tools.map(async (tool): Promise<{ report: ToolReport; commands: string[] }> => {
-      const base: ToolReport = { tool, installed: null, latest: null, behind: [], items: [], hits: [] };
+  const built: { report: ToolReport }[] = await Promise.all(
+    tools.map(async (tool): Promise<{ report: ToolReport }> => {
+      const base: ToolReport = { tool, installed: null, latest: null, behind: [], items: [] };
       // No source means there is nothing to ask, so no forge is contacted and
       // no version probed — render.ts reports it as waiting for one line.
       if (!tool.source) {
         done();
-        return { report: base, commands: [] };
+        return { report: base };
       }
       try {
         const ref = parseSource(tool.source);
@@ -925,14 +938,9 @@ async function dispatch(progress: Progress): Promise<number> {
         // without an engine — which is the configuration this tool has to keep
         // working in, not a degraded one.
         //
-        // The shared predicate rather than `behind.length > 0`: a release with
-        // an empty body offers nothing to extract, and this flag is a claim
-        // that lands in --json — that the hits were read out of the notes.
-        const mechanical = isMechanical(items.length, behind);
         return {
           report: {
             ...base,
-            mechanical,
             installed,
             latest,
             behind,
@@ -941,14 +949,10 @@ async function dispatch(progress: Progress): Promise<number> {
             items,
             digestError,
           },
-          commands: mechanical
-            ? behind.flatMap((r) => commandsFromNotes(tool.name, r.notes))
-            : items.flatMap((i) => i.commands),
         };
       } catch (err) {
         return {
           report: { ...base, error: err instanceof Error ? err.message : String(err) },
-          commands: [],
         };
       } finally {
         // Both paths: a tool that failed is still a tool this run is done
@@ -959,13 +963,7 @@ async function dispatch(progress: Progress): Promise<number> {
     }),
   );
 
-  const commandCount = built.reduce((n, b) => n + b.commands.length, 0);
-  progress.phase("grep", { commands: commandCount, roots: usage.roots.length });
-  const usageSearch = await findUsageAcross(
-    usage.roots,
-    built.map((b) => b.commands),
-  );
-  const reports: ToolReport[] = built.map((b, i) => ({ ...b.report, hits: usageSearch.hits[i] ?? [] }));
+  const reports: ToolReport[] = built.map((b) => b.report);
 
   // What this digest never looked at: everything brew has pending that
   // tools.json does not track. `undefined` on failure — brew missing (Linux
@@ -982,24 +980,13 @@ async function dispatch(progress: Progress): Promise<number> {
   // animation and a report sharing a row is how a spinner ends up frozen in
   // somebody's scrollback.
   progress.pause();
-  const noUsagePaths = config.usagePaths.length === 0;
   if (args.json) {
     // The whole engine, not just its label: a scheduled run that acts on this
     // should be able to branch on "was anything actually judged" without
     // parsing prose.
-    process.stdout.write(
-      `${JSON.stringify({ engine, missingUsagePaths: usage.missing, noUsagePaths, usageIncomplete: usageSearch.incomplete, otherPending, reports }, null, 2)}\n`,
-    );
+    process.stdout.write(`${JSON.stringify({ engine, otherPending, reports }, null, 2)}\n`);
   } else {
-    process.stdout.write(
-      renderReport(reports, {
-        engine,
-        missingPaths: usage.missing,
-        noUsagePaths,
-        usageIncomplete: usageSearch.incomplete,
-        otherPending,
-      }),
-    );
+    process.stdout.write(renderReport(reports, { engine, otherPending }));
   }
 
   let updateFailures = 0;
