@@ -379,6 +379,12 @@ function installSignalHandlers(progress: Progress): void {
   };
   process.once("SIGINT", () => handle(130));
   process.once("SIGTERM", () => handle(143));
+  // SIGHUP is how a closing terminal ends a run, and it is the case where
+  // stranded children matter most: nobody is left watching, so a `claude` or a
+  // `brew upgrade` that outlives the run keeps going with no console attached.
+  // Node's default for it also terminates without running exit listeners, same
+  // as SIGINT.
+  process.once("SIGHUP", () => handle(129));
 }
 
 async function dispatch(progress: Progress): Promise<number> {

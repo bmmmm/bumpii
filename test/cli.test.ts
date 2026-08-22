@@ -758,6 +758,37 @@ test("Ctrl-C exits 130 and takes the running child with it", async (t) => {
   await assert.rejects(readFile(marker), "the child outlived the run that started it");
 });
 
+test("a closed terminal takes the children with it, the way Ctrl-C does", async () => {
+  // SIGHUP is what a closing terminal sends, and it is the case where stranded
+  // children matter most — nobody is left watching a `claude` or a `brew
+  // upgrade` that outlives the run. Node's default for it terminates without
+  // running exit listeners, exactly like SIGINT, so only SIGINT and SIGTERM
+  // being handled meant this path kept the old behaviour.
+  //
+  // Deliberately without a stub forge, so it runs where the loopback tests
+  // cannot: an entry with no source never reaches a forge, and its probe starts
+  // either way — which is the child this is about.
+  const home = await freshHome();
+  const marker = join(await freshHome(), "survived");
+  await writeConfig(home, [tool({ version: slowProbe(marker) })]);
+
+  const p = spawnCli(["digest"], home);
+  await wait(1200); // long enough for the probe to have started
+  p.kill("SIGHUP");
+
+  const code = await new Promise<number | null>((resolve) => p.on("close", resolve));
+  assert.equal(
+    code,
+    129,
+    "128+SIGHUP is what a shell reports, and an unhandled signal reports no code at all",
+  );
+
+  // Outlive the probe's own sleep: if it was merely orphaned, this is when it
+  // would write its marker.
+  await wait(4000);
+  await assert.rejects(readFile(marker), "the probe outlived the terminal that started it");
+});
+
 test("a run that ends early does not strand a probe it started", async (t) => {
   // No signal involved. A tool's probe and its forge fetch are one
   // Promise.all, so a failing fetch rejects the pair while the probe is still
