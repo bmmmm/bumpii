@@ -141,6 +141,55 @@ test("a usage search that stopped early is named, so a zero reference count is n
   );
 });
 
+test("a long digest is capped, and what it left out is counted rather than dropped", () => {
+  // Measured, not imagined: two releases of one package came back with 52
+  // items. Printed in full that is one entry filling the screen in a report
+  // meant to show every pending package at once. The tail is what gets capped,
+  // and the line that replaces it says how many and where to read them —
+  // silently showing ten of 52 would be the report claiming to be the list.
+  const many = entry({
+    name: "loud",
+    bucket: "digested",
+    refs: 5,
+    items: Array.from({ length: 30 }, (_, i) => ({
+      kind: "fix" as const,
+      summary: `fix number ${i}`,
+      version: "2.0.0",
+    })),
+  });
+  const out = renderOverview(overview({ entries: [many] }));
+  assert.match(out, /… 20 more feature\/fix changes not shown/);
+  assert.match(
+    out,
+    /bumpii digest --only loud --judge/,
+    "the way to see the rest has to be a command, not a hint",
+  );
+  assert.equal(out.match(/fix number/g)?.length, 10, "ten shown, and the count is what says so");
+});
+
+test("a cap never drops a security or breaking item, however many there are", () => {
+  // The two kinds that make someone act. A blind cap of ten would hide the
+  // eleventh CVE behind a "… 5 more" line, which is the one trade this report
+  // must not make — the tail it trims is feature/fix, which the sort puts last.
+  const kinds = (kind: "security" | "breaking", n: number, from: number) =>
+    Array.from({ length: n }, (_, i) => ({ kind, summary: `${kind} ${from + i}`, version: "2.0.0" }));
+  const scary = entry({
+    name: "cve",
+    bucket: "digested",
+    refs: 5,
+    items: [
+      ...kinds("security", 9, 0),
+      ...kinds("breaking", 6, 0),
+      { kind: "fix" as const, summary: "a fix that can wait", version: "2.0.0" },
+    ],
+  });
+  const out = renderOverview(overview({ entries: [scary] }));
+  assert.equal(out.match(/security \d/g)?.length, 9, "every security item is shown");
+  assert.equal(out.match(/breaking \d/g)?.length, 6, "every breaking item is shown");
+  assert.doesNotMatch(out, /a fix that can wait/, "past the cap, the fix is the one that waits");
+  assert.match(out, /… 1 more feature\/fix change not shown/);
+});
+
 test("releases published without notes say so, instead of blaming the engine", () => {
   // htop's real shape: it tags every version and writes no body. There is
   // nothing to read, which is a fact about the forge — reporting it as a failed

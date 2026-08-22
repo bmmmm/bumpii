@@ -142,6 +142,14 @@ treatment as `gh` — so `tools.json` decides what `bumpii` watches, not what
 `overview` can tell you. `worth tracking` at the end names the ones that
 earned an entry.
 
+How many items a digest produces is decided by the notes, not by bumpii: two
+releases of one package have come back with 52. An overview that printed those
+in full would spend a screen on one entry, so it prints ten and counts the
+rest — `… 20 more feature/fix changes not shown`, with the command that lists
+them. Security and breaking items are never in that tail, however many there
+are: they are the lines that make you act. `bumpii digest` does not cap, because
+you asked it about a tool.
+
 Three states are deliberately kept out of "up to date", because each means
 bumpii could not check rather than checked and found nothing. A package whose
 brew URLs name no forge (node ships from nodejs.org) says so instead of having

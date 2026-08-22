@@ -77,6 +77,17 @@ function paint(kind: ItemKind, s: string): string {
 const ORDER: ItemKind[] = ["security", "breaking", "feature", "fix"];
 
 /**
+ * How many item lines one overview entry may print before the rest is counted
+ * instead of listed.
+ *
+ * Ten keeps an entry inside half a terminal window, so the report stays a thing
+ * you read rather than scroll. It applies to the overview only: `digest` is
+ * asked about specific tools and completeness is the point there, while the
+ * overview's job is everything at once.
+ */
+const ITEM_CAP = 10;
+
+/**
  * An empty usagePaths config has to be said in every report that judges by
  * usage: with nothing to search, "affects you: none" and a zero reference
  * count are statements about an empty search, not about the user's files —
@@ -441,7 +452,18 @@ function renderEntry(e: OverviewEntry, ctx: OverviewCtx, prefix: string, cont: s
   }
 
   const sorted = [...e.items].sort((a, b) => ORDER.indexOf(a.kind) - ORDER.indexOf(b.kind));
-  for (const item of sorted) {
+  // Nothing here was capped, and the notes decide how many items there are: a
+  // package two releases behind came back with 52, which is a screenful for one
+  // entry in a report whose whole job is fitting several. The cap is on the
+  // tail the sort has already put last — security and breaking are the lines
+  // that make someone act, so they are never what gets dropped, however many
+  // there are. What is left out is counted and named rather than trimmed away.
+  const forced = sorted.filter((i) => i.kind === "security" || i.kind === "breaking");
+  const shown = [
+    ...forced,
+    ...sorted.filter((i) => !forced.includes(i)).slice(0, Math.max(0, ITEM_CAP - forced.length)),
+  ];
+  for (const item of shown) {
     const mark = paint(item.kind, MARK[item.kind]);
     // The version doubles as the link to the release it landed in, rather than
     // each item carrying a URL line of its own: a tool five releases behind
@@ -451,6 +473,15 @@ function renderEntry(e: OverviewEntry, ctx: OverviewCtx, prefix: string, cont: s
     const rel = e.behind.find((r) => r.version === item.version);
     const where = item.version ? dim(` (${rel ? link(rel.url, item.version) : item.version})`) : "";
     body(`${mark} ${paint(item.kind, item.kind.padEnd(8))} ${item.summary}${where}`);
+  }
+  const hidden = sorted.length - shown.length;
+  if (hidden > 0) {
+    // The trimmed name, not the padded one: this line names a command to run.
+    body(
+      dim(
+        `… ${hidden} more feature/fix change${hidden === 1 ? "" : "s"} not shown — bumpii digest --only ${e.name.trim()} --judge lists them all`,
+      ),
+    );
   }
   body(`${dim("→")} ${e.update}`);
 }
