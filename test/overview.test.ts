@@ -190,6 +190,37 @@ test("a cap never drops a security or breaking item, however many there are", ()
   assert.match(out, /… 1 more feature\/fix change not shown/);
 });
 
+test("an item written in brew's spelling still finds the release it landed in", () => {
+  // The pair that caused it: brew reports yt-dlp as 2026.7.4, the forge tags
+  // 2026.07.04, and compareVersions has always called those equal — which is
+  // why "1 release behind" was right. The item carries whichever spelling the
+  // model read, so a `===` here meant the report knew the release existed and
+  // printed its item with no link to it. tagFor was fixed for this; the two
+  // renderers kept the old comparison.
+  const rel = {
+    tag: "2026.08.19",
+    version: "2026.08.19",
+    publishedAt: null,
+    notes: "n",
+    url: "https://github.com/o/r/releases/tag/2026.08.19",
+  };
+  const e = entry({
+    name: "yt-dlp",
+    bucket: "digested",
+    refs: 3,
+    installed: "2026.7.4",
+    latest: "2026.8.19",
+    behind: [rel],
+    items: [{ kind: "fix", summary: "a fix that shipped", version: "2026.8.19" }],
+  });
+  const out = renderOverview(overview({ entries: [e] }));
+  // Rendered without colour in a test, so the OSC 8 link is not in the output —
+  // what is checkable is that the item resolved to the release's own spelling
+  // instead of keeping the model's.
+  assert.match(out, /a fix that shipped \(2026\.08\.19\)/);
+  assert.doesNotMatch(out, /\(2026\.8\.19\)/, "two spellings of one version must not share an entry");
+});
+
 test("releases published without notes say so, instead of blaming the engine", () => {
   // htop's real shape: it tags every version and writes no body. There is
   // nothing to read, which is a fact about the forge — reporting it as a failed

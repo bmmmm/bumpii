@@ -3,7 +3,7 @@ import type { Inbox } from "./inbox.ts";
 import type { Engine } from "./judge.ts";
 import type { Overview, OverviewEntry } from "./overview.ts";
 import type { DigestItem, ItemKind, Release, ToolReport } from "./types.ts";
-import { compareVersions } from "./version.ts";
+import { compareVersions, releaseFor } from "./version.ts";
 
 /**
  * Strip anything that would drive the terminal rather than fill it.
@@ -349,7 +349,7 @@ export function renderInbox(raw: Inbox): string {
       // The version doubles as the link to the release it landed in — same
       // trade as the overview, and for the same reason: an entry three
       // releases deep must not become a screenful of URL lines.
-      const rel = e.releases.find((r) => r.version === item.version || r.tag === item.version);
+      const rel = releaseFor(e.releases, item.version) ?? e.releases.find((r) => r.tag === item.version);
       const where = item.version ? dim(` (${rel ? link(rel.url, item.version) : item.version})`) : "";
       out.push(`  ${mark} ${paint(item.kind, item.kind.padEnd(8))} ${item.summary}${where}`);
     }
@@ -470,8 +470,16 @@ function renderEntry(e: OverviewEntry, ctx: OverviewCtx, prefix: string, cont: s
     // digests to twenty-odd items, and a line per URL turns one entry into a
     // screenful — which is the opposite of what an overview is for. The full
     // URL is still on screen once, on the compare line above.
-    const rel = e.behind.find((r) => r.version === item.version);
-    const where = item.version ? dim(` (${rel ? link(rel.url, item.version) : item.version})`) : "";
+    const rel = releaseFor(e.behind, item.version);
+    // The release's own spelling, not the model's, so the items in one entry
+    // agree with each other: each carries whichever spelling the model read, and
+    // one item echoing brew's `2026.7.4` beside another echoing the forge's
+    // `2026.07.04` is two versions on screen for one release. The head line
+    // stays brew's on purpose — it says what `brew upgrade` will hand you, which
+    // is a different claim from what the forge named the release. An item that
+    // matches no release keeps its own text rather than going blank.
+    const shownVersion = rel ? rel.version : item.version;
+    const where = item.version ? dim(` (${rel ? link(rel.url, shownVersion) : shownVersion})`) : "";
     body(`${mark} ${paint(item.kind, item.kind.padEnd(8))} ${item.summary}${where}`);
   }
   const hidden = sorted.length - shown.length;

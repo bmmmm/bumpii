@@ -143,6 +143,29 @@ export function isOrderable(version: string): boolean {
 }
 
 /**
+ * The release a version string belongs to, or undefined when none does.
+ *
+ * Two passes, exact first, so nothing that resolves today starts resolving
+ * differently. The second exists because the same version gets written two ways
+ * in one report: brew says `2026.7.4` where the forge tags `2026.07.04`, and a
+ * digested item carries whichever the model read. `===` then finds nothing, and
+ * the item prints its version with no link to the release it landed in — the
+ * report knowing the release exists and dropping the link to it, which is the
+ * failure `tagFor` was fixed for and these callers kept.
+ *
+ * `isComparable` guards both sides because the list is not filtered: two tags
+ * that cannot be ordered at all (`nightly`, `latest`) parse to the same empty
+ * version, and `compareVersions` would call those equal.
+ */
+export function releaseFor(releases: Release[], version: string): Release | undefined {
+  if (!version) return undefined;
+  const exact = releases.find((r) => r.version === version);
+  if (exact) return exact;
+  if (!isOrderable(version)) return undefined;
+  return releases.find((r) => isComparable(r) && compareVersions(r.version, version) === 0);
+}
+
+/**
  * The newest version that can actually be compared, or null when the forge
  * published none.
  *

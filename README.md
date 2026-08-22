@@ -125,8 +125,8 @@ no signal (12)
     https://github.com/harfbuzz/harfbuzz/releases
   …
 
-23 pending — 2 digested · 1 not digested · 1 no repo · 12 unreferenced
-8 tracked and current
+16 pending — 2 digested · 1 not digested · 1 no repo · 12 unreferenced
+3 tracked and current
   worth tracking: bumpii add docker
 engine: claude-cli/haiku
 ```
@@ -141,6 +141,12 @@ Being untracked is no reason to skip the digest — `docker` above gets the same
 treatment as `gh` — so `tools.json` decides what `bumpii` watches, not what
 `overview` can tell you. `worth tracking` at the end names the ones that
 earned an entry.
+
+`overview` carries the same exit codes as the digest — `0` nothing pending, `1`
+something is, `2` the run failed — so a scheduled `bumpii overview` can be acted
+on without parsing the report. Worth knowing before it goes in a `set -e`
+script: `1` is the ordinary answer on a machine with updates waiting, not an
+error.
 
 How many items a digest produces is decided by the notes, not by bumpii: two
 releases of one package have come back with 52. An overview that printed those

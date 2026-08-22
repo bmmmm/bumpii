@@ -22,7 +22,7 @@ import type { Progress } from "./progress.ts";
 import { listReleases, parseSource } from "./sources.ts";
 import type { Config, DigestItem, Release, ToolConfig } from "./types.ts";
 import { referenceCounts, resolveUsagePaths } from "./usage.ts";
-import { compareVersions, isComparable, isOrderable, isTruncated, releasesBehind } from "./version.ts";
+import { isComparable, isTruncated, releaseFor, releasesBehind } from "./version.ts";
 
 /** Why an entry ended up where it did. Each bucket renders differently. */
 export type Bucket =
@@ -179,23 +179,15 @@ export function untrackedOutdatedCount(outdated: OutdatedPackage[], tools: ToolC
 /**
  * The tag the forge published for a version, or null if it published none.
  *
- * Two passes, and the exact match keeps its place at the front so nothing that
- * resolves today can start resolving differently. The second pass exists
- * because brew and the forge write the same version differently often enough
- * to matter: brew says `2026.7.4`, yt-dlp tags `2026.07.04`. `compareVersions`
- * has always called those equal — that is why "1 release behind" was right —
- * so a string comparison here meant the report knew the release existed and
- * still dropped the link to it.
- *
- * `isComparable` guards both sides because this list is not filtered: two tags
- * that are not orderable at all (`nightly`, `latest`) parse to the same empty
- * version, and `compareVersions` would call them equal.
+ * The matching itself is {@link releaseFor}: brew says `2026.7.4` where yt-dlp
+ * tags `2026.07.04`, and `compareVersions` has always called those equal — that
+ * is why "1 release behind" was right while a string comparison here dropped
+ * the link to a release the report knew existed. render.ts made the same
+ * comparison for a different link, which is why the two passes live in
+ * version.ts now instead of here.
  */
 export function tagFor(releases: Release[], version: string): string | null {
-  const exact = releases.find((r) => r.version === version);
-  if (exact) return exact.tag;
-  if (!isOrderable(version)) return null;
-  return releases.find((r) => isComparable(r) && compareVersions(r.version, version) === 0)?.tag ?? null;
+  return releaseFor(releases, version)?.tag ?? null;
 }
 
 /**
