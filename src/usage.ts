@@ -5,7 +5,6 @@ import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { type ExecError, run } from "./exec.ts";
-import type { UsageHit } from "./types.ts";
 
 export function expandHome(p: string): string {
   return p.startsWith("~/") ? resolve(homedir(), p.slice(2)) : resolve(p);
@@ -69,24 +68,6 @@ export async function resolveUsagePaths(paths: string[]): Promise<UsageRoots> {
 }
 
 /**
- * Reduce extracted commands to needles specific enough to mean something.
- *
- * "gh" or "gh pr" matches half the user's scripts and would report "affects
- * you" for a fix to some unrelated subcommand — noise that trains you to
- * ignore the line. Three tokens ("gh pr view") or a flag ("gh pr --json")
- * clears that bar.
- */
-export function toNeedles(commands: string[]): string[] {
-  return [
-    ...new Set(
-      commands
-        .map((c) => c.trim().replace(/\s+/g, " "))
-        .filter((c) => c.length >= 3 && (c.split(" ").length >= 3 || /(^|\s)-/.test(c))),
-    ),
-  ];
-}
-
-/**
  * Which of these names appear anywhere in the user's own files.
  *
  * The same grep the report runs, asked the other way round — and it is what
@@ -138,43 +119,6 @@ export async function mentioned(
     stdout = e.stdout ?? "";
   }
   return { names: new Set(stdout.split("\n").filter(Boolean)), incomplete };
-}
-
-/**
- * CLI surface named in release notes, found without a model.
- *
- * The digest asks an engine which commands a change touches; this is the same
- * question answered mechanically, for people who have no engine at all. It is
- * deliberately cruder — it cannot tell a change from a heading — so what it
- * feeds is never described as a verdict, only as "these strings appear in both
- * the notes and your files", which is a claim it can actually support.
- *
- * Inline code spans are the whole source. Release notes across every project
- * mark up commands and flags with backticks, and a fenced block is usually a
- * whole example rather than the surface that changed.
- *
- * A span is kept only when it names the tool as a word. That drops `--json` on
- * its own — which would match half of anyone's scripts — and, on gh's real
- * 2.97.0 notes, drops `github_pat_*`, `ghs_*` and `ghu_*` while keeping
- * `gh attestation verify` and `gh auth status`. Over-reporting relevance is the
- * one direction this tool must not err in: a line that cries wolf trains you to
- * skip it, and then the real one goes unread too.
- */
-export function commandsFromNotes(tool: string, notes: string): string[] {
-  const word = new RegExp(
-    `(^|[^A-Za-z0-9_-])${tool.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^A-Za-z0-9_-]|$)`,
-  );
-  const out = new Set<string>();
-  for (const m of notes.matchAll(/`([^`\n]{2,120})`/g)) {
-    const span = m[1]?.trim().replace(/\s+/g, " ");
-    // Trailing punctuation belongs to the sentence, not the command, and would
-    // be grepped verbatim.
-    const cleaned = span?.replace(/[.,;:!?)\]]+$/, "").trim();
-    if (cleaned && word.test(cleaned)) out.add(cleaned);
-  }
-  // The same specificity bar the model's output has to clear, applied here too:
-  // three tokens or a flag. "gh api" is a group, not a surface.
-  return toNeedles([...out]);
 }
 
 /**
@@ -244,96 +188,4 @@ export async function referenceCounts(
   }
   for (const [name, seen] of files) counts.set(name, seen.size);
   return { counts, incomplete };
-}
-
-/**
- * Grep the user's own files for the commands of several tools at once.
- *
- * Fixed-string search (`grep -F`), not regex: the needles come from release
- * notes, where `gh pr view --json` or `foo[bar]` are ordinary text but would
- * be a broken or over-matching pattern. A command that appears nowhere is the
- * useful answer too — that is what lets the report say "affects you: none"
- * with something behind it.
- *
- * Every needle of every tool goes into ONE grep via repeated `-e`. Batching
- * across needles was always here; batching across tools is what this signature
- * adds, and it is the same saving one level up: the report walks ~/dotfiles
- * once per run rather than once per outdated package, which on a machine with
- * 23 of them pending was 23 full traversals of the same trees for one answer.
- * `-e` also means a needle that starts with a dash ("--json") can never be
- * read as an option.
- *
- * Results come back positionally, one list per input group, and a needle two
- * tools happen to share lands in both — exactly as separate greps would have
- * left it.
- */
-export async function findUsageAcross(
-  roots: string[],
-  groups: readonly (readonly string[])[],
-): Promise<{ hits: UsageHit[][]; incomplete?: string }> {
-  const perGroup = groups.map((g) => toNeedles([...g]));
-  const needles = [...new Set(perGroup.flat())];
-  const empty = groups.map((): UsageHit[] => []);
-  if (needles.length === 0 || roots.length === 0) return { hits: empty };
-
-  let stdout: string;
-  let incomplete: string | undefined;
-  try {
-    const r = await run(
-      "grep",
-      [
-        "-rIn", // recursive, skip binaries, show line numbers
-        "-F",
-        ...needles.flatMap((n) => ["-e", n]),
-        "--exclude-dir=.git",
-        "--exclude-dir=node_modules",
-        ...roots,
-      ],
-      { timeout: 60_000, maxBuffer: 32 * 1024 * 1024 },
-    );
-    stdout = r.stdout;
-  } catch (err) {
-    // grep exits 1 on "no matches" — that is a result, not a failure, and it
-    // is the one that makes "affects you: none" mean something.
-    //
-    // Any other code is a failure, and the matches it did manage still arrive
-    // on stdout, so they are kept. What changed is that the caller is told:
-    // resolveUsagePaths catches a path that is missing before the run, but not
-    // a directory this user may not read, not one that disappeared in between,
-    // and not a kill on timeout or maxBuffer. Every one of those used to end
-    // as a confident "none".
-    const e = err as ExecError;
-    if (e.code === 1 || e.code === "1") return { hits: empty };
-    incomplete = whyIncomplete(e);
-    stdout = e.stdout ?? "";
-  }
-
-  const all: UsageHit[] = [];
-  for (const line of stdout.split("\n")) {
-    const m = /^(.*?):(\d+):(.*)$/.exec(line);
-    if (!m?.[1] || !m[2]) continue;
-    const [, file, lineNo, text] = m;
-    // One grep for many needles means the match has to be attributed after the
-    // fact — and a line may genuinely contain more than one.
-    for (const needle of needles) {
-      if (text?.includes(needle)) {
-        all.push({ command: needle, file, line: Number.parseInt(lineNo, 10) });
-      }
-    }
-  }
-  // Split by filtering the shared list rather than by grouping on the needle,
-  // so each group keeps the order grep produced. Grouping would reorder hits by
-  // command, which is what the report prints them in.
-  return {
-    hits: perGroup.map((ns) => {
-      const want = new Set(ns);
-      return all.filter((h) => want.has(h.command));
-    }),
-    incomplete,
-  };
-}
-
-/** The one-tool form of {@link findUsageAcross}. */
-export async function findUsage(roots: string[], commands: string[]): Promise<UsageHit[]> {
-  return (await findUsageAcross(roots, [commands])).hits[0] ?? [];
 }

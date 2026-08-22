@@ -7,12 +7,11 @@
 // that queue — unread notifications of type Release — and pushes the notes
 // through the same judge-and-grep pipeline as everything else, so a pile of
 // notifications shrinks to the lines that touch what you run.
-import { digest, type Engine, isMechanical } from "./judge.ts";
+import { digest, type Engine } from "./judge.ts";
 import { limiter } from "./limit.ts";
 import type { Progress } from "./progress.ts";
 import { authHeaders, bare, type ForgeRef, getJson } from "./sources.ts";
-import type { Config, DigestItem, Release, UsageHit } from "./types.ts";
-import { commandsFromNotes, findUsageAcross, resolveUsagePaths } from "./usage.ts";
+import type { Config, DigestItem, Release } from "./types.ts";
 
 /** Notifications are a GitHub-only concept, so the ref never varies. */
 const GITHUB: ForgeRef = { kind: "github", api: "https://api.github.com", repo: "" };
@@ -44,9 +43,6 @@ export interface InboxEntry {
   /** Notification thread ids — what --mark-read patches. */
   threads: string[];
   items: DigestItem[];
-  hits: UsageHit[];
-  /** `hits` were read out of the notes mechanically, with no engine involved. */
-  mechanical: boolean;
   /** The engine failed on these notes; the releases are still listed. */
   digestError?: string;
   /** The release bodies could not be fetched; nothing was shown, so
@@ -64,16 +60,6 @@ export interface Inbox {
   other: Record<string, number>;
   /** The page was full, so the queue holds more than what is shown. */
   capped: boolean;
-  missingUsagePaths: string[];
-  /** The config names no usagePaths at all — nothing was searched, so every
-   * "affects you" would otherwise assert absence about an empty search. */
-  noUsagePaths: boolean;
-  /**
-   * grep did not get to the end of the walk, so every "affects you" below is a
-   * floor rather than the answer. One grep serves the whole run, which is why
-   * this sits here and not on each entry.
-   */
-  usageIncomplete?: string;
   engine: Engine;
 }
 
@@ -132,7 +118,6 @@ export interface InboxOptions {
 
 export async function buildInbox(config: Config, opts: InboxOptions): Promise<Inbox> {
   const progress = opts.progress;
-  const usage = await resolveUsagePaths(config.usagePaths);
   progress?.phase("notifications");
   const raw = await notifications();
 
@@ -166,9 +151,9 @@ export async function buildInbox(config: Config, opts: InboxOptions): Promise<In
   progress?.phase("fetch", { total: byRepo.size, done: 0, tools: byRepo.size });
 
   // Two passes, same as the digest and the overview: everything each entry can
-  // say on its own, then ONE grep for the commands all of them extracted.
+  // say on its own.
   const built = await Promise.all(
-    [...byRepo.entries()].map(async ([repo, g]): Promise<{ entry: InboxEntry; commands: string[] }> => {
+    [...byRepo.entries()].map(async ([repo, g]): Promise<{ entry: InboxEntry }> => {
       const name = tracked.get(repo.toLowerCase()) ?? repo.split("/").pop() ?? repo;
       const base: InboxEntry = {
         repo,
@@ -178,8 +163,6 @@ export async function buildInbox(config: Config, opts: InboxOptions): Promise<In
         prerelease: false,
         threads: g.threads,
         items: [],
-        hits: [],
-        mechanical: false,
       };
       try {
         const bodies = await Promise.all(
@@ -215,27 +198,18 @@ export async function buildInbox(config: Config, opts: InboxOptions): Promise<In
         } catch (err) {
           digestError = err instanceof Error ? err.message : String(err);
         }
-        // Same shared predicate the digest and overview paths use: a release
-        // the forge published with an empty body was never read, so claiming
-        // a mechanical read over it describes a pass over no text.
-        const mechanical = isMechanical(items.length, releases);
         return {
           entry: {
             ...base,
             releases,
             prerelease: bodies.some((r) => Boolean(r.prerelease)),
             items,
-            mechanical,
             digestError,
           },
-          commands: mechanical
-            ? releases.flatMap((r) => commandsFromNotes(name, r.notes))
-            : items.flatMap((i) => i.commands),
         };
       } catch (err) {
         return {
           entry: { ...base, error: err instanceof Error ? err.message : String(err) },
-          commands: [],
         };
       } finally {
         done();
@@ -243,25 +217,14 @@ export async function buildInbox(config: Config, opts: InboxOptions): Promise<In
     }),
   );
 
-  progress?.phase("grep", {
-    commands: built.reduce((n, b) => n + b.commands.length, 0),
-    roots: usage.roots.length,
-  });
-  const search = await findUsageAcross(
-    usage.roots,
-    built.map((b) => b.commands),
-  );
   // Kept in notification order — GitHub lists newest first, and an inbox that
   // re-sorted by name would bury this morning's release under the alphabet.
-  const entries = built.map((b, i) => ({ ...b.entry, hits: search.hits[i] ?? [] }));
+  const entries = built.map((b) => b.entry);
 
   return {
     entries,
     other,
     capped: raw.length >= PAGE,
-    missingUsagePaths: usage.missing,
-    noUsagePaths: config.usagePaths.length === 0,
-    usageIncomplete: search.incomplete,
     engine: opts.engine,
   };
 }

@@ -108,19 +108,12 @@ function prompt(tool: string, releases: Release[]): string {
   return `You are summarising release notes for someone who uses the \`${tool}\` CLI daily and needs to know what is newly available or newly broken.
 
 Return ONLY a JSON array, no prose, no code fence. Each element:
-{"kind":"security|breaking|feature|fix","summary":"one line","commands":["<cli surface>"],"version":"<x.y.z>"}
+{"kind":"security|breaking|feature|fix","summary":"one line","version":"<x.y.z>"}
 
 Rules:
 - Cover every user-visible change. Skip the project's own dependency bumps
   (e.g. "bump actions/checkout", "chore(deps)") — those are not usable by a
   consumer of the CLI.
-- "commands" lists the CLI surface a change touches, as a user would type it,
-  at the MOST SPECIFIC level the notes support: "gh pr view --json" beats
-  "gh pr view", which beats "gh pr". A bare top-level group like "gh" or
-  "gh pr" matches half the user's scripts and tells them nothing — leave
-  "commands" empty rather than naming a group that broad. Use [] when a change
-  is not tied to a specific command at all. These strings are grepped verbatim
-  against the user's own scripts, so never invent flags the notes do not name.
 - "summary" is one factual line. No marketing, no "improved experience".
 - Prefer kind "security" for anything describing a vulnerability or CVE, and
   "breaking" for renamed/removed commands and changed defaults.
@@ -128,33 +121,6 @@ Rules:
 Release notes:
 
 ${body}`;
-}
-
-/**
- * Whether any of these releases carries something an engine could read.
- *
- * The one predicate behind three different claims, which is why it lives here
- * rather than beside any of them: {@link digest} drops empty bodies before it
- * builds a prompt, the renderers have to say so instead of blaming the engine
- * for a call that never happened, and `mechanical` must not claim a pass over
- * text that was not there. Answering it three times is how the three answers
- * drifted apart in the first place.
- */
-export function hasReadableNotes(releases: Release[]): boolean {
-  return releases.some((r) => r.notes.trim() !== "");
-}
-
-/**
- * Whether this entry's hits were read out of the notes with no engine involved.
- *
- * Requires notes to read. A release published with an empty body — htop tags
- * every version and writes nothing — offers nothing to extract, and saying the
- * mechanical read happened there describes a pass over no text. The `hits` come
- * out empty either way, so this decides what the entry claims rather than what
- * it shows.
- */
-export function isMechanical(itemCount: number, behind: Release[]): boolean {
-  return itemCount === 0 && hasReadableNotes(behind);
 }
 
 export function parseItems(text: string): DigestItem[] {
@@ -182,7 +148,6 @@ export function parseItems(text: string): DigestItem[] {
     items.push({
       kind: KINDS.includes(kind) ? kind : "fix",
       summary,
-      commands: Array.isArray(o.commands) ? o.commands.filter((c): c is string => typeof c === "string") : [],
       version: typeof o.version === "string" ? o.version : "",
     });
   }
