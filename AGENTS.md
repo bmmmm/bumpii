@@ -15,6 +15,23 @@ pnpm format    # biome check --write
 pnpm only; npm is blocked by a `preinstall` guard. Node 24+. No build step —
 `bin/bumpii` runs `src/cli.ts` directly.
 
+**Without a TTY** — which is every agent session — those four die before they
+run anything: pnpm wants to confirm a `node_modules` purge and aborts with
+`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`. Call the binaries directly
+instead, and note that the test runner takes no path argument (`node --test
+test/` looks for a *module* called `test` and fails with MODULE_NOT_FOUND):
+
+```console
+./node_modules/.bin/tsc --noEmit
+./node_modules/.bin/biome check          # --write to format
+node --test
+```
+
+**A green run with skips is not a green run.** Sixteen tests stand up a
+loopback HTTP server as a stub forge, and a sandbox that cannot bind a port
+skips them — the summary then reads `pass 277, skipped 16` and every forge
+integration path went unchecked. Read the `skipped` line, not just `fail 0`.
+
 ## Module map
 
 `cli.ts` orchestration and exit codes · `config.ts` the tools.json file ·
