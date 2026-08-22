@@ -19,7 +19,7 @@ pnpm only; npm is blocked by a `preinstall` guard. Node 24+. No build step —
 
 `cli.ts` orchestration and exit codes · `config.ts` the tools.json file ·
 `sources.ts` forge APIs · `version.ts` probing and comparison · `judge.ts`
-engine, digest and its cache · `usage.ts` grep verdict · `render.ts` the report ·
+engine, digest and its cache · `usage.ts` reference counts · `render.ts` the report ·
 `discover.ts` brew → config entry · `exec.ts` the execFile wrapper ·
 `progress.ts` the stderr progress line · `quips.ts` what that line may say ·
 `types.ts` shared shapes, read first.
@@ -53,12 +53,14 @@ Concretely: adding a code path that can fail quietly means adding a branch in
   that captures the wrong number outranks every release and pins the entry at
   "ahead of", which `render.ts` names rather than painting green.
 - grep exits 1 for "no matches" and 2 for a real failure. Treating them alike
-  is how a missing directory became a confident "affects you: none".
-  `resolveUsagePaths` catches the path that is already gone; every other exit 2
-  — a directory this user may not read, one that disappeared mid-run, a walk
-  killed on its timeout — comes back from the three wrappers in `usage.ts` as
-  `incomplete`, and the report says "affects you: unknown" rather than a zero.
-  Whatever matches did arrive are kept: incomplete is a floor, not a wipe.
+  is how a missing directory became a confident zero — and a zero here is not
+  cosmetic: `refs === 0` is what puts a package under `no signal` and keeps it
+  away from the forge and the engine entirely. `resolveUsagePaths` catches the
+  path that is already gone; every other exit 2 — a directory this user may not
+  read, one that disappeared mid-run, a walk killed on its timeout — comes back
+  from the wrappers in `usage.ts` as `incomplete`, and the report says so above
+  the tally. Whatever matches did arrive are kept: incomplete is a floor, not a
+  wipe.
 - `execFile` promisified drops stdout on error; `exec.ts` reattaches it,
   because a non-zero exit often still printed the version.
 - Tests must not touch the network. Stub `fetch`.
