@@ -39,9 +39,18 @@ varies between runs of the same suite in the same session, so a run reporting
 `cli.ts` orchestration and exit codes · `config.ts` the tools.json file ·
 `sources.ts` forge APIs · `version.ts` probing and comparison · `judge.ts`
 engine, digest and its cache · `usage.ts` reference counts · `render.ts` the report ·
-`discover.ts` brew → config entry · `exec.ts` the execFile wrapper ·
+`discover.ts` brew → config entry · `images.ts` container → config entry ·
+`inbox.ts` the release notifications GitHub already queued ·
+`outdated.ts` what brew knows is pending, and its source cache ·
+`overview.ts` the whole machine, bucketed by what can be said about it ·
+`limit.ts` the four-line concurrency cap · `exec.ts` the execFile wrapper ·
 `progress.ts` the stderr progress line · `quips.ts` what that line may say ·
 `types.ts` shared shapes, read first.
+
+`scripts/` is not part of the tool: `progress-demo.ts` plays the real progress
+line without a forge or a model, and `setup-labels.sh` creates the labels the
+issue forms name — run it after adding or changing a form, because GitHub
+drops a requested label that does not exist without saying so.
 
 ## The rule
 
