@@ -20,7 +20,7 @@
     "check": "tsc --noEmit",
     "lint": "biome check",
     "format": "biome check --write",
-    "test": "node --test",
+    "test": "node --test --test-timeout=60000",
     "start": "node src/cli.ts"
   },
   "devDependencies": {

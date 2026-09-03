@@ -16,3 +16,6 @@ bumpii.json
 bumpii-*.json
 *.bumpii.json
 .bumpii/
+
+# Written by the CI test step; the log is read back in the same step.
+test-output.txt

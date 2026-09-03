@@ -36,6 +36,7 @@ jobs:
     # to BSD grep. Linux alone would test none of those against their real
     # userland.
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -57,8 +58,14 @@ jobs:
       - name: Test, and fail if anything skipped
         run: |
           set +e
-          out=$(pnpm test 2>&1)
+          # NOT `out=$(pnpm test 2>&1)`: a command substitution returns only
+          # at EOF on its pipe, so anything still holding the inherited
+          # descriptor keeps it open. On 2026-09-02 this step ran 2h10m and
+          # printed not one line — the suite had stalled and the substitution
+          # hid it. A file redirection waits for pnpm and nothing else.
+          pnpm test > test-output.txt 2>&1
           rc=$?
+          out=$(cat test-output.txt)
           printf '%s\n' "$out"
           [ "$rc" -eq 0 ] || exit "$rc"
           skipped=$(sed -n 's/^ℹ skipped //p' <<<"$out" | tail -1)

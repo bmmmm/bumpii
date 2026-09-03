@@ -735,6 +735,42 @@ test("--brew-upgrade --dry-run does not upgrade the machine", async (t) => {
   assert.doesNotMatch(r.stderr, /BREW WAS CALLED/, "the dry run reached brew anyway");
 });
 
+/**
+ * Signal a running CLI and hand back the code it exited with.
+ *
+ * The `exit` listener goes on BEFORE the signal, and that ordering is the
+ * whole point: if the run finishes on its own first, `exit` has already fired
+ * and a listener attached after `kill()` waits for an event that will never
+ * come again. Measured 2026-09-02 — that race is why this suite stalled here
+ * for a job's entire time budget on both ubuntu and macOS while printing not
+ * one line of failure, twice costing over two hours of runner time.
+ *
+ * It also refuses a run that was already over: signalling a process that has
+ * exited tests nothing, and a test that quietly stops testing is worse than
+ * one that fails, because it keeps reporting green.
+ *
+ * `exit` rather than `close`: `close` additionally waits for every stdio
+ * stream, which a child that outlived the run still holds open — the exact
+ * failure the assertions below are here to catch.
+ */
+async function signalAfter(
+  p: ReturnType<typeof spawnCli>,
+  ms: number,
+  signal: NodeJS.Signals,
+): Promise<number | null> {
+  let alive = true;
+  const exited = new Promise<number | null>((resolve) => {
+    p.on("exit", (code) => {
+      alive = false;
+      resolve(code);
+    });
+  });
+  await wait(ms);
+  assert.ok(alive, `the run ended before it could be signalled — ${signal} was never tested`);
+  p.kill(signal);
+  return exited;
+}
+
 test("Ctrl-C exits 130 and takes the running child with it", async (t) => {
   // Measured before this existed: SIGINT killed the process and left its child
   // running, reparented. For a judge that is a `claude` still working; for
@@ -746,10 +782,8 @@ test("Ctrl-C exits 130 and takes the running child with it", async (t) => {
   await writeConfig(home, [tool({ source: url, version: slowProbe(marker) })]);
 
   const p = spawnCli(["digest", "--no-judge"], home);
-  await wait(1200); // long enough for the probe to have started
-  p.kill("SIGINT");
-
-  const code = await new Promise<number | null>((resolve) => p.on("close", resolve));
+  // long enough for the probe to have started
+  const code = await signalAfter(p, 1200, "SIGINT");
   assert.equal(code, 130, "128+SIGINT is what a shell reports, and scripts read it");
 
   // Outlive the probe's own sleep: if it was merely orphaned rather than
@@ -783,7 +817,7 @@ test("a reader that walks away is not reported as updates being available", asyn
   p.stderr.on("data", (d) => {
     stderr += d;
   });
-  const code = await new Promise<number | null>((resolve) => p.on("close", resolve));
+  const code = await new Promise<number | null>((resolve) => p.on("exit", resolve));
 
   assert.ok(bytes > 0 && bytes < 100_000, `the reader has to leave mid-report, got ${bytes} bytes`);
   assert.notEqual(code, 1, "1 is what a scheduler acts on as pending updates");
@@ -791,25 +825,33 @@ test("a reader that walks away is not reported as updates being available", asyn
   assert.doesNotMatch(stderr, /EPIPE|Unhandled/, "a closed pipe must not print a stack trace");
 });
 
-test("a closed terminal takes the children with it, the way Ctrl-C does", async () => {
+test("a closed terminal takes the children with it, the way Ctrl-C does", async (t) => {
   // SIGHUP is what a closing terminal sends, and it is the case where stranded
   // children matter most — nobody is left watching a `claude` or a `brew
   // upgrade` that outlives the run. Node's default for it terminates without
   // running exit listeners, exactly like SIGINT, so only SIGINT and SIGTERM
   // being handled meant this path kept the old behaviour.
   //
-  // Deliberately without a stub forge, so it runs where the loopback tests
-  // cannot: an entry with no source never reaches a forge, and its probe starts
-  // either way — which is the child this is about.
+  // This used to run without a stub forge, on the assumption that "an entry
+  // with no source never reaches a forge, and its probe starts either way".
+  // Measured 2026-09-03, that is simply untrue: with no source the probe never
+  // starts at all, `digest` is done in ~1.35s, and the run was already over by
+  // the time the signal arrived. So there was never a child here to take along
+  // — the test signalled a corpse and asserted nothing, for two months.
+  //
+  // A stub forge is what keeps the run alive long enough to have a child worth
+  // signalling, the same way the Ctrl-C test above does it. The cost is that
+  // this now skips where a loopback port cannot be bound; CI forbids skips, so
+  // the coverage is real exactly where it is claimed.
+  const url = await stubForge(["v1.0.0"]);
+  if (!url) return t.skip(SKIP);
   const home = await freshHome();
   const marker = join(await freshHome(), "survived");
-  await writeConfig(home, [tool({ version: slowProbe(marker) })]);
+  await writeConfig(home, [tool({ source: url, version: slowProbe(marker) })]);
 
-  const p = spawnCli(["digest"], home);
-  await wait(1200); // long enough for the probe to have started
-  p.kill("SIGHUP");
-
-  const code = await new Promise<number | null>((resolve) => p.on("close", resolve));
+  const p = spawnCli(["digest", "--no-judge"], home);
+  // long enough for the probe to have started
+  const code = await signalAfter(p, 1200, "SIGHUP");
   assert.equal(
     code,
     129,
