@@ -170,9 +170,6 @@ function noDigestReason(releases: Release[], digestError: string | undefined, en
  * colour helpers cannot do it: they are handed strings that already contain the
  * OSC 8 escape this file builds, and stripping there would take the links with
  * it.
- *
- * Matching still works — `items[].commands` and `hits[].command` are cleaned
- * the same way, so the two sides of `includes` stay comparable.
  */
 function safeRelease(r: Release): Release {
   return { ...r, tag: safe(r.tag), version: safe(r.version), url: safe(r.url) };

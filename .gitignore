@@ -1,15 +1,13 @@
 node_modules/
-dist/
-tmp/
 package-lock.json
 yarn.lock
 .DS_Store
 
-# bumpii's own output and state. A report is the sensitive one: `hits[].file`
-# holds absolute paths into your own scripts, so a committed --json run
-# publishes the layout of your machine and the inventory it was judged against.
-# The config carries the same thing more directly — your usagePaths and every
-# tool you track. None of it belongs in a repo, this one or anyone else's.
+# bumpii's own output and state. The config is the blunt one — your usagePaths
+# and every tool you track. A run's --json is barely behind it: every report
+# embeds the config entry it was judged from, and `overview --json` lists the
+# usagePaths that have gone missing, absolute and all. None of it belongs in a
+# repo, this one or anyone else's.
 tools.json
 sources.json
 bumpii.json

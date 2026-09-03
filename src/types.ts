@@ -69,12 +69,6 @@ export interface DigestItem {
   version: string;
 }
 
-export interface UsageHit {
-  command: string;
-  file: string;
-  line: number;
-}
-
 export interface ToolReport {
   tool: ToolConfig;
   installed: string | null;
