@@ -731,7 +731,8 @@ test("--brew-upgrade --dry-run does not upgrade the machine", async (t) => {
   await chmod(join(dir, "brew"), 0o755);
 
   const r = await runCli(["digest", "--brew-upgrade", "--dry-run", "--no-judge"], home, { PATH: dir });
-  assert.match(r.stdout, /brew update && brew upgrade/, "it still has to say what it would run");
+  // Two lines, in the order they run: update before the report, upgrade after.
+  assert.match(r.stdout, /\$ brew update\n\s*\$ brew upgrade\n/, "it still has to say what it would run");
   assert.doesNotMatch(r.stderr, /BREW WAS CALLED/, "the dry run reached brew anyway");
 });
 
@@ -918,6 +919,204 @@ test("--yes exits 2 when an update command fails, not 0 for having tried", async
   assert.equal(r.code, 2);
 });
 
+/**
+ * A tool whose version is a file, so an update line can change it.
+ *
+ * Absolute `/bin/cat`, because the tests that run update commands put a
+ * hermetic PATH in front of the CLI. "The version changed" against "it did
+ * not" is then a one-character difference in the update line, which is what
+ * the checks after an update have to be able to tell apart.
+ */
+async function fileTool(
+  home: string,
+  version: string,
+  over: Record<string, unknown> | ((verFile: string) => Record<string, unknown>) = {},
+) {
+  const verFile = join(home, "version");
+  await writeFile(verFile, version);
+  // A function, for the update lines that have to name the file they change.
+  const fields = typeof over === "function" ? over(verFile) : over;
+  return {
+    verFile,
+    tool: tool({ version: { cmd: ["/bin/cat", verFile], match: "([0-9][0-9.]*)" }, ...fields }),
+  };
+}
+
+/** A fake brew on a hermetic PATH: `$1` decides, `outdated` answers JSON. */
+async function fakeBrew(script: string): Promise<string> {
+  const dir = await hermeticBin();
+  await writeFile(join(dir, "brew"), `#!/bin/sh\n${script}\n`);
+  await chmod(join(dir, "brew"), 0o755);
+  return dir;
+}
+
+const NOTHING_OUTDATED = `printf '{"formulae":[],"casks":[]}'`;
+
+test("an update command's output arrives while it is still running", async (t) => {
+  // Buffered, the first line of a ten-minute brew upgrade shows up when the
+  // last one does. This proves causality, not timing: the child prints FIRST,
+  // then waits for a file the test creates only once FIRST has reached its
+  // pipe. STREAMED can only appear if bytes crossed while the child was alive;
+  // a buffered run prints BUFFERED after ten seconds, cleanly, not a hang.
+  const url = await stubForge(["v2.0.0", "v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  const go = join(home, "GO");
+  // /bin/sleep by path, integer seconds: BSD and GNU sleep disagree about
+  // fractions, and the hermetic PATH has no sleep at all.
+  const { tool: app } = await fileTool(home, "1.0.0", (verFile) => ({
+    source: url,
+    update:
+      `printf 'FIRST\\n'; i=0; while [ ! -f ${go} ] && [ $i -lt 10 ]; do /bin/sleep 1; i=$((i+1)); done; ` +
+      `if [ -f ${go} ]; then printf 'STREAMED\\n'; else printf 'BUFFERED\\n'; fi; printf 2.0.0 > ${verFile}`,
+  }));
+  await writeConfig(home, [app]);
+
+  const p = spawnCli(["digest", "--yes", "--no-judge"], home);
+  let stdout = "";
+  let stderr = "";
+  p.stdout.on("data", (d) => {
+    stdout += d;
+    // The bare line, not the word: the report quotes the update line, FIRST
+    // included, before the command ever runs — a substring match released the
+    // child from the report alone and passed against the buffered path too.
+    if (/^FIRST$/m.test(stdout)) void writeFile(go, "");
+  });
+  p.stderr.on("data", (d) => {
+    stderr += d;
+  });
+  const code = await new Promise<number | null>((resolve) => p.on("exit", resolve));
+  // Line-anchored: the update line itself, quoted in the report and echoed
+  // before it runs, contains both words.
+  assert.match(stdout, /^STREAMED$/m, `the update's output was held back until it exited: ${stderr}`);
+  assert.doesNotMatch(stdout, /^BUFFERED$/m);
+  assert.equal(code, 0, stderr);
+});
+
+test("the echo line is not overtaken by the child it announces", async (t) => {
+  // stdout on a pipe is asynchronous, and a child with inherited stdio writes
+  // past whatever the parent still has queued — measured: at byte 65536 of a
+  // 300 KB backlog. A fast reader hides this, because the parent's queue is
+  // empty by the time the child starts, so the backlog is manufactured here:
+  // a report over the 64 KiB pipe buffer, and a reader that does not read for
+  // 300 ms. Stated honestly: without the flush this can still pass on a quiet
+  // machine, which is why the report size is asserted as a fixture guard.
+  const tags = Array.from({ length: 3000 }, (_, i) => `v1.0.${i + 1}`);
+  const url = await stubForge(tags);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  const { tool: app } = await fileTool(home, "1.0.0", { source: url, update: "printf 'FIRST\\n'" });
+  await writeConfig(home, [app]);
+
+  const p = spawnCli(["digest", "--yes", "--no-judge"], home);
+  p.stdout.pause();
+  await wait(300);
+  let stdout = "";
+  p.stdout.on("data", (d) => {
+    stdout += d;
+  });
+  p.stdout.resume();
+  await new Promise((resolve) => p.on("exit", resolve));
+  assert.ok(
+    stdout.length > 65536,
+    `fixture guard: the report has to exceed the pipe buffer, got ${stdout.length}`,
+  );
+  const echo = stdout.indexOf("$ printf");
+  const first = stdout.indexOf("FIRST\n");
+  assert.ok(echo >= 0 && first >= 0, "both the echo line and the child's line have to be there");
+  assert.ok(echo < first, "the child's output arrived before the line announcing it");
+});
+
+test("a reader that leaves during an update is not an update failure", async (t) => {
+  // The child inherits the pipe, so when `| head` has gone its next write is
+  // SIGPIPE. That is the reader walking away — the same event
+  // exitQuietlyOnBrokenPipe answers 141 for when it hits this process's own
+  // write — and neither 1 (pending) nor 2 (failed), which a scheduler would
+  // act on.
+  const url = await stubForge(["v2.0.0", "v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  const { tool: app } = await fileTool(home, "1.0.0", {
+    source: url,
+    update: "printf 'FIRST\\n'; /bin/sleep 1; printf 'SECOND\\n'",
+  });
+  await writeConfig(home, [app]);
+
+  const p = spawnCli(["digest", "--yes", "--no-judge"], home);
+  let stdout = "";
+  p.stdout.on("data", (d) => {
+    stdout += d;
+    // The child's own line, not the report quoting its command: the reader has
+    // to leave while the child is running, or the parent's echo hits EPIPE
+    // first and this measures exitQuietlyOnBrokenPipe instead.
+    if (/^FIRST$/m.test(stdout)) p.stdout.destroy();
+  });
+  p.stdout.on("error", () => {});
+  const code = await new Promise<number | null>((resolve) => p.on("exit", resolve));
+  assert.equal(code, 141);
+});
+
+test("--brew-upgrade runs brew update before brew outdated, and brew upgrade last", async (t) => {
+  // The "other packages pending" count comes from `brew outdated`, which
+  // answers from the tap as last fetched. Updating first is what makes that
+  // count current; upgrading last is what keeps the report ahead of it.
+  const url = await stubForge(["v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  const { tool: app } = await fileTool(home, "1.0.0", { source: url });
+  await writeConfig(home, [app]);
+  const log = join(home, "brew.log");
+  const dir = await fakeBrew(`echo "$1" >> ${log}\ncase "$1" in outdated) ${NOTHING_OUTDATED} ;; esac`);
+
+  const r = await runCli(["digest", "--brew-upgrade", "--no-judge"], home, { PATH: dir });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(await readFile(log, "utf8"), "update\noutdated\nupgrade\n");
+});
+
+test("a failed brew update skips the upgrade instead of running it blind", async (t) => {
+  // `brew update && brew upgrade` had the && for a reason; the two now run
+  // apart, and the reason has to survive the split. A count of pending
+  // packages from a tap that just failed to refresh is not offered either.
+  const url = await stubForge(["v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  const { tool: app } = await fileTool(home, "1.0.0", { source: url });
+  await writeConfig(home, [app]);
+  const dir = await fakeBrew(
+    `case "$1" in\n  update) echo 'no network' >&2; exit 1 ;;\n  upgrade) echo 'BREW UPGRADE WAS CALLED' ;;\n  outdated) ${NOTHING_OUTDATED} ;;\nesac`,
+  );
+
+  const r = await runCli(["digest", "--brew-upgrade", "--no-judge"], home, { PATH: dir });
+  // execFile's message carries the command's stderr on its own lines.
+  assert.match(r.stderr, /brew update failed: [\s\S]*no network/);
+  assert.match(r.stderr, /brew upgrade skipped/);
+  assert.doesNotMatch(r.stdout + r.stderr, /BREW UPGRADE WAS CALLED/);
+  assert.doesNotMatch(r.stdout, /other package/, "a stale count was presented as current");
+  assert.equal(r.code, 2);
+});
+
+test("brew runs without its env hints, unless the user set the variable themselves", async (t) => {
+  // Six lines of HOMEBREW_NO_ENV_HINTS advice repeated on every run. Set for
+  // the child only when unset: an exported-but-empty value is the user's own
+  // setting and stays — `??`, the opposite of the XDG_CONFIG_HOME rule.
+  const url = await stubForge(["v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  const { tool: app } = await fileTool(home, "1.0.0", { source: url });
+  await writeConfig(home, [app]);
+  const dir = await fakeBrew(
+    `case "$1" in\n  upgrade) echo "HINTS=\${HOMEBREW_NO_ENV_HINTS-unset}" ;;\n  outdated) ${NOTHING_OUTDATED} ;;\nesac`,
+  );
+
+  const r = await runCli(["digest", "--brew-upgrade", "--no-judge"], home, { PATH: dir });
+  assert.match(r.stdout, /^HINTS=1$/m, r.stdout);
+  const kept = await runCli(["digest", "--brew-upgrade", "--no-judge"], home, {
+    PATH: dir,
+    HOMEBREW_NO_ENV_HINTS: "",
+  });
+  assert.match(kept.stdout, /^HINTS=$/m, "an exported-but-empty variable was overwritten");
+});
+
 test("a --json report larger than the pipe buffer arrives whole", async (t) => {
   // process.exit drops whatever Node still has queued for stdout, and stdout
   // is asynchronous on a pipe — which is every consumer reading this with
@@ -950,13 +1149,22 @@ test("--json --yes keeps stdout to one document", async (t) => {
   const url = await stubForge(["v2.0.0", "v1.0.0"]);
   if (!url) return t.skip(SKIP);
   const home = await freshHome();
-  await writeConfig(home, [tool({ source: url, update: "echo pretending-to-upgrade" })]);
+  // A real update, not a pretend one: the version file moves to 2.0.0, so the
+  // exit code below is 0 for the right reason once the run checks its work.
+  const { tool: app } = await fileTool(home, "1.0.0", (verFile) => ({
+    source: url,
+    update: `echo pretending-to-upgrade; printf 2.0.0 > ${verFile}`,
+  }));
+  await writeConfig(home, [app]);
 
   const r = await runCli(["digest", "--json", "--yes", "--no-judge"], home);
   assert.doesNotThrow(
     () => JSON.parse(r.stdout),
     `stdout must be the document alone, got: ${r.stdout.slice(-200)}`,
   );
-  assert.match(r.stderr, /pretending-to-upgrade/, "the update output still has to be shown");
+  // Line-anchored: the document quotes the update line inside a JSON string;
+  // what must not be there is the command's bare output line.
+  assert.doesNotMatch(r.stdout, /^pretending-to-upgrade$/m, "the update's output leaked into the document");
+  assert.match(r.stderr, /^pretending-to-upgrade$/m, "the update output still has to be shown");
   assert.equal(r.code, 0, "the update itself succeeded");
 });

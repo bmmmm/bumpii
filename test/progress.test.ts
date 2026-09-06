@@ -197,6 +197,27 @@ test("the line never exceeds the terminal width", (t) => {
   }
 });
 
+test("a paused line draws nothing while a child owns the terminal", (t) => {
+  // An update command now writes to the terminal itself, on the same stderr
+  // row the spinner redraws every frame — and the `\r\x1b[K` that clears a
+  // frame would take brew's last line with it. So pause() has to do two things
+  // at once: erase what is drawn, and stop the timer chain. Every CLI test
+  // pipes stderr and gets the silent object, so this is the only place the
+  // guarantee can be measured.
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  asTty(120, () => {
+    const p = startProgress();
+    p.phase("update");
+    advance(t, 1000); // past the warm-up: a frame is on the row
+    const during = capture(process.stderr, () => {
+      p.pause();
+      advance(t, 5000); // a brew upgrade's worth of frames that must not fire
+    });
+    assert.equal(during, ERASE_LINE + SHOW_CURSOR, "a frame was drawn while the line was paused");
+    p.stop();
+  });
+});
+
 test("output written through the progress object never lands on a spinner frame", (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   asTty(120, () => {

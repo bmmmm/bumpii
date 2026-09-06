@@ -19,12 +19,12 @@ import {
   leaves,
   untrackedFormulae,
 } from "./discover.ts";
-import { killChildren, run } from "./exec.ts";
+import { killChildren, run, stream } from "./exec.ts";
 import { discoverImage, untrackedContainers } from "./images.ts";
 import { buildInbox, markThreadsRead, shownThreads } from "./inbox.ts";
 import { digest, type Engine, resolveEngine } from "./judge.ts";
 import { limiter } from "./limit.ts";
-import { brewOutdated } from "./outdated.ts";
+import { brewOutdated, type OutdatedPackage } from "./outdated.ts";
 import { buildOverview, namesOf, untrackedOutdatedCount } from "./overview.ts";
 import { type Progress, startProgress } from "./progress.ts";
 import { renderInbox, renderOverview, renderReport } from "./render.ts";
@@ -68,7 +68,7 @@ const HELP = `bumpii — what changed in the CLIs and containers you run, judged
   bumpii scan --unref     list formulae no file of yours names
   bumpii digest --yes     digest, then run each tool's update command
   bumpii digest --brew-upgrade
-                          digest, then run brew update && brew upgrade —
+                          brew update, the digest, then brew upgrade —
                           everything brew has pending, tracked or not
 
 Any argument at all runs the command it names, so 'bumpii --only gh' and
@@ -92,7 +92,7 @@ Options:
   --dry-run           with add: show the entries, write nothing
                       with --yes/--brew-upgrade: print the update commands
                       that would run, and run none of them
-  --brew-upgrade      after the digest, run brew update && brew upgrade —
+  --brew-upgrade      brew update before the report, brew upgrade after it —
                       unjudged, and not limited to tools.json
   -h, --help
 
@@ -838,6 +838,23 @@ async function dispatch(progress: Progress): Promise<number> {
   let judging = false;
   const done = (): void => progress.set({ done: ++finished });
 
+  // A --brew-upgrade run's `brew update` starts here, alongside the probes and
+  // forge fetches, and is awaited before `brew outdated` below — so the "other
+  // packages pending" line counts against a tap refreshed by this run, not
+  // whenever brew last happened to update it. Started this early it costs no
+  // wall-clock: it is network- and git-bound while the probes are not. The
+  // result is converted at once so a failure can never surface as an
+  // unhandled rejection while the digest is still working, and it is argv,
+  // not `sh -c`, so a machine without brew fails with a real ENOENT rather
+  // than sh's 127.
+  const brewUpdate: Promise<string | undefined> =
+    args.brewUpgrade && !args.dryRun
+      ? run("brew", ["update"], { timeout: 600_000, env: updateEnv() }).then(
+          () => undefined,
+          (err) => (err as Error).message,
+        )
+      : Promise.resolve(undefined);
+
   progress.phase("fetch", { total: tools.length, done: 0, tools: tools.length });
   const built: { report: ToolReport }[] = await Promise.all(
     tools.map(async (tool): Promise<{ report: ToolReport }> => {
@@ -937,11 +954,23 @@ async function dispatch(progress: Progress): Promise<number> {
   // tools.json does not track. `undefined` on failure — brew missing (Linux
   // CI, no Homebrew) or erroring costs this line, not the digest above it.
   let otherPending: number | undefined;
+  // Kept for the re-probe after the update: what brew itself listed as
+  // pending is what tells a "still 1.0.0" apart from brew having nothing.
+  let outdated: OutdatedPackage[] | undefined;
   progress.phase("brew");
-  try {
-    otherPending = untrackedOutdatedCount(await brewOutdated(), config.tools);
-  } catch {
-    otherPending = undefined;
+  const brewUpdateError = await brewUpdate;
+  if (brewUpdateError !== undefined) {
+    // No count from a tap that just failed to refresh: it would read as
+    // current and be whatever the last successful update left. The line
+    // saying why stands where the count would have.
+    progress.err(`brew update failed: ${brewUpdateError}\n`);
+  } else {
+    try {
+      outdated = await brewOutdated();
+      otherPending = untrackedOutdatedCount(outdated, config.tools);
+    } catch {
+      otherPending = undefined;
+    }
   }
 
   // Everything below writes the report, so the line comes down first — an
@@ -983,7 +1012,10 @@ async function dispatch(progress: Progress): Promise<number> {
       }
       runnable.push(`  $ ${r.tool.update}`);
     }
-    if (args.brewUpgrade) runnable.push("  $ brew update && brew upgrade");
+    // Two lines because they run apart: update before the report, upgrade
+    // after it. Listing them as one `&&` described an ordering the run no
+    // longer has.
+    if (args.brewUpgrade) runnable.push("  $ brew update", "  $ brew upgrade");
     process.stdout.write(
       runnable.length > 0
         ? `\nwould run ${runnable.length} command${runnable.length === 1 ? "" : "s"}:\n${runnable.join("\n")}\n` +
@@ -1005,9 +1037,48 @@ async function dispatch(progress: Progress): Promise<number> {
   // combination an unattended run uses, and it is the one that was broken.
   const say = args.json ? (t: string) => progress.err(t) : (t: string) => progress.out(t);
 
+  /**
+   * One update command, with the terminal — or buffered under --json.
+   *
+   * The progress line comes down before the child starts and goes back up
+   * after it, and that order is load-bearing: a child writing to an inherited
+   * stderr shares the row the spinner redraws every frame, and the `\r\x1b[K`
+   * that clears the frame takes the child's last line with it. Between
+   * commands the spinner is the right thing to show; during one, the
+   * command's own output is — a `brew upgrade` pouring nine bottles used to
+   * be minutes of spinner and then ninety lines at once.
+   *
+   * No timeout on the streamed path: somebody is watching, and Ctrl-C reaches
+   * the child through killChildren(). Under --json nothing is watching, the
+   * document is already on stdout, and the buffered run keeps its ceiling —
+   * with the child's stderr shown too, which the old buffered path dropped.
+   */
+  const runUpdate = async (file: string, argv: string[], echo: string, timeout: number): Promise<void> => {
+    progress.pause();
+    say(`\n$ ${echo}\n`);
+    try {
+      if (args.json) {
+        const out = await run(file, argv, { timeout, env: updateEnv() });
+        say(out.stdout);
+        if (out.stderr) say(out.stderr);
+      } else {
+        await flushStdio();
+        await stream(file, argv, { env: updateEnv() });
+      }
+    } finally {
+      progress.resume();
+    }
+  };
+
+  // A child that inherited a pipe whose reader has gone dies of SIGPIPE, the
+  // way `bumpii digest --yes | head` ends it. That is the reader leaving, not
+  // an update failing, and exitQuietlyOnBrokenPipe already answers 141 for the
+  // same event when it hits this process's own write.
+  const readerLeft = (err: unknown): boolean => /SIGPIPE/.test((err as Error).message);
+
   if (args.yes) {
     // Picked back up rather than started fresh: the report is printed but the
-    // command is not over, and `brew upgrade` is the longest silence in it.
+    // command is not over.
     const pending = reports.filter((r) => !r.error && r.installed && r.behind.length > 0);
     progress.phase("update", { total: pending.length, done: 0 });
     progress.resume();
@@ -1032,11 +1103,10 @@ async function dispatch(progress: Progress): Promise<number> {
         progress.step();
         continue;
       }
-      say(`\n$ ${r.tool.update}\n`);
       try {
-        const out = await run("/bin/sh", ["-c", r.tool.update], { timeout: 600_000 });
-        say(out.stdout);
+        await runUpdate("/bin/sh", ["-c", r.tool.update], r.tool.update, 600_000);
       } catch (err) {
+        if (readerLeft(err)) return 141;
         // Keep going: one formula failing to build should not block the others.
         updateFailures++;
         progress.err(`${r.tool.name}: update failed: ${(err as Error).message}\n`);
@@ -1051,18 +1121,20 @@ async function dispatch(progress: Progress): Promise<number> {
   // tracked or not, with none of it read first. Two different kinds of
   // "yes", so one flag cannot silently imply the other.
   if (args.brewUpgrade && !args.dryRun) {
-    const cmd = "brew update && brew upgrade";
-    say(`\n$ ${cmd}\n`);
-    // Twenty minutes of allowance and not a byte of output until it returns —
-    // the one place in this tool where a spinner is not decoration.
     progress.phase("update");
-    progress.resume();
-    try {
-      const out = await run("/bin/sh", ["-c", cmd], { timeout: 1_200_000 });
-      say(out.stdout);
-    } catch (err) {
+    if (brewUpdateError !== undefined) {
+      // The `&&` of `brew update && brew upgrade`, kept across the split: an
+      // upgrade against a tap that failed to refresh is not what was asked for.
       updateFailures++;
-      progress.err(`brew update && brew upgrade failed: ${(err as Error).message}\n`);
+      progress.err("brew upgrade skipped — brew update failed above\n");
+    } else {
+      try {
+        await runUpdate("brew", ["upgrade"], "brew upgrade", 1_200_000);
+      } catch (err) {
+        if (readerLeft(err)) return 141;
+        updateFailures++;
+        progress.err(`brew upgrade failed: ${(err as Error).message}\n`);
+      }
     }
     progress.pause();
   }
@@ -1127,6 +1199,40 @@ function flushed(stream: NodeJS.WriteStream): Promise<void> {
 async function exitAfterFlush(code: number): Promise<never> {
   await Promise.all([flushed(process.stdout), flushed(process.stderr)]);
   process.exit(code);
+}
+
+/**
+ * Both streams drained before a child inherits them.
+ *
+ * A child spawned with stdio "inherit" writes to the file descriptors
+ * directly, past whatever Node still has queued on its own stream — and on a
+ * pipe that queue is real. Measured: 300 KB queued, child spawned at once, and
+ * the child's line landed at byte 65536 of the reader's input, ahead of the
+ * 234 KB the parent had not yet written; with a write callback awaited first,
+ * at byte 300000. Without this the `$ brew upgrade` echo can arrive after
+ * brew's own output — the failure exitAfterFlush documents, in the other
+ * direction. stderr too: `2>&1 | tee` puts both on one pipe, and the progress
+ * line's own pause writes an escape sequence there.
+ */
+async function flushStdio(): Promise<void> {
+  await Promise.all([flushed(process.stdout), flushed(process.stderr)]);
+}
+
+/**
+ * The environment an update command runs in: the caller's, plus brew told to
+ * keep its six lines of env hints to itself — they repeated on every run and
+ * said nothing about the packages.
+ *
+ * `??`, not `||`, and not the rule configPath states for XDG_CONFIG_HOME: a
+ * variable the user exported is theirs, even exported empty, and only an
+ * unset one is filled in. An empty path is not a path; an empty setting may
+ * well be a setting. The line is arbitrary shell from a config this tool never
+ * wrote, so the variable reaches non-brew commands too — harmless, only brew
+ * reads it. Spreading process.env is not cosmetic: passing `env` at all hands
+ * the child that object as its whole environment.
+ */
+function updateEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, HOMEBREW_NO_ENV_HINTS: process.env.HOMEBREW_NO_ENV_HINTS ?? "1" };
 }
 
 /**
