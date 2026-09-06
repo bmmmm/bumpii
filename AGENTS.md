@@ -66,6 +66,9 @@ Concretely: adding a code path that can fail quietly means adding a branch in
 
 ## Traps in this codebase
 
+A trap names the failure and points at the docblock that owns the mechanism;
+it does not repeat it. The measurements live on the function, once.
+
 - `compareVersions` splits the core on `.` and treats `-` as the start of a
   prerelease tail, and the two are opposite answers: a letter riding on a
   segment continues the sequence (tmux tags `3.5a` after `3.5`, openssl went
@@ -79,7 +82,10 @@ Concretely: adding a code path that can fail quietly means adding a branch in
   not the matching line. Patterns need a line anchor — `^` works, `$` does not,
   because stderr is appended after stdout and there is no `m` flag. A pattern
   that captures the wrong number outranks every release and pins the entry at
-  "ahead of", which `render.ts` names rather than painting green.
+  "ahead of", which `render.ts` names rather than painting green. The re-probe
+  after an update calls the same function and inherits the trap whole: an
+  unanchored fixture read "now 4" out of cat's error path once the version
+  file was gone (`test/cli.test.ts`, `fileTool`).
 - grep exits 1 for "no matches" and 2 for a real failure. Treating them alike
   is how a missing directory became a confident zero — and a zero here is not
   cosmetic: `refs === 0` is what puts a package under `no signal` and keeps it
@@ -175,38 +181,22 @@ Concretely: adding a code path that can fail quietly means adding a branch in
 - Read env vars that name a path with `||`, never `??`: an exported-but-empty
   `XDG_CONFIG_HOME` is not a value, and `??` only falls back on undefined —
   which put `tools.json` in whatever directory the command ran from.
-- The opposite rule for a *setting*: `HOMEBREW_NO_ENV_HINTS` is filled in with
-  `??`, because a variable the user exported — even exported empty — is
-  theirs, and `||` would overwrite it. An empty path is not a path; an empty
-  setting may well be a setting. The comment on `updateEnv` says which rule
-  applies and why, so the next reader does not "fix" it to match `configPath`.
-- A child spawned with inherited stdio writes to the file descriptor directly,
-  past whatever Node still has queued on `process.stdout` — and on a pipe that
-  queue is real. Measured: 300 KB queued, child spawned at once, and its line
-  landed at byte 65536 of the reader's input, ahead of 234 KB the parent had
-  not written yet; with a write callback awaited first, at byte 300000. So
-  `flushStdio()` runs before every `stream()`, for stderr too (`2>&1 | tee`,
-  and `pause()` itself writes an escape sequence there). The same failure
-  `exitAfterFlush` guards against, in the other direction.
-- The progress line is **paused, not resumed**, around a streamed child. It
-  redraws on the row the child is writing to, and its `\r\x1b[K` erases the
-  child's last line. Every CLI test pipes stderr and gets the silent object,
-  so `test/progress.test.ts` is the only place this can be measured.
-- `spawn` on a missing binary emits `error` and then `close`, never `exit`.
-  `stream()` listens on both `error` and `exit`; an `exit`-only version hangs
-  forever on ENOENT, a `close`-only one reports "exited -2".
-- Every report quotes the update line it is about, and the run echoes it again
-  before running it — so a test asserting on any word of that line is
-  satisfied by the report alone, whatever the code did. Two such assertions
-  passed against the buffered path they were written to rule out; both were
-  caught only by reverting the hunk. Anchor on the command's own output
-  (`/^STREAMED$/m`), never on a substring, and drive the fixture from that
-  anchored match too.
-- The re-probe after an update trusts `version.match` exactly as the first
-  probe does, line-anchor trap included: a test fixture with an unanchored
-  `([0-9][0-9.]*)` read **"now 4"** out of cat's error path
-  (`/var/folders/fy/4rj…`) once the version file was gone, and called the tool
-  updated. `^` in the fixture, and nothing in the code, is what fixed it.
+- The opposite rule for a *setting*: `HOMEBREW_NO_ENV_HINTS` takes `??`, an
+  exported-but-empty value being the user's own. Why, on `updateEnv` in
+  `cli.ts` — do not "fix" it to match `configPath`.
+- A child with inherited stdio overtakes what Node still has queued on a pipe
+  (measured at byte 65536 of 300 KB), so `flushStdio()` precedes every
+  `stream()`, stderr included. Numbers and reasoning on `flushStdio` in
+  `cli.ts`; `exitAfterFlush` is the same failure in the other direction.
+- The progress line is **paused, not resumed**, around a streamed child, or
+  its `\r\x1b[K` erases the child's last line. Only `test/progress.test.ts`
+  can measure this — every CLI test pipes stderr and gets the silent object.
+- `spawn` on a missing binary emits `error` and never `exit`; `stream()` in
+  `exec.ts` listens on both, and its docblock says what each variant does.
+- The report quotes the update line and the run echoes it, so a test asserting
+  on any word of that line passes on the report alone. Two did, against the
+  buffered path they were written to rule out. Anchor on the command's own
+  output line (`/^STREAMED$/m`) — see the streaming tests in `test/cli.test.ts`.
 - With the env hints off and nothing pending, `brew upgrade` prints not one
   byte, so a `--brew-upgrade` run ends on a bare `$ brew upgrade`. The report's
   "no other brew updates pending" line above it (a measured zero — `undefined`
