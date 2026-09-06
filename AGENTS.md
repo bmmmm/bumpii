@@ -195,6 +195,13 @@ Concretely: adding a code path that can fail quietly means adding a branch in
 - `spawn` on a missing binary emits `error` and then `close`, never `exit`.
   `stream()` listens on both `error` and `exit`; an `exit`-only version hangs
   forever on ENOENT, a `close`-only one reports "exited -2".
+- Every report quotes the update line it is about, and the run echoes it again
+  before running it — so a test asserting on any word of that line is
+  satisfied by the report alone, whatever the code did. Two such assertions
+  passed against the buffered path they were written to rule out; both were
+  caught only by reverting the hunk. Anchor on the command's own output
+  (`/^STREAMED$/m`), never on a substring, and drive the fixture from that
+  anchored match too.
 - The re-probe after an update trusts `version.match` exactly as the first
   probe does, line-anchor trap included: a test fixture with an unanchored
   `([0-9][0-9.]*)` read **"now 4"** out of cat's error path
