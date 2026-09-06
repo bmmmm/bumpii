@@ -15,6 +15,52 @@ export function configPath(): string {
   return join(xdg || join(homedir(), ".config"), "bumpii", "tools.json");
 }
 
+// What an entry's `update` line is. Three questions, asked from cli.ts (the
+// update loop and `list`), overview.ts (matching brew's names) and render.ts
+// (saying what `brew upgrade` will not run) — one home for them, in the module
+// that owns the file they read, rather than a copy per caller: two copies of
+// `formulaOf` had already drifted to different return shapes.
+
+/**
+ * The Homebrew formula an update command upgrades, if it is one; null for any
+ * line that is not a brew command.
+ *
+ * Options are skipped rather than taken as the first word after the
+ * subcommand: `brew upgrade --fetch-HEAD gh` upgrades gh, and reading
+ * "--fetch-HEAD" as the formula made `scan` keep offering a tool that was
+ * already tracked. A tap-qualified name (`jundot/omlx/omlx`) is returned as
+ * written; `namesOf` in overview.ts adds the short form brew prints.
+ */
+export function formulaOf(update: string): string | null {
+  const m = /brew\s+(?:upgrade|install)\s+(.+)/.exec(update);
+  const formula = m?.[1]?.split(/\s+/).find((w) => w && !w.startsWith("-"));
+  return formula ?? null;
+}
+
+/**
+ * Whether an update line is still the placeholder `add --image` writes.
+ *
+ * It matters that this is not just skipped: `sh -c` runs a comment happily and
+ * exits 0, so an unfinished entry would report a successful update that never
+ * happened — and `--yes` would exit 0 with it.
+ */
+export function isPlaceholderUpdate(update: string): boolean {
+  return update.trim().startsWith("#");
+}
+
+/**
+ * Whether an update line deliberately says "there is no command for this".
+ *
+ * A different statement from a placeholder: `# complete this: …` is an entry
+ * waiting to be finished, and `list` rightly counts it as a gap; `manual: open
+ * the app's updater` is the entry being complete — some tools (Ghostty's
+ * Sparkle updater) simply have no CLI trigger. `--yes` skips both, but only
+ * the placeholder is a failure: nothing about a manual entry is broken.
+ */
+export function isManualUpdate(update: string): boolean {
+  return /^manual(:|$)/i.test(update.trim());
+}
+
 /**
  * Shipped as the starting point rather than an empty file: the two CLIs this
  * was built for are already wired, so `bumpii init` produces something that

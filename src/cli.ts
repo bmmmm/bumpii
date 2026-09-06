@@ -5,6 +5,8 @@ import {
   EDITABLE_FIELDS,
   type EditableField,
   initConfig,
+  isManualUpdate,
+  isPlaceholderUpdate,
   loadConfig,
   removeTools,
   setToolField,
@@ -23,7 +25,7 @@ import { buildInbox, markThreadsRead, shownThreads } from "./inbox.ts";
 import { digest, type Engine, resolveEngine } from "./judge.ts";
 import { limiter } from "./limit.ts";
 import { brewOutdated } from "./outdated.ts";
-import { buildOverview, untrackedOutdatedCount } from "./overview.ts";
+import { buildOverview, namesOf, untrackedOutdatedCount } from "./overview.ts";
 import { type Progress, startProgress } from "./progress.ts";
 import { renderInbox, renderOverview, renderReport } from "./render.ts";
 import { channelStatus, listReleases, parseSource } from "./sources.ts";
@@ -244,46 +246,6 @@ export function parseArgs(argv: string[]): Args {
     else a.rest.push(v);
   }
   return a;
-}
-
-/**
- * The Homebrew formula an update command upgrades, if it is one.
- *
- * Options are skipped rather than taken as the first word after the
- * subcommand: `brew upgrade --fetch-HEAD gh` upgrades gh, and reading
- * "--fetch-HEAD" as the formula made `scan` keep offering a tool that was
- * already tracked. Returns an empty list for anything that is not a brew
- * command, so callers can spread it.
- */
-export function formulaOf(update: string): string[] {
-  const m = /brew\s+(?:upgrade|install)\s+(.+)/.exec(update);
-  if (!m?.[1]) return [];
-  const formula = m[1].split(/\s+/).find((word) => word && !word.startsWith("-"));
-  return formula ? [formula] : [];
-}
-
-/**
- * Whether an update line is still the placeholder `add --image` writes.
- *
- * It matters that this is not just skipped: `sh -c` runs a comment happily and
- * exits 0, so an unfinished entry would report a successful update that never
- * happened — and `--yes` would exit 0 with it.
- */
-export function isPlaceholderUpdate(update: string): boolean {
-  return update.trim().startsWith("#");
-}
-
-/**
- * Whether an update line deliberately says "there is no command for this".
- *
- * A different statement from a placeholder: `# complete this: …` is an entry
- * waiting to be finished, and `list` rightly counts it as a gap; `manual: open
- * the app's updater` is the entry being complete — some tools (Ghostty's
- * Sparkle updater) simply have no CLI trigger. `--yes` skips both, but only
- * the placeholder is a failure: nothing about a manual entry is broken.
- */
-export function isManualUpdate(update: string): boolean {
-  return /^manual(:|$)/i.test(update.trim());
 }
 
 /**
@@ -538,7 +500,7 @@ async function dispatch(progress: Progress): Promise<number> {
     // formula-keyed match `scan` uses, so an entry already tracked under a
     // different binary name is not offered again. Dependencies are never
     // offered: nobody wants a digest of libpng's release notes.
-    const tracked = new Set(cfg.tools.flatMap((t) => [t.name, ...formulaOf(t.update)]));
+    const tracked = new Set(cfg.tools.flatMap((t) => namesOf(t)));
     const addable = requested.filter((f) => !tracked.has(f.name)).map((f) => f.name);
     if (addable.length > 0) {
       process.stdout.write(`\nnot tracked yet:\n  bumpii add ${addable.slice(0, 4).join(" ")}\n`);
@@ -640,7 +602,7 @@ async function dispatch(progress: Progress): Promise<number> {
   if (args.cmd === "scan") {
     const cfg = await loadConfig();
     // Key by the formula each entry upgrades, not by its binary name.
-    const tracked = new Set(cfg.tools.flatMap((t) => [t.name, ...formulaOf(t.update)]));
+    const tracked = new Set(cfg.tools.flatMap((t) => namesOf(t)));
     progress.phase("brew");
     const untracked = await untrackedFormulae(tracked);
     progress.pause();

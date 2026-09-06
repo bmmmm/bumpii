@@ -1,14 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  containerOf,
-  formulaOf,
-  isManualUpdate,
-  isPlaceholderUpdate,
-  parseArgs,
-  parseWindow,
-} from "../src/cli.ts";
+import { containerOf, parseArgs, parseWindow } from "../src/cli.ts";
+import { formulaOf, isManualUpdate, isPlaceholderUpdate } from "../src/config.ts";
 import { bare, parseSource } from "../src/sources.ts";
 import type { Release, ToolConfig } from "../src/types.ts";
 import {
@@ -274,10 +268,14 @@ test("formulaOf skips options instead of reading one as the formula", () => {
   // `scan` matches tracked tools by the formula their update command upgrades.
   // Taking "--fetch-HEAD" as the formula meant an already-tracked tool kept
   // being offered as untracked.
-  assert.deepEqual(formulaOf("brew upgrade gh"), ["gh"]);
-  assert.deepEqual(formulaOf("brew upgrade --fetch-HEAD gh"), ["gh"]);
-  assert.deepEqual(formulaOf("brew install --cask foo"), ["foo"]);
-  assert.deepEqual(formulaOf("brew upgrade jundot/omlx/omlx"), ["jundot/omlx/omlx"]);
+  assert.equal(formulaOf("brew upgrade gh"), "gh");
+  assert.equal(formulaOf("brew upgrade --fetch-HEAD gh"), "gh");
+  assert.equal(formulaOf("brew install --cask foo"), "foo");
+  assert.equal(formulaOf("brew upgrade jundot/omlx/omlx"), "jundot/omlx/omlx");
+  // Anything else is null, not "": the renderer's "not run by brew upgrade"
+  // marker and the re-probe's blame both branch on it.
+  assert.equal(formulaOf("claude update"), null);
+  assert.equal(formulaOf("manual: open the app's updater"), null);
 });
 
 test("parseArgs routes the entry-management subcommands", () => {
@@ -308,8 +306,8 @@ test("an unfinished update line is recognised as a placeholder", () => {
 });
 
 test("formulaOf yields nothing for an update command that is not brew", () => {
-  assert.deepEqual(formulaOf("cargo install ripgrep"), []);
-  assert.deepEqual(formulaOf("brew upgrade"), [], "a bare upgrade names no formula");
+  assert.equal(formulaOf("cargo install ripgrep"), null);
+  assert.equal(formulaOf("brew upgrade"), null, "a bare upgrade names no formula");
 });
 
 /** An entry whose only interesting part here is the version probe. */

@@ -9,6 +9,7 @@
 // yours names gets a version and a link and nothing more, because there is no
 // usage to judge a release note against, and running a model over it would
 // produce an opinion rather than a verdict.
+import { formulaOf } from "./config.ts";
 import { digest, type Engine } from "./judge.ts";
 import { limiter } from "./limit.ts";
 import {
@@ -117,19 +118,9 @@ export interface Overview {
 }
 
 /**
- * The formula an entry upgrades, so a tracked tool is recognised under the name
- * brew reports rather than the binary it is keyed on (forgejo-cli ships `fj`).
- * Kept here rather than imported from cli.ts to avoid a module that runs a CLI.
- */
-function formulaOf(update: string): string | null {
-  const m = /brew\s+(?:upgrade|install)\s+(.+)/.exec(update);
-  const formula = m?.[1]?.split(/\s+/).find((w) => w && !w.startsWith("-"));
-  return formula ?? null;
-}
-
-/**
  * Every name a tracked tool answers to, for matching against brew's output and
- * for counting references.
+ * for counting references. The formula is what brew reports, rather than the
+ * binary the entry is keyed on (forgejo-cli ships `fj`).
  *
  * Both uses need all of them. brew reports `forgejo-cli`; every script calls
  * `fj`. Counting references under brew's name alone measured the wrong string —
