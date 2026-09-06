@@ -132,20 +132,14 @@ it does not repeat it. The measurements live on the function, once.
   `sh -c` defers SIGINT until its current foreground command finishes, so
   passing SIGINT through let a probe run to completion and write its output
   after the run had been cancelled.
-- `mock.timers.tick(5000)` runs only the timers that were already scheduled
-  when it was called, so it advances a chain of `setTimeout`s by exactly one
-  frame. The progress line is such a chain (each frame states its own
-  duration). Use the `advance()` helper in `test/progress.test.ts`, or the
-  assertions after it measure a single frame while reading as if they covered
-  five seconds.
+- `mock.timers.tick(5000)` advances the progress line's `setTimeout` chain by
+  exactly one frame, so timing assertions after it measure nothing. Use the
+  `advance()` helper in `test/progress.test.ts`; its docblock says why.
 - `digest` answers from `~/.cache/bumpii/digests/` before it calls anything, so
   a test that does not point `XDG_CACHE_HOME` at a scratch directory reads
-  whatever the last real run left behind. The key hashes the engine, the model
-  and the **whole prompt**, which is why there is no schema version to bump:
-  editing `prompt` retires exactly the entries it invalidates. Store the raw
-  text rather than parsed items — a later fix to `parseItems` then reaches what
-  is already cached — and store it only *after* it parses, or an unusable
-  answer is pinned for every future run.
+  whatever the last real run left behind. Why the key is the whole prompt and
+  needs no schema version: `digestKey` in `judge.ts`. Store the raw text, and
+  only *after* it parses — or an unusable answer is pinned for every run.
 - How many items a digest produces is not stable across runs, and nothing in
   the code decides it. Measured: five cold runs of the same 18.7k of notes
   through `claude-cli/haiku` returned 27/28/29/30/31 items — ±2 around the mean,
@@ -156,15 +150,11 @@ it does not repeat it. The measurements live on the function, once.
   The OpenAI path already sends `temperature: 0`, and the `claude` CLI has no
   equivalent to set. An overview entry shows ten items whatever the count is,
   which is what keeps this out of the report.
-- Releases whose body is empty never reach the engine. htop tags every version
-  and writes no notes, so its entire prompt was the line `### htop 3.5.3`; the
-  model asked for the notes in prose, that did not parse, and the report said
-  "digest failed" about an engine that had done the only thing it could. Empty
-  bodies are dropped before the prompt is built, and `render.ts` names that
-  case rather than folding it into the engine-failure branch — in all three
-  reports, through the one `noDigestReason`. It was fixed in `overview.ts`
-  first and the digest and inbox paths kept the old wording for a while, with a
-  test pinning it, so a shared function is what keeps them from drifting again.
+- Releases whose body is empty never reach the engine (why: on `digest` in
+  `judge.ts`, the htop case), and `render.ts` names that case through the one
+  `noDigestReason` in all three reports. Shared on purpose: it was fixed in
+  `overview.ts` first while digest and inbox kept the old wording, with a test
+  pinning it — one function is what stops them drifting apart again.
 - The `claude` CLI is invoked as `-p <prompt> --model M --allowedTools ""`, and
   the flag order is load-bearing: `--allowedTools` takes a variadic
   `<tools...>`, so a prompt placed after it is read as a tool name and the call
