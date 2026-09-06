@@ -80,11 +80,16 @@ Changing any of these is a breaking change and belongs in its own PR with the
 box in the template unticked and an explanation:
 
 - **Exit codes** — `0` nothing pending, `1` updates available, `2` error.
-  Under `--yes`: `0` every update ran, `2` any failed. `141` is 128+SIGPIPE and
+  Under `--yes` and `--brew-upgrade` every tool the report said was behind is
+  probed again afterwards: `0` every one came back no longer behind, `1` one
+  is still behind for a reason that is not a failure (brew did not list it,
+  the formula is pinned, the update line is not brew's or is `manual:`), `2`
+  an update failed or a re-probe could not run. `141` is 128+SIGPIPE and
   means the reader closed the pipe (`bumpii | head`) — nothing was learned about
   any package, which is why it is not one of the three.
-- **`--json` shape** — `{ engine: { kind, model, label }, missingUsagePaths,
-  reports[] }`.
+- **`--json` shape** — `{ engine: { kind, model, label }, otherPending,
+  reports[] }`. The document is written before any update runs, so under
+  `--yes` its `installed` fields are the pre-update versions.
 - **Config format** — `usagePaths`, and `tools[].{ name, source, version: {
   cmd, match }, update }`. Unknown keys are preserved on write, so adding one
   is safe; renaming or removing one is not.

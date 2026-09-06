@@ -43,7 +43,7 @@ engine, digest and its cache · `usage.ts` reference counts · `render.ts` the r
 `inbox.ts` the release notifications GitHub already queued ·
 `outdated.ts` what brew knows is pending, and its source cache ·
 `overview.ts` the whole machine, bucketed by what can be said about it ·
-`limit.ts` the four-line concurrency cap · `exec.ts` the execFile wrapper ·
+`limit.ts` the four-line concurrency cap · `exec.ts` the execFile and spawn wrappers ·
 `progress.ts` the stderr progress line · `quips.ts` what that line may say ·
 `types.ts` shared shapes, read first.
 
@@ -175,6 +175,35 @@ Concretely: adding a code path that can fail quietly means adding a branch in
 - Read env vars that name a path with `||`, never `??`: an exported-but-empty
   `XDG_CONFIG_HOME` is not a value, and `??` only falls back on undefined —
   which put `tools.json` in whatever directory the command ran from.
+- The opposite rule for a *setting*: `HOMEBREW_NO_ENV_HINTS` is filled in with
+  `??`, because a variable the user exported — even exported empty — is
+  theirs, and `||` would overwrite it. An empty path is not a path; an empty
+  setting may well be a setting. The comment on `updateEnv` says which rule
+  applies and why, so the next reader does not "fix" it to match `configPath`.
+- A child spawned with inherited stdio writes to the file descriptor directly,
+  past whatever Node still has queued on `process.stdout` — and on a pipe that
+  queue is real. Measured: 300 KB queued, child spawned at once, and its line
+  landed at byte 65536 of the reader's input, ahead of 234 KB the parent had
+  not written yet; with a write callback awaited first, at byte 300000. So
+  `flushStdio()` runs before every `stream()`, for stderr too (`2>&1 | tee`,
+  and `pause()` itself writes an escape sequence there). The same failure
+  `exitAfterFlush` guards against, in the other direction.
+- The progress line is **paused, not resumed**, around a streamed child. It
+  redraws on the row the child is writing to, and its `\r\x1b[K` erases the
+  child's last line. Every CLI test pipes stderr and gets the silent object,
+  so `test/progress.test.ts` is the only place this can be measured.
+- `spawn` on a missing binary emits `error` and then `close`, never `exit`.
+  `stream()` listens on both `error` and `exit`; an `exit`-only version hangs
+  forever on ENOENT, a `close`-only one reports "exited -2".
+- The re-probe after an update trusts `version.match` exactly as the first
+  probe does, line-anchor trap included: a test fixture with an unanchored
+  `([0-9][0-9.]*)` read **"now 4"** out of cat's error path
+  (`/var/folders/fy/4rj…`) once the version file was gone, and called the tool
+  updated. `^` in the fixture, and nothing in the code, is what fixed it.
+- With the env hints off and nothing pending, `brew upgrade` prints not one
+  byte, so a `--brew-upgrade` run ends on a bare `$ brew upgrade`. The report's
+  "no other brew updates pending" line above it (a measured zero — `undefined`
+  still prints nothing) is what makes that silence read as expected.
 
 ## Definition of done
 

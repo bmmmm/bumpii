@@ -19,7 +19,7 @@ gh 2.92.0 → 2.96.0  4 releases behind
     2.96.0  https://github.com/cli/cli/releases/tag/v2.96.0
   → brew upgrade gh
 
-fj 0.6.0  up to date
+up to date: fj 0.6.0
 
 engine: not asked for
 ```
@@ -77,7 +77,7 @@ reference counts (present everywhere), and an engine for `--judge` — see below
 | `bumpii set <name> <field> <value>` | change one field: `source` or `update` |
 | `bumpii rm <name>…` | stop tracking these |
 | `bumpii digest --yes` | digest, then run each tool's update command |
-| `bumpii digest --brew-upgrade` | digest, then `brew update && brew upgrade` — everything brew has pending, tracked or not |
+| `bumpii digest --brew-upgrade` | `brew update`, the digest, then `brew upgrade` — everything brew has pending, tracked or not, named in the report |
 | `bumpii digest --yes --dry-run` | print the update commands that would run, run none |
 
 `bumpii --help` carries the options; the sections below cover what each of
@@ -495,6 +495,7 @@ $ bumpii --only gh        # one tool
 $ bumpii --judge          # read the notes with a model and classify them
 $ bumpii --json           # machine-readable, for a scheduled run
 $ bumpii digest --yes     # report, then run each update command
+$ bumpii digest --brew-upgrade    # brew update, report, brew upgrade — tracked or not
 $ bumpii digest --yes --dry-run   # print those commands, run none of them
 ```
 
@@ -505,6 +506,27 @@ are rather than describing them. It also reports an unfinished placeholder
 happily and exits `0`, so a real `--yes` would report an update that never
 happened. Nothing was updated, so the exit code stays the digest's own: `1`
 while something is still pending.
+
+An update command runs with the terminal: what `brew upgrade` prints, it
+prints as it goes, and the progress line steps aside for it. There is no
+timeout on that path — somebody is watching, and Ctrl-C reaches the child.
+Under `--json` the document has already gone to stdout, so the commands run
+buffered instead, with their output (stderr included) on stderr and the
+usual ceiling. brew runs with `HOMEBREW_NO_ENV_HINTS=1` unless you set that
+variable yourself, empty included.
+
+Once the commands have run, every tool the report said was behind is probed
+again and gets one line — `uv: now 0.12.10`, or `uv: still 0.12.9 — brew
+outdated did not list it, so brew upgrade had nothing to do; 0.12.10 is
+published upstream`, or `could not probe after the update`. The reason names
+what was measured (brew's list, an exit code, the update line), never the
+cause it suggests. Under `--brew-upgrade`, `brew update` runs before the
+report so the pending line counts against a refreshed tap and names the
+packages; `brew upgrade` runs after it; and an update line that is not
+brew's (`claude update`) is marked `(not run by brew upgrade)` in the report
+and stays pending after it. A `--json --yes` document is written before the
+updates run, so its `installed` fields are the pre-update versions and the
+re-probe lines go to stderr.
 
 The digest has to be named. It is the most expensive thing here — a forge
 round-trip per tool and a model that can spend minutes on one release — and
@@ -520,10 +542,14 @@ case; it prints the digest first regardless.
 Exit codes: `0` nothing pending, `1` updates available, `2` error. `0` means
 *checked, and nothing was waiting* — so a run where a forge could not be
 reached exits `2` even though nothing came back pending, because nothing was
-checked either. Under `--yes` there is nothing left pending by definition, so
-it exits `0` when every update ran and `2` when any of them failed *or any tool
-could not be checked at all* — an unattended run has to be able to say it did
-not work, and a run that reached no forge upgraded nothing. The `1` is there so
+checked either. Under `--yes` and `--brew-upgrade` the run re-probes every
+tool it said was behind, so *nothing left pending* is measured rather than
+assumed: `0` when every one came back on a version no longer behind, `1` when
+one is still behind for a reason that is not a failure — brew did not list
+it, the formula is pinned, the update line is not brew's or is `manual:` —
+and `2` when an update failed, a re-probe could not run, *or any tool could
+not be checked at all*: an unattended run has to be able to say it did not
+work, and a run that reached no forge upgraded nothing. The `1` is there so
 a scheduled run can act on it:
 
 ```console
@@ -597,6 +623,10 @@ ticked: the ball hangs at the top, accelerates into the floor, loses height
 with each landing and then rolls for nearly two seconds before something shoves
 it back up — which is the stretch slow enough to read a sentence over. Small
 landings take the patch, the shove out of the roll takes the minor.
+
+During an update command the line steps aside: the command owns the terminal,
+and its own output is the progress. Between commands, and under `--json`
+where they run buffered, the line is back.
 
 The counts beside it are
 the run's own — tools finished out of tools asked about — and so is the
