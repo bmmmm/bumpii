@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+import { formulaOf, isManualUpdate } from "./config.ts";
 import type { Inbox } from "./inbox.ts";
 import type { Engine } from "./judge.ts";
 import type { Overview, OverviewEntry } from "./overview.ts";
@@ -121,6 +122,19 @@ function noUsagePathsWarning(consequence: string): string[] {
   ];
 }
 
+/**
+ * The "→ how to update it" line under a pending entry.
+ *
+ * Under --brew-upgrade the run is about to run `brew upgrade`, which covers
+ * every brew line and nothing else: `claude update` stays pending after it,
+ * and a run that listed the tool and then upgraded "everything" would read as
+ * having done it. A `manual:` line already says there is nothing to run.
+ */
+function updateLine(update: string, brewUpgrade: boolean | undefined): string {
+  const notBrews = brewUpgrade && formulaOf(update) === null && !isManualUpdate(update);
+  return `  ${dim("→")} ${update}${notBrews ? `  ${dim("(not run by brew upgrade)")}` : ""}`;
+}
+
 export interface RenderOptions {
   engine: Engine;
   /**
@@ -129,6 +143,13 @@ export interface RenderOptions {
    * did not run — that is silence, not a claim that nothing else is pending.
    */
   otherPending?: number;
+  /** Their names, in brew's order; the count above is this list's length. */
+  otherPendingNames?: string[];
+  /**
+   * The run will go on to `brew upgrade`: the pending line says so instead
+   * of advising it, and an update line brew will not run gets marked.
+   */
+  brewUpgrade?: boolean;
 }
 
 /**
@@ -292,7 +313,7 @@ export function renderReport(rawReports: ToolReport[], opts: RenderOptions): str
       // to read when the body was empty.
       out.push(dim(`  ${noDigestReason(r.behind, r.digestError, opts.engine)}`));
       for (const rel of r.behind) out.push(dim(`    ${rel.version}  ${link(rel.url, rel.url)}`));
-      out.push(`  ${dim("→")} ${r.tool.update}`, "");
+      out.push(updateLine(r.tool.update, opts.brewUpgrade), "");
       continue;
     }
 
@@ -303,14 +324,24 @@ export function renderReport(rawReports: ToolReport[], opts: RenderOptions): str
       out.push(`  ${mark} ${kindLabel} ${item.summary}${item.version ? dim(` (${item.version})`) : ""}`);
     }
 
-    out.push(`  ${dim("→")} ${r.tool.update}`, "");
+    out.push(updateLine(r.tool.update, opts.brewUpgrade), "");
   }
 
-  if (opts.otherPending) {
-    const plural = opts.otherPending === 1;
+  // Three answers, kept apart: undefined is "brew was not asked" and prints
+  // nothing; zero is brew saying so, and is worth a line because a
+  // --brew-upgrade run's `brew upgrade` then prints nothing at all (measured:
+  // with the env hints off and nothing pending, not one byte) — without this
+  // line that silence reads as something having gone wrong.
+  if (opts.otherPending === 0) {
+    out.push(dim("no other brew updates pending"));
+  } else if (opts.otherPending) {
+    const one = opts.otherPending === 1;
+    const names = opts.otherPendingNames?.length ? `: ${opts.otherPendingNames.join(", ")}` : "";
+    // Advice only when the run is not about to do it itself.
+    const tail = opts.brewUpgrade ? "brew upgrade runs next" : "bumpii overview, or brew upgrade";
     out.push(
       dim(
-        `${opts.otherPending} other package${plural ? "" : "s"} ${plural ? "has" : "have"} brew updates pending — bumpii overview, or brew upgrade`,
+        `${opts.otherPending} other package${one ? "" : "s"} ${one ? "has" : "have"} brew updates pending${names} — ${tail}`,
       ),
     );
   }

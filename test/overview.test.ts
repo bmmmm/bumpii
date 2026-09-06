@@ -14,6 +14,7 @@ import {
   namesOf,
   type Overview,
   type OverviewEntry,
+  untrackedOutdated,
   untrackedOutdatedCount,
 } from "../src/overview.ts";
 import { renderOverview } from "../src/render.ts";
@@ -391,6 +392,24 @@ test("untrackedOutdatedCount matches a tracked tool under its formula name too",
 
 test("untrackedOutdatedCount is zero when brew has nothing pending", () => {
   assert.equal(untrackedOutdatedCount([], []), 0);
+});
+
+test("untrackedOutdated hands back the packages themselves, in brew's order", () => {
+  // The report names them on the line that counts them; count and names come
+  // from this one list so they cannot disagree.
+  const tools = [
+    {
+      name: "gh",
+      source: "github:cli/cli",
+      version: { cmd: ["gh", "--version"], match: "gh version ([0-9.]+)" },
+      update: "brew upgrade gh",
+    },
+  ];
+  const other = untrackedOutdated([outdated("libffi"), outdated("gh"), outdated("openldap")], tools);
+  assert.deepEqual(
+    other.map((p) => p.name),
+    ["libffi", "openldap"],
+  );
 });
 
 test("reference counts are taken across every name a tool answers to", async () => {

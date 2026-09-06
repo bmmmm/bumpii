@@ -268,13 +268,58 @@ test("an entry that is neither installed nor comparable says both, not a bare ?"
   assert.doesNotMatch(out, /latest \?/);
 });
 
-test("other brew-pending packages are named, with a way to see them", () => {
+test("other brew-pending packages are counted and named, with a way to see them", () => {
   const out = renderReport([report({ installed: "2.96.0", latest: "2.96.0" })], {
     engine,
     otherPending: 3,
+    otherPendingNames: ["docker", "rclone", "fish"],
   });
-  assert.match(out, /3 other packages have brew updates pending/);
-  assert.match(out, /bumpii overview/);
+  // Names in brew's order, on the same line as the count they add up to.
+  assert.match(out, /3 other packages have brew updates pending: docker, rclone, fish — bumpii overview/);
+});
+
+test("under --brew-upgrade the pending line says what happens next instead of advising it", () => {
+  const out = renderReport([report({ installed: "2.96.0", latest: "2.96.0" })], {
+    engine,
+    otherPending: 2,
+    otherPendingNames: ["docker", "rclone"],
+    brewUpgrade: true,
+  });
+  assert.match(out, /2 other packages have brew updates pending: docker, rclone — brew upgrade runs next/);
+  assert.doesNotMatch(out, /bumpii overview/, "advice to run what the run is about to run itself");
+});
+
+test("brew having nothing else pending is said, not left silent", () => {
+  // A --brew-upgrade run's `brew upgrade` then prints nothing at all
+  // (measured: env hints off, nothing pending, not one byte), and this line
+  // is what makes that silence read as expected rather than as a failure.
+  const out = renderReport([report({ installed: "2.96.0", latest: "2.96.0" })], {
+    engine,
+    otherPending: 0,
+    otherPendingNames: [],
+  });
+  assert.match(out, /no other brew updates pending/);
+  assert.doesNotMatch(out, /0 other/);
+});
+
+test("under --brew-upgrade an update line brew will not run is marked", () => {
+  const claude = { ...tool, name: "claude", update: "claude update" };
+  const manual = { ...tool, name: "ghostty", update: "manual: Ghostty updates itself" };
+  const behind = { latest: "2.96.0", behind: [rel("2.96.0")] };
+  const marked = renderReport(
+    [report({ tool: claude, ...behind }), report(behind), report({ tool: manual, ...behind })],
+    { engine, brewUpgrade: true },
+  );
+  assert.match(marked, /→ claude update\s+\(not run by brew upgrade\)/);
+  assert.doesNotMatch(marked, /brew upgrade gh\s+\(not run/, "a brew line is exactly what brew upgrade runs");
+  assert.doesNotMatch(
+    marked,
+    /Ghostty updates itself\s+\(not run/,
+    "a manual line already says there is nothing to run",
+  );
+  // Without the flag the marker is meaningless, and absent.
+  const plain = renderReport([report({ tool: claude, ...behind })], { engine });
+  assert.doesNotMatch(plain, /not run by brew upgrade/);
 });
 
 test("one other pending package is not reported as three", () => {

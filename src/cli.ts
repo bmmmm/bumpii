@@ -25,7 +25,7 @@ import { buildInbox, markThreadsRead, shownThreads } from "./inbox.ts";
 import { digest, type Engine, resolveEngine } from "./judge.ts";
 import { limiter } from "./limit.ts";
 import { brewOutdated, type OutdatedPackage } from "./outdated.ts";
-import { buildOverview, namesOf, untrackedOutdatedCount } from "./overview.ts";
+import { buildOverview, namesOf, untrackedOutdated } from "./overview.ts";
 import { type Progress, startProgress } from "./progress.ts";
 import { renderInbox, renderOverview, renderReport } from "./render.ts";
 import { channelStatus, listReleases, parseSource } from "./sources.ts";
@@ -954,6 +954,9 @@ async function dispatch(progress: Progress): Promise<number> {
   // tools.json does not track. `undefined` on failure — brew missing (Linux
   // CI, no Homebrew) or erroring costs this line, not the digest above it.
   let otherPending: number | undefined;
+  // The names behind the count, for the report's trailing line — the same
+  // list, so the two cannot disagree. --json carries the count alone.
+  let otherPendingNames: string[] | undefined;
   // Kept for the re-probe after the update: what brew itself listed as
   // pending is what tells a "still 1.0.0" apart from brew having nothing.
   let outdated: OutdatedPackage[] | undefined;
@@ -967,7 +970,9 @@ async function dispatch(progress: Progress): Promise<number> {
   } else {
     try {
       outdated = await brewOutdated();
-      otherPending = untrackedOutdatedCount(outdated, config.tools);
+      const other = untrackedOutdated(outdated, config.tools);
+      otherPending = other.length;
+      otherPendingNames = other.map((p) => p.name);
     } catch {
       otherPending = undefined;
     }
@@ -983,7 +988,14 @@ async function dispatch(progress: Progress): Promise<number> {
     // parsing prose.
     process.stdout.write(`${JSON.stringify({ engine, otherPending, reports }, null, 2)}\n`);
   } else {
-    process.stdout.write(renderReport(reports, { engine, otherPending }));
+    process.stdout.write(
+      renderReport(reports, {
+        engine,
+        otherPending,
+        otherPendingNames,
+        brewUpgrade: args.brewUpgrade && !args.dryRun,
+      }),
+    );
   }
 
   let updateFailures = 0;

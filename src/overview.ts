@@ -157,9 +157,14 @@ export function expandOnly(only: string[], tools: ToolConfig[]): Set<string> {
  * call already needed to produce it. Pure for the same reason `bucketFor` is:
  * testable without brew standing behind it.
  */
-export function untrackedOutdatedCount(outdated: OutdatedPackage[], tools: ToolConfig[]): number {
+export function untrackedOutdated(outdated: OutdatedPackage[], tools: ToolConfig[]): OutdatedPackage[] {
   const trackedNames = new Set(tools.flatMap((t) => namesOf(t)));
-  return outdated.filter((p) => !trackedNames.has(p.name)).length;
+  return outdated.filter((p) => !trackedNames.has(p.name));
+}
+
+/** The count of {@link untrackedOutdated}, for the --json document. */
+export function untrackedOutdatedCount(outdated: OutdatedPackage[], tools: ToolConfig[]): number {
+  return untrackedOutdated(outdated, tools).length;
 }
 
 /**
