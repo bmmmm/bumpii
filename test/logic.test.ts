@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { containerOf, parseArgs, parseWindow } from "../src/cli.ts";
+import { containerOf, isReaderGoneError, parseArgs, parseWindow } from "../src/cli.ts";
 import { formulaOf, isManualUpdate, isPlaceholderUpdate } from "../src/config.ts";
 import { bare, parseSource } from "../src/sources.ts";
 import type { Release, ToolConfig } from "../src/types.ts";
@@ -408,4 +408,20 @@ test("an unorderable tag never counts as a release you are behind", () => {
     [],
     "with nothing installed, an unorderable newest release is still nothing to show",
   );
+});
+
+test("isReaderGoneError covers the whole broken-pipe family, not EPIPE alone", () => {
+  // bumpii#4: a real spawn only lands on the second write past a closed pipe
+  // once in a while (needs many concurrent processes racing the OS), which
+  // is why cli.test.ts's load test cannot be the only thing pinning this —
+  // it would take one bad batch to go green with the bug still in. This is
+  // the deterministic half: reverting the `|| code === "ENOTCONN"` arm below
+  // fails this line on every run, not "most" runs.
+  assert.equal(isReaderGoneError("EPIPE"), true);
+  assert.equal(isReaderGoneError("ENOTCONN"), true);
+  // Not a blank check that swallows every error: an unrelated failure must
+  // still surface (exitQuietlyOnBrokenPipe rethrows it) rather than being
+  // misreported as a reader that left.
+  assert.equal(isReaderGoneError("EACCES"), false);
+  assert.equal(isReaderGoneError(undefined), false);
 });

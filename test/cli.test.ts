@@ -827,7 +827,14 @@ test("a reader that walks away is not reported as updates being available", asyn
 
   assert.ok(bytes > 0 && bytes < 100_000, `the reader has to leave mid-report, got ${bytes} bytes`);
   assert.notEqual(code, 1, "1 is what a scheduler acts on as pending updates");
-  assert.equal(code, 141, "128+SIGPIPE, the code a shell reports for a writer whose reader is gone");
+  // Not a strict 141: the child and the reader's destroy() are still a race,
+  // and the child occasionally finishes writing everything before the reader
+  // closes at all — a real success, correctly exit 0. 141 only where a write
+  // actually hit the closed pipe. Measured on the fixed build, across many
+  // concurrent runs of this same scenario (review of 268b1ce): a small
+  // fraction (17/1200) came back 0 instead of 141, none ever 1. What must
+  // never happen is the crash the pipe used to cause.
+  assert.ok([0, 141].includes(code as number), `expected 0 or 141, got ${code}`);
   assert.doesNotMatch(stderr, /EPIPE|Unhandled/, "a closed pipe must not print a stack trace");
 });
 
@@ -842,18 +849,30 @@ test("a reader that walks away still is not reported as pending under a loaded m
   // ENOTCONN uncaught: exit 1, the exact answer the fix exists to prevent,
   // thrown from inside the function guarding against it.
   //
-  // One spawn essentially never lands the race (measured: 0/10). Many
-  // concurrent spawns reproduce it reliably: before the fix, this exact loop
-  // hit ENOTCONN/exit 1 on 8 of 800 runs (two batches, at concurrency 20 and
-  // 30). Every occurrence carried `code: 'ENOTCONN'` and this function's own
-  // `throw err` in the stack. After the fix (ENOTCONN treated the same as
-  // EPIPE), 1300/1300 runs across two batches exited 0 or 141, never 1.
+  // That exact regression is now pinned deterministically and cheaply by
+  // "isReaderGoneError covers the whole broken-pipe family" in
+  // test/logic.test.ts — reverting the fix fails that test on every run, not
+  // "most" runs, because it is a plain value check with no OS timing in it.
+  // This loop cannot be that deterministic (it is real processes racing a
+  // real pipe close, at whatever the machine's own scheduler does), so it is
+  // not the thing pinning the regression — it is what a plain-value test
+  // cannot be: proof exitQuietlyOnBrokenPipe is wired to real streams under
+  // the concurrency bumpii#4 needed to show the bug at all.
+  //
+  // Sized for cost, not for guaranteed detection: at RUNS=40/CONCURRENCY=8
+  // this test itself costs ~9s CPU (user+sys, measured with `time -l`), 60s
+  // timeout, one spawn essentially never lands the race (measured: 0/10).
+  // Reverted to EPIPE-only, 7 batches of 40 hit exit 1 in 4 of the 7 (2, 0, 0,
+  // 2, 2, 1, 0 — 7 exit-1s over 280 runs); fixed, 8 batches of 40 (320 runs
+  // total, three at this same size while calibrating cost, five as the final
+  // check) never did.
   const home = await freshHome();
+  runtimeDirs.push(home);
   const many = Array.from({ length: 2000 }, (_, i) => tool({ name: `tool${i}`, source: `github:o/r${i}` }));
   await writeConfig(home, many);
 
-  const RUNS = 300;
-  const CONCURRENCY = 30;
+  const RUNS = 40;
+  const CONCURRENCY = 8;
 
   const once = () =>
     new Promise<{ code: number | null; bytes: number; stderr: string }>((resolve) => {
@@ -882,6 +901,17 @@ test("a reader that walks away still is not reported as pending under a loaded m
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 
   assert.equal(results.length, RUNS);
+  // A floor, not just an absence check: every run reporting bytes >=
+  // 100_000 (the full ~66 KB report, read whole) would mean the reader never
+  // actually raced a write — the exact way this guard could go quiet without
+  // any assertion here turning red. At least half actually hitting the
+  // closed pipe (141) is what proves the mechanism under test still fires.
+  const brokenPipeHits = results.filter((r) => r.code === 141).length;
+  assert.ok(
+    brokenPipeHits >= RUNS / 2,
+    `expected most runs to hit the closed pipe (code 141); got ${brokenPipeHits}/${RUNS} — ` +
+      "the reader may no longer be racing a write at all",
+  );
   const ones = results.filter((r) => r.code === 1);
   assert.equal(
     ones.length,

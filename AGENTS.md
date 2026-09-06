@@ -128,6 +128,14 @@ it does not repeat it. The measurements live on the function, once.
   file, exactly 65536 through a pipe) under an exit code that said the run had
   succeeded. Short reports fit in the buffer, which is why only the long ones
   ever showed it.
+- A broken pipe on this process's own stdout/stderr is not always `EPIPE` —
+  on macOS a later write in the same synchronous burst can land after the
+  socket has already flipped to disconnected and get `ENOTCONN` instead, same
+  reader-gone condition. `isReaderGoneError` in `cli.ts` covers both; its
+  docblock has the numbers. Only reproduces under many concurrent spawns, so
+  it is pinned as a plain value check (`test/logic.test.ts`), not by racing a
+  real pipe close (`test/cli.test.ts`'s load test is a real-process canary on
+  top, deliberately not the thing proving the regression is fixed).
 - Send children **SIGTERM**, whatever signal arrived. A non-interactive
   `sh -c` defers SIGINT until its current foreground command finishes, so
   passing SIGINT through let a probe run to completion and write its output

@@ -1372,6 +1372,31 @@ function updateEnv(): NodeJS.ProcessEnv {
 }
 
 /**
+ * Whether a write to one of this process's own std streams failed because
+ * the reader on the other end is gone — as opposed to some other write
+ * failure that must not be swallowed.
+ *
+ * `EPIPE` alone is not the whole family. process.stdout to a pipe is backed
+ * by a `net.Socket`, and once the reader has closed it, a burst of
+ * synchronous writes (the report loop plus `exitAfterFlush`'s own flush
+ * write) does not all fail the same way: the first write past the close
+ * gets `EPIPE`, but a later one lands after the socket has already flipped
+ * to disconnected and gets `ENOTCONN` instead — same reader-gone condition,
+ * different errno for the write that lost the race. A single spawn almost
+ * never lands on the second write (bumpii#4: 10/10 green locally), so this
+ * needs many concurrent spawns to show up at all — pinned instead as a plain
+ * value test in test/logic.test.ts, which does not depend on that timing.
+ * Exported for exactly that: measured before this widened, a real macOS
+ * runner's `ENOTCONN` reached `exitQuietlyOnBrokenPipe`'s old `err.code !==
+ * "EPIPE"` check and got re-thrown uncaught — exit 1, the exact answer this
+ * whole mechanism exists to prevent, thrown by the function guarding
+ * against it.
+ */
+export function isReaderGoneError(code: string | undefined): boolean {
+  return code === "EPIPE" || code === "ENOTCONN";
+}
+
+/**
  * A reader that walked away is not a failed run, and above all not a pending one.
  *
  * Node ignores SIGPIPE and surfaces the closed reader as an `error` event
@@ -1386,22 +1411,15 @@ function updateEnv(): NodeJS.ProcessEnv {
  * distinguishable from all three documented codes, which is the point: nothing
  * about the packages was learned when the reader left.
  *
- * `EPIPE` alone is not the whole family. process.stdout to a pipe is backed
- * by a `net.Socket`, and once the reader has closed it, a burst of synchronous
- * writes (the report loop plus `exitAfterFlush`'s own flush write) does not
- * all fail the same way: the first write past the close gets `EPIPE`, but a
- * later one lands after the socket already flipped to disconnected and gets
- * `ENOTCONN` instead — same reader-gone condition, different errno for the
- * write that lost the race. Un-reproducible with a single spawn; a tight loop
- * of this test under concurrency (bumpii#4) turned up `ENOTCONN` on 8/800
- * runs, every one of them exiting 1 with this function's own `throw err` in
- * the stack — the exact answer this function exists to prevent, thrown by
- * this function.
+ * Registered on stderr too, deliberately: a `2>&1 | head` pipes both onto the
+ * one fd `head` closes, so stderr can hit the exact same `ENOTCONN` as stdout
+ * and must answer it the same way, not crash on the stream nobody expected to
+ * break.
  */
 function exitQuietlyOnBrokenPipe(): void {
   for (const stream of [process.stdout, process.stderr]) {
     stream.on("error", (err: NodeJS.ErrnoException) => {
-      if (err.code !== "EPIPE" && err.code !== "ENOTCONN") throw err;
+      if (!isReaderGoneError(err.code)) throw err;
       // Not exitAfterFlush: the stream that would be flushed is the one that
       // just went away, and waiting on it is how this hangs instead.
       process.exit(141);
