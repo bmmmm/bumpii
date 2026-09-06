@@ -222,6 +222,10 @@ function safeReport(r: ToolReport): ToolReport {
 export function renderReport(rawReports: ToolReport[], opts: RenderOptions): string {
   const reports = rawReports.map(safeReport);
   const out: string[] = [""];
+  // Everything current goes on one line at the end: eleven tools that need
+  // nothing were twenty-two lines, and the entries that need reading sat
+  // between them. Mirrors the overview's "tracked, up to date" block.
+  const current: string[] = [];
 
   for (const r of reports) {
     const name = bold(r.tool.name);
@@ -290,9 +294,9 @@ export function renderReport(rawReports: ToolReport[], opts: RenderOptions): str
         continue;
       }
       // Naming the channel is what keeps a commit hash readable as a version:
-      // "b0b9fbc8d up to date" alone looks like a rendering slip.
+      // "b0b9fbc8d" alone in the list looks like a rendering slip.
       const on = r.channel ? ` on ${r.channel.tag}` : "";
-      out.push(`${name} ${r.installed}  ${green(`up to date${on}`)}`, "");
+      current.push(`${name} ${r.installed}${on}`);
       continue;
     }
 
@@ -326,6 +330,11 @@ export function renderReport(rawReports: ToolReport[], opts: RenderOptions): str
 
     out.push(updateLine(r.tool.update, opts.brewUpgrade), "");
   }
+
+  // Only what compared equal to a published release lands here: unknown,
+  // ahead-of and error entries keep their own lines above, because none of
+  // them is "up to date" and folding them in would paint them green.
+  if (current.length > 0) out.push(`${green("up to date")}: ${current.join(dim(" · "))}`, "");
 
   // Three answers, kept apart: undefined is "brew was not asked" and prints
   // nothing; zero is brew saying so, and is worth a line because a

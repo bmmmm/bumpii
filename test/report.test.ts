@@ -73,7 +73,7 @@ test("a channel entry counts commits, and a current one names its channel", () =
     channel: { tag: "tip", aheadBy: 0 },
   });
   const outCurrent = renderReport([current], { engine: noEngine });
-  assert.match(outCurrent, /up to date on tip/);
+  assert.match(outCurrent, /up to date: gh aaa111222 on tip/);
 });
 
 test("a forge with no comparable release is reported unknown, never up to date", () => {
@@ -122,8 +122,46 @@ test("a channel entry is never read as ahead of its own head", () => {
     ],
     { engine },
   );
-  assert.match(out, /up to date on tip/);
+  assert.match(out, /up to date: gh fff999888 on tip/);
   assert.doesNotMatch(out, /ahead of/);
+});
+
+test("everything current shares one line, below the entries that need reading", () => {
+  // Eleven tools that need nothing were twenty-two lines, with the one entry
+  // worth reading somewhere between them.
+  const current = (name: string, v: string) => report({ tool: { ...tool, name }, installed: v, latest: v });
+  const out = renderReport(
+    [
+      current("bat", "0.26.1"),
+      report({
+        tool: { ...tool, name: "uv" },
+        installed: "0.12.9",
+        latest: "0.12.10",
+        behind: [rel("0.12.10")],
+      }),
+      current("jq", "1.8.2"),
+      report({
+        tool: { ...tool, name: "ghostty" },
+        installed: "492300cad",
+        latest: "492300cad",
+        channel: { tag: "tip", aheadBy: 0 },
+      }),
+    ],
+    { engine },
+  );
+  assert.equal(out.match(/up to date/g)?.length, 1, `one line for all of them:\n${out}`);
+  assert.match(
+    out,
+    /up to date: bat 0\.26\.1 · jq 1\.8\.2 · ghostty 492300cad on tip/,
+    "config order, channel named",
+  );
+  assert.ok(out.indexOf("1 release behind") < out.indexOf("up to date:"), "the entry to read comes first");
+  // Not painted green by association: a tool above every release stays its own line.
+  const ahead = renderReport([report({ installed: "9.0.0", latest: "2.96.0" }), current("jq", "1.8.2")], {
+    engine,
+  });
+  assert.match(ahead, /ahead of 2\.96\.0/);
+  assert.doesNotMatch(ahead, /up to date:.*gh/);
 });
 
 test("no report claims to know which changes touch you", () => {
