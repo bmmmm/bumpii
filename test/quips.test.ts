@@ -113,6 +113,25 @@ test("nothing says 'releases' about one release", () => {
   }
 });
 
+test("the update phase never says what a command is doing", () => {
+  // "brew is compiling something" stood here through a run that poured nine
+  // bottles and compiled nothing — a claim about the child that nothing had
+  // measured. A streamed command owns the terminal anyway; what this line may
+  // say is how many update lines there are, and only once that was counted.
+  for (const elapsed of [0, 25, 300]) {
+    for (const text of eligible({ phase: "update", elapsed })) {
+      assert.doesNotMatch(text, /compil|brew|pour|download/i, `"${text}" describes a command nobody watched`);
+    }
+  }
+  const counted = eligible(full({ phase: "update", total: 3, elapsed: 25 }));
+  assert.ok(
+    counted.some((t) => t.includes("3 update lines")),
+    `a counted phase should be able to say its count: ${counted.join(" | ")}`,
+  );
+  const single = eligible(full({ phase: "update", total: 1, elapsed: 25 }));
+  assert.ok(!single.some((t) => /\b1 update line/.test(t)), "one line is not a queue worth announcing");
+});
+
 test("an empty grep says so instead of implying a search happened", () => {
   const nothing = eligible(full({ phase: "grep", commands: 0 }));
   assert.ok(nothing.some((t) => t.includes("nothing to grep")));

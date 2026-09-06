@@ -202,11 +202,18 @@ const QUIPS: Quip[] = [
   },
 
   // -- running the update lines -----------------------------------------
+  //
+  // This phase's line shows between commands, and under --json for their
+  // whole duration — never during a streamed one, which owns the terminal.
+  // Nothing here may say what a command is doing: "brew is compiling
+  // something" stood on this spot through a run that poured nine bottles and
+  // compiled nothing, and it was the same lie as a guessed count. The one
+  // thing measured is how many lines there are, and that they run in turn.
   { phase: "update", when: () => true, text: () => "running the update line" },
   {
     phase: "update",
-    when: (s) => s.elapsed >= 20,
-    text: () => "brew is compiling something. it does that",
+    when: (s) => (s.total ?? 0) > 1,
+    text: (s) => `${plural(s.total ?? 0, "update line", "update lines")}, one at a time`,
   },
 ];
 
