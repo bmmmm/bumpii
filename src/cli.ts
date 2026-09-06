@@ -4,6 +4,7 @@ import {
   configPath,
   EDITABLE_FIELDS,
   type EditableField,
+  formulaOf,
   initConfig,
   isManualUpdate,
   isPlaceholderUpdate,
@@ -27,7 +28,7 @@ import { limiter } from "./limit.ts";
 import { brewOutdated, type OutdatedPackage } from "./outdated.ts";
 import { buildOverview, namesOf, untrackedOutdated } from "./overview.ts";
 import { type Progress, startProgress } from "./progress.ts";
-import { renderInbox, renderOverview, renderReport } from "./render.ts";
+import { type Reprobe, renderInbox, renderOverview, renderReport, reprobeVerdict } from "./render.ts";
 import { channelStatus, listReleases, parseSource } from "./sources.ts";
 import type { DigestItem, Release, ToolConfig, ToolReport } from "./types.ts";
 import { mentioned, resolveUsagePaths } from "./usage.ts";
@@ -1088,6 +1089,11 @@ async function dispatch(progress: Progress): Promise<number> {
   // same event when it hits this process's own write.
   const readerLeft = (err: unknown): boolean => /SIGPIPE/.test((err as Error).message);
 
+  // What the update loop did per tool, for the re-probe after it: its own
+  // line ran, or failed (counted and reported already), or was never run
+  // because the entry is manual or still a placeholder.
+  const ran = new Map<string, "own" | "failed" | "manual" | "placeholder">();
+
   if (args.yes) {
     // Picked back up rather than started fresh: the report is printed but the
     // command is not over.
@@ -1101,6 +1107,7 @@ async function dispatch(progress: Progress): Promise<number> {
       // code red the way an unfinished placeholder does.
       if (isManualUpdate(r.tool.update)) {
         say(`${r.tool.name}: ${r.tool.update.trim()} — skipped\n`);
+        ran.set(r.tool.name, "manual");
         progress.step();
         continue;
       }
@@ -1112,15 +1119,18 @@ async function dispatch(progress: Progress): Promise<number> {
         progress.err(
           `${r.tool.name}: update line is still a placeholder (${r.tool.update.trim()}) — skipped\n`,
         );
+        ran.set(r.tool.name, "placeholder");
         progress.step();
         continue;
       }
       try {
         await runUpdate("/bin/sh", ["-c", r.tool.update], r.tool.update, 600_000);
+        ran.set(r.tool.name, "own");
       } catch (err) {
         if (readerLeft(err)) return 141;
         // Keep going: one formula failing to build should not block the others.
         updateFailures++;
+        ran.set(r.tool.name, "failed");
         progress.err(`${r.tool.name}: update failed: ${(err as Error).message}\n`);
       }
       progress.step();
@@ -1151,6 +1161,58 @@ async function dispatch(progress: Progress): Promise<number> {
     progress.pause();
   }
 
+  // What the run said was behind, read again now that the updates have run.
+  //
+  // Exit 0 after --yes used to be the update commands' exit codes and nothing
+  // else: `brew upgrade` returns 0 with the tool still on the old version
+  // whenever brew has no newer bottle yet, and the run reported success.
+  // "Updated" is a conclusion, and it is reached by probing the version
+  // again — the wording lives in reprobeVerdict, the exit code here. A tool
+  // whose own line failed was counted and reported already; a placeholder
+  // never ran and said so. A manual entry stays: it is pending, and the run
+  // has to say so rather than skip past it.
+  //
+  // brew's answer is looked up under every name the tool goes by, the same
+  // matching the pending count uses, so the blame and the count cannot
+  // disagree about what brew had.
+  let stillPending = 0;
+  if ((args.yes || args.brewUpgrade) && !args.dryRun) {
+    const again = reports.filter((r) => {
+      const how = ran.get(r.tool.name);
+      return !r.error && r.installed && r.behind.length > 0 && how !== "failed" && how !== "placeholder";
+    });
+    progress.phase("probe", { total: again.length, done: 0 });
+    progress.resume();
+    for (const r of again) {
+      const how = ran.get(r.tool.name);
+      const update = r.tool.update;
+      const ranAs: Reprobe["ran"] =
+        how === "own"
+          ? "own"
+          : how === "manual" || isManualUpdate(update)
+            ? "manual"
+            : formulaOf(update) !== null
+              ? "brew-upgrade"
+              : "not-brew";
+      const names = namesOf(r.tool);
+      const listed = outdated?.find((p) => names.includes(p.name));
+      const brew =
+        outdated === undefined ? undefined : listed ? { latest: listed.latest, pinned: listed.pinned } : null;
+      let probe: Reprobe;
+      try {
+        probe = { now: await installedVersion(r.tool), brew, ran: ranAs };
+      } catch (err) {
+        probe = { now: null, probeError: (err as Error).message, brew, ran: ranAs };
+      }
+      const { line, state } = reprobeVerdict(r, probe);
+      say(`${line}\n`);
+      if (state === "failed" || state === "unknown") updateFailures++;
+      else if (state === "pending") stillPending++;
+      progress.step();
+    }
+    progress.pause();
+  }
+
   // An unattended --yes/--brew-upgrade run has to be able to say it did not
   // work; reporting success while something failed to build is how a broken
   // cron goes unseen.
@@ -1161,9 +1223,14 @@ async function dispatch(progress: Progress): Promise<number> {
   // anything. Without this line a run that reached no forge at all upgraded
   // nothing, failed at nothing, and exited 0 — measured, on the same config
   // that exits 2 without --yes.
+  //
+  // 1 keeps its meaning — something is still pending — and it is new here:
+  // "under --yes nothing is left pending by definition" was the old contract,
+  // and the re-probe is precisely what disproved the definition.
   if (args.yes || args.brewUpgrade) {
     if (updateFailures > 0) return 2;
     if (reports.some((r) => r.error)) return 2;
+    if (stillPending > 0) return 1;
     return 0;
   }
   // Non-zero when something is pending, so a scheduled run can act on it.

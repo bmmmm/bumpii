@@ -597,7 +597,12 @@ test("--yes skips a manual entry as routine, not as a failure", async (t) => {
 
   const r = await runCli(["--yes", "--no-judge"], home);
   assert.match(r.stdout, /manual: use the in-app updater — skipped/);
-  assert.equal(r.code, 0, "nothing failed — a manual entry is not a broken one");
+  // Not 2: nothing failed, a manual entry is not a broken one. Not 0 either:
+  // the re-probe finds it on the same version, so it is still pending, and a
+  // run that exits "nothing left" over a tool it could not touch is the
+  // quiet wrong answer this tool exists to avoid.
+  assert.match(r.stdout, /app: still 1\.0\.0 — its update line says there is nothing to run/);
+  assert.equal(r.code, 1, "a manual entry is not a failure; it is still pending");
 });
 
 test("a run that could not reach anything must not exit 0", async (t) => {
@@ -936,9 +941,13 @@ async function fileTool(
   await writeFile(verFile, version);
   // A function, for the update lines that have to name the file they change.
   const fields = typeof over === "function" ? over(verFile) : over;
+  // Anchored, as AGENTS.md says every pattern must be: the probe matches over
+  // stdout and stderr together, and once the file is gone cat's error names
+  // its path — which contains digits. Unanchored, the re-probe read "now 4"
+  // out of "/var/folders/fy/4rj…" and called the tool updated.
   return {
     verFile,
-    tool: tool({ version: { cmd: ["/bin/cat", verFile], match: "([0-9][0-9.]*)" }, ...fields }),
+    tool: tool({ version: { cmd: ["/bin/cat", verFile], match: "^([0-9][0-9.]*)" }, ...fields }),
   };
 }
 
@@ -1115,6 +1124,98 @@ test("brew runs without its env hints, unless the user set the variable themselv
     HOMEBREW_NO_ENV_HINTS: "",
   });
   assert.match(kept.stdout, /^HINTS=$/m, "an exported-but-empty variable was overwritten");
+});
+
+// The re-probe after an update. Every test here runs on a hermetic PATH: the
+// verdict for "still on the old version" reads brew's pending list, and the
+// developer's real brew must never be the one deciding an exit code.
+
+test("a tool that really updated is reported as now on the new version", async (t) => {
+  const url = await stubForge(["v2.0.0", "v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  const { tool: app } = await fileTool(home, "1.0.0", (verFile) => ({
+    source: url,
+    update: `printf 2.0.0 > ${verFile}`,
+  }));
+  await writeConfig(home, [app]);
+
+  const r = await runCli(["--yes", "--no-judge"], home, { PATH: await hermeticBin() });
+  assert.match(r.stdout, /^app: now 2\.0\.0$/m, r.stdout);
+  assert.doesNotMatch(r.stdout, /still/);
+  assert.equal(r.code, 0, r.stderr);
+});
+
+test("a tool brew still lists after a clean upgrade is a failure, not a success", async (t) => {
+  // brew upgrade exited 0 and the binary on PATH still answers the old
+  // version: the classic shadowed install. Exit 0 here was the old behaviour.
+  const url = await stubForge(["v2.0.0", "v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  const { tool: app } = await fileTool(home, "1.0.0", { source: url, update: "brew upgrade app" });
+  await writeConfig(home, [app]);
+  const listed = JSON.stringify({
+    formulae: [{ name: "app", installed_versions: ["1.0.0"], current_version: "2.0.0" }],
+    casks: [],
+  });
+  const dir = await fakeBrew(`case "$1" in outdated) printf '%s' '${listed}' ;; esac`);
+
+  const r = await runCli(["digest", "--brew-upgrade", "--no-judge"], home, { PATH: dir });
+  assert.match(r.stdout, /^app: still 1\.0\.0 — brew listed 2\.0\.0 and the upgrade exited 0/m, r.stdout);
+  assert.match(r.stdout, /which -a/);
+  assert.doesNotMatch(r.stdout, /did not list/);
+  assert.equal(r.code, 2);
+});
+
+test("a tool brew has nothing newer for is still pending, not broken", async (t) => {
+  // The release is out, the formula has not caught up: brew upgrade had
+  // nothing to do, and saying so is different from saying it failed.
+  const url = await stubForge(["v2.0.0", "v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  const { tool: app } = await fileTool(home, "1.0.0", { source: url, update: "brew upgrade app" });
+  await writeConfig(home, [app]);
+  const dir = await fakeBrew(`case "$1" in outdated) ${NOTHING_OUTDATED} ;; esac`);
+
+  const r = await runCli(["digest", "--brew-upgrade", "--no-judge"], home, { PATH: dir });
+  assert.match(r.stdout, /^app: still 1\.0\.0 — brew outdated did not list it/m, r.stdout);
+  assert.match(r.stdout, /2\.0\.0 is published upstream/);
+  assert.doesNotMatch(r.stdout, /may not be brew's/);
+  assert.equal(r.code, 1);
+});
+
+test("a probe that fails after the update is not folded into success", async (t) => {
+  const url = await stubForge(["v2.0.0", "v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  const { tool: app } = await fileTool(home, "1.0.0", (verFile) => ({
+    source: url,
+    update: `/bin/rm ${verFile}`,
+  }));
+  await writeConfig(home, [app]);
+
+  const r = await runCli(["--yes", "--no-judge"], home, { PATH: await hermeticBin() });
+  assert.match(r.stdout, /^app: could not probe after the update/m, r.stdout);
+  assert.doesNotMatch(r.stdout, /\b(now|still) [0-9]/, "a version it could not read must not be stated");
+  assert.equal(r.code, 2);
+});
+
+test("--brew-upgrade names an update line brew never ran, and leaves it pending", async (t) => {
+  const url = await stubForge(["v2.0.0", "v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  const { tool: app } = await fileTool(home, "1.0.0", { source: url, update: "claude update" });
+  await writeConfig(home, [app]);
+  const dir = await fakeBrew(`case "$1" in outdated) ${NOTHING_OUTDATED} ;; esac`);
+
+  const r = await runCli(["digest", "--brew-upgrade", "--no-judge"], home, { PATH: dir });
+  assert.match(
+    r.stdout,
+    /→ claude update\s+\(not run by brew upgrade\)/,
+    "the report marks it before the upgrade",
+  );
+  assert.match(r.stdout, /^app: still 1\.0\.0 — its update line is not brew's: claude update$/m, r.stdout);
+  assert.equal(r.code, 1);
 });
 
 test("a --json report larger than the pipe buffer arrives whole", async (t) => {

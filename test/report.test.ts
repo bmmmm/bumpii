@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Engine } from "../src/judge.ts";
 import { parseItems } from "../src/judge.ts";
-import { renderReport } from "../src/render.ts";
+import { type Reprobe, renderReport, reprobeVerdict } from "../src/render.ts";
 import type { Release, ToolConfig, ToolReport } from "../src/types.ts";
 
 const engine: Engine = { kind: "openai", model: "local", label: "openai-compatible/local" };
@@ -162,6 +162,108 @@ test("everything current shares one line, below the entries that need reading", 
   });
   assert.match(ahead, /ahead of 2\.96\.0/);
   assert.doesNotMatch(ahead, /up to date:.*gh/);
+});
+
+test("the verdict after an update states what was measured and nothing more", () => {
+  // One row per branch, each with a state and one absence: the wording that
+  // would have been a conclusion the code did not reach.
+  const behind = report({ installed: "1.0.0", latest: "2.0.0", behind: [rel("2.0.0")] });
+  const brewLine = { ...tool, update: "brew upgrade gh" };
+  const verdict = (over: Partial<ToolReport>, p: Reprobe) =>
+    reprobeVerdict(report({ ...behind, ...over }), p);
+  const rows: [string, ReturnType<typeof verdict>, string, RegExp, RegExp][] = [
+    // label, verdict, state, must say, must not say
+    [
+      "probe threw",
+      verdict({}, { now: null, probeError: "boom", ran: "own" }),
+      "unknown",
+      /could not probe.*boom/,
+      /\b(now|still) [0-9]/,
+    ],
+    ["binary gone", verdict({}, { now: null, ran: "own" }), "unknown", /gh is not on PATH any more/, /still/],
+    ["caught up", verdict({}, { now: "2.0.0", ran: "own" }), "updated", /^.*gh.*: now 2\.0\.0$/, /still/],
+    [
+      "moved, still behind",
+      verdict({}, { now: "1.5.0", ran: "own" }),
+      "pending",
+      /now 1\.5\.0, still behind 2\.0\.0/,
+      /^.*: now 1\.5\.0$/,
+    ],
+    [
+      "unorderable",
+      verdict({}, { now: "nightly", ran: "own" }),
+      "pending",
+      /not orderable against 2\.0\.0/,
+      /still behind/,
+    ],
+    [
+      "manual",
+      verdict({ tool: { ...tool, update: "manual: open the updater" } }, { now: "1.0.0", ran: "manual" }),
+      "pending",
+      /nothing to run: manual: open the updater/,
+      /brew/,
+    ],
+    [
+      "not brew's",
+      verdict({ tool: { ...tool, update: "claude update" } }, { now: "1.0.0", ran: "not-brew" }),
+      "pending",
+      /is not brew's: claude update/,
+      /did not list/,
+    ],
+    [
+      "own non-brew line, unchanged",
+      verdict({ tool: { ...tool, update: "claude update" } }, { now: "1.0.0", ran: "own" }),
+      "pending",
+      /ran and exited 0, and the version did not change/,
+      /brew/,
+    ],
+    [
+      "brew list unavailable",
+      verdict({ tool: brewLine }, { now: "1.0.0", ran: "brew-upgrade", brew: undefined }),
+      "pending",
+      /pending list was not available/,
+      /did not list/,
+    ],
+    [
+      "brew listed nothing",
+      verdict({ tool: brewLine }, { now: "1.0.0", ran: "brew-upgrade", brew: null }),
+      "pending",
+      /brew outdated did not list it.*2\.0\.0 is published upstream/,
+      /may not be brew's/,
+    ],
+    [
+      "pinned",
+      verdict({ tool: brewLine }, { now: "1.0.0", ran: "own", brew: { latest: "2.0.0", pinned: true } }),
+      "pending",
+      /pinned/,
+      /may not be brew's/,
+    ],
+    [
+      "listed and unchanged",
+      verdict(
+        { tool: brewLine },
+        { now: "1.0.0", ran: "brew-upgrade", brew: { latest: "2.0.0", pinned: false } },
+      ),
+      "failed",
+      /brew listed 2\.0\.0 and the upgrade exited 0.*which -a gh/,
+      /did not list/,
+    ],
+  ];
+  for (const [label, v, state, says, never] of rows) {
+    assert.equal(v.state, state, `${label}: ${v.line}`);
+    assert.match(v.line, says, label);
+    assert.doesNotMatch(v.line, never, label);
+  }
+  // A channel's versions are hashes: equal and different are the two answers,
+  // asserted together so a rewrite cannot fix one by breaking the other.
+  const channel = { installed: "aaa111", latest: "bbb222", channel: { tag: "tip", aheadBy: 3 } };
+  const same = verdict(channel, { now: "aaa111", ran: "manual" });
+  const moved = verdict(channel, { now: "ccc333", ran: "own" });
+  assert.equal(same.state, "pending");
+  assert.match(same.line, /still aaa111/);
+  assert.equal(moved.state, "updated");
+  assert.match(moved.line, /now ccc333/);
+  assert.doesNotMatch(moved.line, /behind|caught up/, "a hash cannot be ordered against the head");
 });
 
 test("no report claims to know which changes touch you", () => {

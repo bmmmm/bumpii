@@ -4,7 +4,7 @@ import type { Inbox } from "./inbox.ts";
 import type { Engine } from "./judge.ts";
 import type { Overview, OverviewEntry } from "./overview.ts";
 import type { DigestItem, ItemKind, Release, ToolReport } from "./types.ts";
-import { compareVersions, releaseFor } from "./version.ts";
+import { compareVersions, isOrderable, releaseFor } from "./version.ts";
 
 /**
  * Strip anything that would drive the terminal rather than fill it.
@@ -120,6 +120,109 @@ function noUsagePathsWarning(consequence: string): string[] {
     dim("  add usagePaths to the config so the verdict means something"),
     "",
   ];
+}
+
+/** What the run knows about a tool once its update has run. */
+export interface Reprobe {
+  /** What the probe reads now; null when the binary is gone (ENOENT). */
+  now: string | null;
+  /** The probe threw: its message. */
+  probeError?: string;
+  /**
+   * What brew listed for this tool before the update. undefined: brew's list
+   * was not available; null: brew listed nothing for it. Two different
+   * answers, and the verdict keeps them apart.
+   */
+  brew?: { latest: string; pinned: boolean } | null;
+  /** How the update reached it — or did not. */
+  ran: "own" | "brew-upgrade" | "not-brew" | "manual";
+}
+
+export type ReprobeState = "updated" | "pending" | "failed" | "unknown";
+
+/**
+ * One line per tool the run said was behind, read again after the update —
+ * and a state for the exit code, which cli.ts owns.
+ *
+ * Exit 0 after --yes used to be the update commands' exit codes and nothing
+ * else: `brew upgrade` returns 0 with the tool still on the old version
+ * whenever brew has no newer bottle yet, and the run reported success.
+ * "Updated" is a conclusion, and it is reached by reading the version again.
+ *
+ * Every reason clause names what was measured — brew's list, an exit code,
+ * the update line — and not the cause it suggests: "brew outdated did not
+ * list it" covers a formula that lags the release and an auto-updating cask
+ * alike, without claiming which. Here rather than in cli.ts so the scrub in
+ * safeReport applies: a version string is a user-written regex over a
+ * binary's output, the same class of bytes as a forge's.
+ */
+export function reprobeVerdict(raw: ToolReport, p: Reprobe): { line: string; state: ReprobeState } {
+  const r = safeReport(raw);
+  const name = bold(r.tool.name);
+  const bin = r.tool.version.cmd[0] ?? r.tool.name;
+  if (p.probeError !== undefined) {
+    return { line: `${name}: could not probe after the update: ${safe(p.probeError)}`, state: "unknown" };
+  }
+  if (p.now === null) {
+    return {
+      line: `${name}: could not probe after the update — ${bin} is not on PATH any more`,
+      state: "unknown",
+    };
+  }
+  const now = safe(p.now);
+  const latest = r.latest ?? "?";
+  if (now !== r.installed) {
+    // A channel's versions are commit hashes: what changed can be said, and
+    // whether it caught up would need the forge asked again.
+    if (r.channel) return { line: `${name}: now ${now}`, state: "updated" };
+    // The trap compareVersions has for `nightly`: unorderable input takes the
+    // NaN path and would answer "caught up".
+    if (!isOrderable(now) || !isOrderable(latest)) {
+      return {
+        line: `${name}: now ${now} — not orderable against ${latest}, so whether it caught up is not known`,
+        state: "pending",
+      };
+    }
+    if (compareVersions(now, latest) >= 0) return { line: `${name}: now ${now}`, state: "updated" };
+    return { line: `${name}: now ${now}, still behind ${latest}`, state: "pending" };
+  }
+
+  const still = `${name}: still ${now}`;
+  const update = r.tool.update.trim();
+  if (p.ran === "manual") {
+    return { line: `${still} — its update line says there is nothing to run: ${update}`, state: "pending" };
+  }
+  if (p.ran === "not-brew")
+    return { line: `${still} — its update line is not brew's: ${update}`, state: "pending" };
+  if (p.ran === "own" && formulaOf(update) === null) {
+    return {
+      line: `${still} — its update line ran and exited 0, and the version did not change`,
+      state: "pending",
+    };
+  }
+  // brew ran for it, one way or the other.
+  if (p.brew === undefined) {
+    return {
+      line: `${still} — brew's pending list was not available, so this run cannot say why`,
+      state: "pending",
+    };
+  }
+  if (p.brew === null) {
+    return {
+      line: `${still} — brew outdated did not list it, so brew upgrade had nothing to do; ${latest} is published upstream`,
+      state: "pending",
+    };
+  }
+  if (p.brew.pinned) {
+    return {
+      line: `${still} — brew lists ${safe(p.brew.latest)} but the formula is pinned, so brew upgrade leaves it`,
+      state: "pending",
+    };
+  }
+  return {
+    line: `${still} — brew listed ${safe(p.brew.latest)} and the upgrade exited 0, so the ${bin} on PATH may not be brew's (try which -a ${bin})`,
+    state: "failed",
+  };
 }
 
 /**
