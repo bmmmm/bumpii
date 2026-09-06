@@ -1385,11 +1385,23 @@ function updateEnv(): NodeJS.ProcessEnv {
  * and it is the number the other signal paths here already follow. It is
  * distinguishable from all three documented codes, which is the point: nothing
  * about the packages was learned when the reader left.
+ *
+ * `EPIPE` alone is not the whole family. process.stdout to a pipe is backed
+ * by a `net.Socket`, and once the reader has closed it, a burst of synchronous
+ * writes (the report loop plus `exitAfterFlush`'s own flush write) does not
+ * all fail the same way: the first write past the close gets `EPIPE`, but a
+ * later one lands after the socket already flipped to disconnected and gets
+ * `ENOTCONN` instead — same reader-gone condition, different errno for the
+ * write that lost the race. Un-reproducible with a single spawn; a tight loop
+ * of this test under concurrency (bumpii#4) turned up `ENOTCONN` on 8/800
+ * runs, every one of them exiting 1 with this function's own `throw err` in
+ * the stack — the exact answer this function exists to prevent, thrown by
+ * this function.
  */
 function exitQuietlyOnBrokenPipe(): void {
   for (const stream of [process.stdout, process.stderr]) {
     stream.on("error", (err: NodeJS.ErrnoException) => {
-      if (err.code !== "EPIPE") throw err;
+      if (err.code !== "EPIPE" && err.code !== "ENOTCONN") throw err;
       // Not exitAfterFlush: the stream that would be flushed is the one that
       // just went away, and waiting on it is how this hangs instead.
       process.exit(141);

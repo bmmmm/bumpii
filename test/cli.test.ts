@@ -831,6 +831,68 @@ test("a reader that walks away is not reported as updates being available", asyn
   assert.doesNotMatch(stderr, /EPIPE|Unhandled/, "a closed pipe must not print a stack trace");
 });
 
+test("a reader that walks away still is not reported as pending under a loaded machine", async () => {
+  // bumpii#4: the single-spawn version above passes 10/10 locally and still
+  // saw exit 1 on a macOS runner. Cause: process.stdout to a pipe is a
+  // net.Socket, and the report loop's burst of synchronous writes does not
+  // all fail the closed reader the same way — the first write past the close
+  // gets EPIPE (handled), but a later one in the same burst can land after
+  // the socket has already flipped to disconnected and gets ENOTCONN
+  // instead. exitQuietlyOnBrokenPipe matched EPIPE alone and re-threw that
+  // ENOTCONN uncaught: exit 1, the exact answer the fix exists to prevent,
+  // thrown from inside the function guarding against it.
+  //
+  // One spawn essentially never lands the race (measured: 0/10). Many
+  // concurrent spawns reproduce it reliably: before the fix, this exact loop
+  // hit ENOTCONN/exit 1 on 8 of 800 runs (two batches, at concurrency 20 and
+  // 30). Every occurrence carried `code: 'ENOTCONN'` and this function's own
+  // `throw err` in the stack. After the fix (ENOTCONN treated the same as
+  // EPIPE), 1300/1300 runs across two batches exited 0 or 141, never 1.
+  const home = await freshHome();
+  const many = Array.from({ length: 2000 }, (_, i) => tool({ name: `tool${i}`, source: `github:o/r${i}` }));
+  await writeConfig(home, many);
+
+  const RUNS = 300;
+  const CONCURRENCY = 30;
+
+  const once = () =>
+    new Promise<{ code: number | null; bytes: number; stderr: string }>((resolve) => {
+      const p = spawnCli(["list"], home);
+      let bytes = 0;
+      let stderr = "";
+      p.stdout.on("data", (d) => {
+        bytes += d.length;
+        p.stdout.destroy(); // the reader leaves after the first chunk
+      });
+      p.stdout.on("error", () => {});
+      p.stderr.on("data", (d) => {
+        stderr += d;
+      });
+      p.on("exit", (code) => resolve({ code, bytes, stderr }));
+    });
+
+  const results: Array<{ code: number | null; bytes: number; stderr: string }> = [];
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < RUNS) {
+      next++;
+      results.push(await once());
+    }
+  }
+  await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+
+  assert.equal(results.length, RUNS);
+  const ones = results.filter((r) => r.code === 1);
+  assert.equal(
+    ones.length,
+    0,
+    `1 is what a scheduler acts on as pending updates; got it ${ones.length}/${RUNS} times — ` +
+      `e.g.: ${ones[0]?.stderr.slice(0, 500)}`,
+  );
+  const crashed = results.filter((r) => /EPIPE|Unhandled/.test(r.stderr));
+  assert.equal(crashed.length, 0, "a closed pipe must not print a stack trace, on any run");
+});
+
 test("a closed terminal takes the children with it, the way Ctrl-C does", async (t) => {
   // SIGHUP is what a closing terminal sends, and it is the case where stranded
   // children matter most — nobody is left watching a `claude` or a `brew
