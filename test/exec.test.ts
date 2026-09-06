@@ -55,3 +55,17 @@ test("a streamed child is killable, so Ctrl-C takes it along", async () => {
   await assert.rejects(pending, /killed by SIGTERM/);
   assert.ok(Date.now() - started < 2000, "the child outlived the signal");
 });
+
+test("a streamed child honours a timeout when the caller sets one, and says so", async () => {
+  // The streamed path is the default for every run that is not --json — a
+  // cron line writing to a log included — so "no timeout because somebody is
+  // watching" is the caller's call, per run, not this function's.
+  const started = Date.now();
+  await assert.rejects(stream("sleep", ["5"], { timeout: 100 }), /timed out after 100 ms: killed by SIGTERM/);
+  assert.ok(Date.now() - started < 4000, "the sleep ran to completion — the timeout never fired");
+  // And without one, a signal is reported as what it was.
+  const pending = stream("sleep", ["5"]);
+  await new Promise((r) => setTimeout(r, 50));
+  killChildren();
+  await assert.rejects(pending, /^Error: killed by SIGTERM$/);
+});

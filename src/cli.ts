@@ -842,9 +842,11 @@ async function dispatch(progress: Progress): Promise<number> {
   // A --brew-upgrade run's `brew update` starts here, alongside the probes and
   // forge fetches, and is awaited before `brew outdated` below — so the "other
   // packages pending" line counts against a tap refreshed by this run, not
-  // whenever brew last happened to update it. Started this early it costs no
-  // wall-clock: it is network- and git-bound while the probes are not. The
-  // result is converted at once so a failure can never surface as an
+  // whenever brew last happened to update it. Started this early it overlaps
+  // the probes and fetches instead of following them — but it is awaited
+  // before the report, so a tap resync longer than the digest delays the
+  // report by the difference, which the old order did not. The result is
+  // converted at once so a failure can never surface as an
   // unhandled rejection while the digest is still working, and it is argv,
   // not `sh -c`, so a machine without brew fails with a real ENOENT rather
   // than sh's 127.
@@ -994,7 +996,10 @@ async function dispatch(progress: Progress): Promise<number> {
         engine,
         otherPending,
         otherPendingNames,
-        brewUpgrade: args.brewUpgrade && !args.dryRun,
+        // Only when brew upgrade will in fact run: a failed brew update has
+        // already cancelled it, and the report must not say it comes next.
+        brewUpgrade: args.brewUpgrade && !args.dryRun && brewUpdateError === undefined,
+        yes: args.yes,
       }),
     );
   }
@@ -1061,10 +1066,15 @@ async function dispatch(progress: Progress): Promise<number> {
    * command's own output is — a `brew upgrade` pouring nine bottles used to
    * be minutes of spinner and then ninety lines at once.
    *
-   * No timeout on the streamed path: somebody is watching, and Ctrl-C reaches
-   * the child through killChildren(). Under --json nothing is watching, the
-   * document is already on stdout, and the buffered run keeps its ceiling —
-   * with the child's stderr shown too, which the old buffered path dropped.
+   * The ceiling stays wherever nobody is watching. "Not --json" is not
+   * "interactive": a cron line writing to a log file streams too, and there
+   * a brew upgrade stuck on a network fetch or a sudo prompt on /dev/tty used
+   * to be killed after twenty minutes, exit 2 — now it would hold brew's lock
+   * until the next scheduled run stacked up behind it. So the timeout is
+   * dropped only while stdout is a terminal, where Ctrl-C is the ceiling and
+   * a person sees what is being waited on. Under --json the document is
+   * already on stdout and the buffered run keeps its ceiling — with the
+   * child's stderr shown too, which the old buffered path dropped.
    */
   const runUpdate = async (file: string, argv: string[], echo: string, timeout: number): Promise<void> => {
     progress.pause();
@@ -1076,7 +1086,7 @@ async function dispatch(progress: Progress): Promise<number> {
         if (out.stderr) say(out.stderr);
       } else {
         await flushStdio();
-        await stream(file, argv, { env: updateEnv() });
+        await stream(file, argv, { env: updateEnv(), timeout: process.stdout.isTTY ? undefined : timeout });
       }
     } finally {
       progress.resume();
@@ -1086,8 +1096,13 @@ async function dispatch(progress: Progress): Promise<number> {
   // A child that inherited a pipe whose reader has gone dies of SIGPIPE, the
   // way `bumpii digest --yes | head` ends it. That is the reader leaving, not
   // an update failing, and exitQuietlyOnBrokenPipe already answers 141 for the
-  // same event when it hits this process's own write.
-  const readerLeft = (err: unknown): boolean => /SIGPIPE/.test((err as Error).message);
+  // same event when it hits this process's own write. Matched on stream()'s
+  // exact wording, never on a substring: under --json the buffered error
+  // carries the child's stderr, and a command that merely *prints* SIGPIPE
+  // must not turn its own failure into 141. `exited 141` is the shell
+  // reporting the same death of a command it ran.
+  const readerLeft = (err: unknown): boolean =>
+    /^(killed by SIGPIPE|exited 141)$/.test((err as Error).message);
 
   // What the update loop did per tool, for the re-probe after it: its own
   // line ran, or failed (counted and reported already), or was never run
@@ -1123,6 +1138,17 @@ async function dispatch(progress: Progress): Promise<number> {
         progress.step();
         continue;
       }
+      // The same `&&` the brew-upgrade block keeps: a per-tool brew line runs
+      // against the tap `brew update` just failed to refresh, and skipping the
+      // global upgrade for that reason while running eight of these is the
+      // reason applied to half the commands.
+      if (brewUpdateError !== undefined && formulaOf(r.tool.update) !== null) {
+        updateFailures++;
+        progress.err(`${r.tool.name}: ${r.tool.update.trim()} — skipped, brew update failed above\n`);
+        ran.set(r.tool.name, "failed");
+        progress.step();
+        continue;
+      }
       try {
         await runUpdate("/bin/sh", ["-c", r.tool.update], r.tool.update, 600_000);
         ran.set(r.tool.name, "own");
@@ -1142,6 +1168,9 @@ async function dispatch(progress: Progress): Promise<number> {
   // judged, per-tool command; this runs everything brew has pending,
   // tracked or not, with none of it read first. Two different kinds of
   // "yes", so one flag cannot silently imply the other.
+  // Whether `brew upgrade` ran and exited 0 — the re-probe's blame line says
+  // "the upgrade exited 0", and it may only say so when that was measured.
+  let brewUpgradeOk = false;
   if (args.brewUpgrade && !args.dryRun) {
     progress.phase("update");
     if (brewUpdateError !== undefined) {
@@ -1152,6 +1181,7 @@ async function dispatch(progress: Progress): Promise<number> {
     } else {
       try {
         await runUpdate("brew", ["upgrade"], "brew upgrade", 1_200_000);
+        brewUpgradeOk = true;
       } catch (err) {
         if (readerLeft(err)) return 141;
         updateFailures++;
@@ -1181,19 +1211,35 @@ async function dispatch(progress: Progress): Promise<number> {
       const how = ran.get(r.tool.name);
       return !r.error && r.installed && r.behind.length > 0 && how !== "failed" && how !== "placeholder";
     });
-    progress.phase("probe", { total: again.length, done: 0 });
+    // Its own phase, not "probe": that phase's quips speak of the tool count
+    // the fetch measured and of the run's whole elapsed time, both of which
+    // are the wrong numbers here — "asking 12 binaries" for two, and "one of
+    // them is not answering" the moment a run has lasted ten seconds.
+    progress.phase("reprobe", { total: again.length, done: 0 });
     progress.resume();
     for (const r of again) {
       const how = ran.get(r.tool.name);
       const update = r.tool.update;
+      // A placeholder that --yes never saw (--brew-upgrade alone): the entry
+      // is broken now, and reads as such — not as an ordinary non-brew line.
+      if (how === undefined && isPlaceholderUpdate(update)) {
+        updateFailures++;
+        progress.err(
+          `${r.tool.name}: update line is still a placeholder (${update.trim()}) — nothing ran for it\n`,
+        );
+        progress.step();
+        continue;
+      }
       const ranAs: Reprobe["ran"] =
         how === "own"
           ? "own"
           : how === "manual" || isManualUpdate(update)
             ? "manual"
-            : formulaOf(update) !== null
-              ? "brew-upgrade"
-              : "not-brew";
+            : formulaOf(update) === null
+              ? "not-brew"
+              : brewUpgradeOk
+                ? "brew-upgrade"
+                : "brew-failed";
       const names = namesOf(r.tool);
       const listed = outdated?.find((p) => names.includes(p.name));
       const brew =
@@ -1203,6 +1249,17 @@ async function dispatch(progress: Progress): Promise<number> {
         probe = { now: await installedVersion(r.tool), brew, ran: ranAs };
       } catch (err) {
         probe = { now: null, probeError: (err as Error).message, brew, ran: ranAs };
+      }
+      // A channel's versions are commit hashes: a changed one says nothing
+      // about the distance to the head, so the forge is asked once more —
+      // the verdict may not call it current on the strength of a new hash.
+      if (r.channel && r.tool.source && probe.now !== null && probe.now !== r.installed) {
+        try {
+          const ch = await channelStatus(parseSource(r.tool.source), r.channel.tag, probe.now);
+          probe.channel = { aheadBy: ch.aheadBy };
+        } catch (err) {
+          probe.compareError = (err as Error).message;
+        }
       }
       const { line, state } = reprobeVerdict(r, probe);
       say(`${line}\n`);

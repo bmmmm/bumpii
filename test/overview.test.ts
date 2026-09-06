@@ -15,7 +15,6 @@ import {
   type Overview,
   type OverviewEntry,
   untrackedOutdated,
-  untrackedOutdatedCount,
 } from "../src/overview.ts";
 import { renderOverview } from "../src/render.ts";
 import { referenceCounts } from "../src/usage.ts";
@@ -363,7 +362,7 @@ const outdated = (name: string, over: Partial<OutdatedPackage> = {}): OutdatedPa
   ...over,
 });
 
-test("untrackedOutdatedCount counts what tools.json never named", () => {
+test("untrackedOutdated leaves out what tools.json named", () => {
   const tools = [
     {
       name: "gh",
@@ -372,11 +371,11 @@ test("untrackedOutdatedCount counts what tools.json never named", () => {
       update: "brew upgrade gh",
     },
   ];
-  const count = untrackedOutdatedCount([outdated("gh"), outdated("libffi"), outdated("openldap")], tools);
-  assert.equal(count, 2, "gh is tracked, the other two are not");
+  const other = untrackedOutdated([outdated("gh"), outdated("libffi"), outdated("openldap")], tools);
+  assert.equal(other.length, 2, "gh is tracked, the other two are not");
 });
 
-test("untrackedOutdatedCount matches a tracked tool under its formula name too", () => {
+test("untrackedOutdated matches a tracked tool under its formula name too", () => {
   // The bug namesOf exists to prevent, applied here: brew reports the formula
   // (forgejo-cli), not the binary (fj) the tool is keyed on.
   const tools = [
@@ -387,11 +386,11 @@ test("untrackedOutdatedCount matches a tracked tool under its formula name too",
       update: "brew upgrade forgejo-cli",
     },
   ];
-  assert.equal(untrackedOutdatedCount([outdated("forgejo-cli")], tools), 0);
+  assert.deepEqual(untrackedOutdated([outdated("forgejo-cli")], tools), []);
 });
 
-test("untrackedOutdatedCount is zero when brew has nothing pending", () => {
-  assert.equal(untrackedOutdatedCount([], []), 0);
+test("untrackedOutdated is empty when brew has nothing pending", () => {
+  assert.deepEqual(untrackedOutdated([], []), []);
 });
 
 test("untrackedOutdated hands back the packages themselves, in brew's order", () => {

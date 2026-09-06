@@ -508,11 +508,13 @@ happened. Nothing was updated, so the exit code stays the digest's own: `1`
 while something is still pending.
 
 An update command runs with the terminal: what `brew upgrade` prints, it
-prints as it goes, and the progress line steps aside for it. There is no
-timeout on that path — somebody is watching, and Ctrl-C reaches the child.
-Under `--json` the document has already gone to stdout, so the commands run
-buffered instead, with their output (stderr included) on stderr and the
-usual ceiling. brew runs with `HOMEBREW_NO_ENV_HINTS=1` unless you set that
+prints as it goes, and the progress line steps aside for it. While stdout is
+a terminal there is no timeout — somebody is watching, and Ctrl-C reaches
+the child; on a pipe or a log file the ceiling stays (ten minutes per update
+line, twenty for `brew upgrade`), so a scheduled run cannot hang on brew's
+lock forever. Under `--json` the document has already gone to stdout, so the
+commands run buffered instead, with their output (stderr included) on
+stderr. brew runs with `HOMEBREW_NO_ENV_HINTS=1` unless you set that
 variable yourself, empty included.
 
 Once the commands have run, every tool the report said was behind is probed
@@ -524,7 +526,10 @@ cause it suggests. Under `--brew-upgrade`, `brew update` runs before the
 report so the pending line counts against a refreshed tap and names the
 packages; `brew upgrade` runs after it; and an update line that is not
 brew's (`claude update`) is marked `(not run by brew upgrade)` in the report
-and stays pending after it. A `--json --yes` document is written before the
+and stays pending after it. The pending line is part of every digest: `N
+other packages have brew updates pending: …` when brew listed some, `no other
+brew updates pending` when it listed none, nothing at all when brew was not
+asked or could not answer. A `--json --yes` document is written before the
 updates run, so its `installed` fields are the pre-update versions and the
 re-probe lines go to stderr.
 

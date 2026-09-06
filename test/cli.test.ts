@@ -981,7 +981,7 @@ test("an update command's output arrives while it is still running", async (t) =
   }));
   await writeConfig(home, [app]);
 
-  const p = spawnCli(["digest", "--yes", "--no-judge"], home);
+  const p = spawnCli(["digest", "--yes", "--no-judge"], home, { PATH: await hermeticBin() });
   let stdout = "";
   let stderr = "";
   p.stdout.on("data", (d) => {
@@ -1017,7 +1017,7 @@ test("the echo line is not overtaken by the child it announces", async (t) => {
   const { tool: app } = await fileTool(home, "1.0.0", { source: url, update: "printf 'FIRST\\n'" });
   await writeConfig(home, [app]);
 
-  const p = spawnCli(["digest", "--yes", "--no-judge"], home);
+  const p = spawnCli(["digest", "--yes", "--no-judge"], home, { PATH: await hermeticBin() });
   p.stdout.pause();
   await wait(300);
   let stdout = "";
@@ -1051,7 +1051,7 @@ test("a reader that leaves during an update is not an update failure", async (t)
   });
   await writeConfig(home, [app]);
 
-  const p = spawnCli(["digest", "--yes", "--no-judge"], home);
+  const p = spawnCli(["digest", "--yes", "--no-judge"], home, { PATH: await hermeticBin() });
   let stdout = "";
   p.stdout.on("data", (d) => {
     stdout += d;
@@ -1216,6 +1216,73 @@ test("--brew-upgrade names an update line brew never ran, and leaves it pending"
   );
   assert.match(r.stdout, /^app: still 1\.0\.0 — its update line is not brew's: claude update$/m, r.stdout);
   assert.equal(r.code, 1);
+});
+
+test("a failed brew upgrade is not described as having exited 0", async (t) => {
+  // Measured before the fix: stderr said "brew upgrade failed: exited 1" and
+  // stdout, in the same second, "brew listed 2.0.0 and the upgrade exited 0,
+  // so the … on PATH may not be brew's" — two lines contradicting each other,
+  // the wrong one sending the reader after a shadow install that is not there.
+  const url = await stubForge(["v2.0.0", "v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  const { tool: app } = await fileTool(home, "1.0.0", { source: url, update: "brew upgrade app" });
+  await writeConfig(home, [app]);
+  const listed = JSON.stringify({
+    formulae: [{ name: "app", installed_versions: ["1.0.0"], current_version: "2.0.0" }],
+    casks: [],
+  });
+  const dir = await fakeBrew(
+    `case "$1" in\n  outdated) printf '%s' '${listed}' ;;\n  upgrade) echo 'bottle download failed' >&2; exit 1 ;;\nesac`,
+  );
+
+  const r = await runCli(["digest", "--brew-upgrade", "--no-judge"], home, { PATH: dir });
+  assert.match(r.stderr, /brew upgrade failed: exited 1/);
+  assert.match(r.stdout, /^app: still 1\.0\.0 — brew upgrade did not complete/m, r.stdout);
+  assert.doesNotMatch(r.stdout, /exited 0|which -a/, "a failed upgrade must not be called a clean one");
+  assert.equal(r.code, 2);
+});
+
+test("--brew-upgrade alone reports a placeholder entry as broken, not as a non-brew line", async (t) => {
+  // --yes names a placeholder for what it is and exits 2; the same entry
+  // under --brew-upgrade alone fell through to "its update line is not
+  // brew's: # complete this: …" and exit 1 — an unfinished entry filed as an
+  // ordinary one.
+  const url = await stubForge(["v2.0.0", "v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  const { tool: app } = await fileTool(home, "1.0.0", {
+    source: url,
+    update: "# complete this: pull and restart",
+  });
+  await writeConfig(home, [app]);
+  const dir = await fakeBrew(`case "$1" in outdated) ${NOTHING_OUTDATED} ;; esac`);
+
+  const r = await runCli(["digest", "--brew-upgrade", "--no-judge"], home, { PATH: dir });
+  assert.match(r.stderr, /app: update line is still a placeholder/);
+  assert.doesNotMatch(r.stdout, /not brew's/);
+  assert.equal(r.code, 2);
+});
+
+test("--yes --brew-upgrade after a failed brew update skips the per-tool brew lines too", async (t) => {
+  // The && of `brew update && brew upgrade` has to cover a tool's own
+  // `brew upgrade x` line as well: eight of them running against the tap
+  // that just failed to refresh, right before "brew upgrade skipped — brew
+  // update failed above", is the reason applied to half the commands.
+  const url = await stubForge(["v2.0.0", "v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  const { tool: app } = await fileTool(home, "1.0.0", { source: url, update: "brew upgrade app" });
+  await writeConfig(home, [app]);
+  const dir = await fakeBrew(
+    `case "$1" in\n  update) echo 'no network' >&2; exit 1 ;;\n  upgrade) echo 'BREW UPGRADE WAS CALLED' ;;\n  outdated) ${NOTHING_OUTDATED} ;;\nesac`,
+  );
+
+  const r = await runCli(["digest", "--yes", "--brew-upgrade", "--no-judge"], home, { PATH: dir });
+  assert.match(r.stderr, /app: brew upgrade app — skipped, brew update failed above/);
+  assert.doesNotMatch(r.stdout + r.stderr, /BREW UPGRADE WAS CALLED/);
+  assert.doesNotMatch(r.stdout, /not run by brew upgrade|brew upgrade runs next/, "nothing runs next");
+  assert.equal(r.code, 2);
 });
 
 test("a --json report larger than the pipe buffer arrives whole", async (t) => {

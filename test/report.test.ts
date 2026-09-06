@@ -258,12 +258,41 @@ test("the verdict after an update states what was measured and nothing more", ()
   // asserted together so a rewrite cannot fix one by breaking the other.
   const channel = { installed: "aaa111", latest: "bbb222", channel: { tag: "tip", aheadBy: 3 } };
   const same = verdict(channel, { now: "aaa111", ran: "manual" });
-  const moved = verdict(channel, { now: "ccc333", ran: "own" });
   assert.equal(same.state, "pending");
   assert.match(same.line, /still aaa111/);
-  assert.equal(moved.state, "updated");
-  assert.match(moved.line, /now ccc333/);
-  assert.doesNotMatch(moved.line, /behind|caught up/, "a hash cannot be ordered against the head");
+  // A new hash on its own is not "updated": the exit code would then say
+  // nothing is left pending about a build that may still trail the head.
+  const uncompared = verdict(channel, { now: "ccc333", ran: "own" });
+  assert.equal(uncompared.state, "pending");
+  assert.match(uncompared.line, /now ccc333 — not compared against tip again/);
+  const caughtUp = verdict(channel, { now: "ccc333", ran: "own", channel: { aheadBy: 0 } });
+  assert.equal(caughtUp.state, "updated");
+  assert.match(caughtUp.line, /now ccc333, current on tip/);
+  const trailing = verdict(channel, { now: "ccc333", ran: "own", channel: { aheadBy: 3 } });
+  assert.equal(trailing.state, "pending");
+  assert.match(trailing.line, /now ccc333, still 3 commits behind on tip/);
+  const unreachable = verdict(channel, { now: "ccc333", ran: "own", compareError: "HTTP 500" });
+  assert.equal(unreachable.state, "unknown");
+  assert.match(unreachable.line, /could not compare against tip again: HTTP 500/);
+  assert.doesNotMatch(unreachable.line, /current|behind/);
+
+  // brew was to run for it and did not finish: no blame on the binary, and
+  // never the words "exited 0" about an upgrade that failed.
+  const brewFailed = verdict(
+    { tool: brewLine },
+    { now: "1.0.0", ran: "brew-failed", brew: { latest: "2.0.0", pinned: false } },
+  );
+  assert.equal(brewFailed.state, "pending");
+  assert.match(brewFailed.line, /brew upgrade did not complete/);
+  assert.doesNotMatch(brewFailed.line, /exited 0|which -a/);
+
+  // The `which -a` hint names what a shell would look up, not the probe's path.
+  const byPath = verdict(
+    { tool: { ...brewLine, version: { cmd: ["/opt/homebrew/bin/gh", "--version"], match: "^v?([0-9.]+)" } } },
+    { now: "1.0.0", ran: "brew-upgrade", brew: { latest: "2.0.0", pinned: false } },
+  );
+  assert.match(byPath.line, /which -a gh\b/);
+  assert.doesNotMatch(byPath.line, /which -a \/opt/);
 });
 
 test("no report claims to know which changes touch you", () => {
@@ -460,6 +489,13 @@ test("under --brew-upgrade an update line brew will not run is marked", () => {
   // Without the flag the marker is meaningless, and absent.
   const plain = renderReport([report({ tool: claude, ...behind })], { engine });
   assert.doesNotMatch(plain, /not run by brew upgrade/);
+  // And under --yes as well, the line does run — by --yes, not by brew.
+  const both = renderReport([report({ tool: claude, ...behind })], { engine, brewUpgrade: true, yes: true });
+  assert.doesNotMatch(
+    both,
+    /not run by brew upgrade/,
+    "--yes runs it; the marker would say it stays untouched",
+  );
 });
 
 test("one other pending package is not reported as three", () => {

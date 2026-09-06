@@ -134,8 +134,16 @@ export interface Reprobe {
    * answers, and the verdict keeps them apart.
    */
   brew?: { latest: string; pinned: boolean } | null;
-  /** How the update reached it — or did not. */
-  ran: "own" | "brew-upgrade" | "not-brew" | "manual";
+  /**
+   * How the update reached it — or did not. "brew-upgrade" means the global
+   * `brew upgrade` ran and exited 0; "brew-failed" that it failed or was
+   * skipped, which the blame line has to know before it says "exited 0".
+   */
+  ran: "own" | "brew-upgrade" | "brew-failed" | "not-brew" | "manual";
+  /** A channel entry whose hash changed, compared against the head once more. */
+  channel?: { aheadBy: number };
+  /** That comparison threw: its message. */
+  compareError?: string;
 }
 
 export type ReprobeState = "updated" | "pending" | "failed" | "unknown";
@@ -159,7 +167,9 @@ export type ReprobeState = "updated" | "pending" | "failed" | "unknown";
 export function reprobeVerdict(raw: ToolReport, p: Reprobe): { line: string; state: ReprobeState } {
   const r = safeReport(raw);
   const name = bold(r.tool.name);
-  const bin = r.tool.version.cmd[0] ?? r.tool.name;
+  // The name a shell would look up, for the `which -a` hint: a probe written
+  // as /bin/cat or as a docker exec line would otherwise be accused by path.
+  const bin = (r.tool.version.cmd[0] ?? r.tool.name).split("/").pop() || r.tool.name;
   if (p.probeError !== undefined) {
     return { line: `${name}: could not probe after the update: ${safe(p.probeError)}`, state: "unknown" };
   }
@@ -172,9 +182,28 @@ export function reprobeVerdict(raw: ToolReport, p: Reprobe): { line: string; sta
   const now = safe(p.now);
   const latest = r.latest ?? "?";
   if (now !== r.installed) {
-    // A channel's versions are commit hashes: what changed can be said, and
-    // whether it caught up would need the forge asked again.
-    if (r.channel) return { line: `${name}: now ${now}`, state: "updated" };
+    // A channel's versions are commit hashes: a new one says nothing about the
+    // distance to the head, so "updated" needs the forge's answer, and without
+    // it the run cannot say the tool is no longer behind.
+    if (r.channel) {
+      const tag = r.channel.tag;
+      if (p.compareError !== undefined) {
+        return {
+          line: `${name}: now ${now} — could not compare against ${tag} again: ${safe(p.compareError)}`,
+          state: "unknown",
+        };
+      }
+      if (p.channel === undefined) {
+        return { line: `${name}: now ${now} — not compared against ${tag} again`, state: "pending" };
+      }
+      if (p.channel.aheadBy === 0)
+        return { line: `${name}: now ${now}, current on ${tag}`, state: "updated" };
+      const n = p.channel.aheadBy;
+      return {
+        line: `${name}: now ${now}, still ${n} commit${n === 1 ? "" : "s"} behind on ${tag}`,
+        state: "pending",
+      };
+    }
     // The trap compareVersions has for `nightly`: unorderable input takes the
     // NaN path and would answer "caught up".
     if (!isOrderable(now) || !isOrderable(latest)) {
@@ -200,7 +229,15 @@ export function reprobeVerdict(raw: ToolReport, p: Reprobe): { line: string; sta
       state: "pending",
     };
   }
-  // brew ran for it, one way or the other.
+  // brew was to run for it, and did not finish: nothing here can be blamed
+  // on the binary, and the failure was reported and counted where it happened.
+  if (p.ran === "brew-failed") {
+    return {
+      line: `${still} — brew upgrade did not complete (see above), so nothing reached it`,
+      state: "pending",
+    };
+  }
+  // brew ran for it, one way or the other, and exited 0.
   if (p.brew === undefined) {
     return {
       line: `${still} — brew's pending list was not available, so this run cannot say why`,
@@ -253,6 +290,11 @@ export interface RenderOptions {
    * of advising it, and an update line brew will not run gets marked.
    */
   brewUpgrade?: boolean;
+  /**
+   * The run will also run each tool's own update line (--yes), so a non-brew
+   * line is not left out after all — the marker would be wrong then.
+   */
+  yes?: boolean;
 }
 
 /**
@@ -420,7 +462,7 @@ export function renderReport(rawReports: ToolReport[], opts: RenderOptions): str
       // to read when the body was empty.
       out.push(dim(`  ${noDigestReason(r.behind, r.digestError, opts.engine)}`));
       for (const rel of r.behind) out.push(dim(`    ${rel.version}  ${link(rel.url, rel.url)}`));
-      out.push(updateLine(r.tool.update, opts.brewUpgrade), "");
+      out.push(updateLine(r.tool.update, opts.brewUpgrade && !opts.yes), "");
       continue;
     }
 
@@ -431,7 +473,7 @@ export function renderReport(rawReports: ToolReport[], opts: RenderOptions): str
       out.push(`  ${mark} ${kindLabel} ${item.summary}${item.version ? dim(` (${item.version})`) : ""}`);
     }
 
-    out.push(updateLine(r.tool.update, opts.brewUpgrade), "");
+    out.push(updateLine(r.tool.update, opts.brewUpgrade && !opts.yes), "");
   }
 
   // Only what compared equal to a published release lands here: unknown,

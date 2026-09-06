@@ -30,7 +30,8 @@ export type Phase =
   | "grep"
   | "notifications"
   | "discover"
-  | "update";
+  | "update"
+  | "reprobe";
 
 /**
  * Everything a quip may speak about. Anything absent is unknown — not zero —
@@ -214,6 +215,17 @@ const QUIPS: Quip[] = [
     phase: "update",
     when: (s) => (s.total ?? 0) > 1,
     text: (s) => `${plural(s.total ?? 0, "update line", "update lines")}, one at a time`,
+  },
+
+  // -- reading the versions again, after the updates ---------------------
+  //
+  // Not the probe phase's quips: those name the tool count the fetch measured
+  // and read the run's whole elapsed time as one probe's, both wrong here.
+  { phase: "reprobe", when: () => true, text: () => "reading the versions again" },
+  {
+    phase: "reprobe",
+    when: (s) => s.total !== undefined && s.total > 0,
+    text: (s) => `${plural(s.total ?? 0, "tool", "tools")} to read again, now that the updates ran`,
   },
 ];
 

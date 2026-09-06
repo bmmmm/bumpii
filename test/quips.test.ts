@@ -19,6 +19,7 @@ const PHASES: Phase[] = [
   "notifications",
   "discover",
   "update",
+  "reprobe",
 ];
 
 /** Everything a long-running command would eventually know about itself. */
@@ -130,6 +131,20 @@ test("the update phase never says what a command is doing", () => {
   );
   const single = eligible(full({ phase: "update", total: 1, elapsed: 25 }));
   assert.ok(!single.some((t) => /\b1 update line/.test(t)), "one line is not a queue worth announcing");
+});
+
+test("the re-probe phase counts what it re-reads, not what the fetch counted", () => {
+  // Reusing the probe phase after the updates put "asking 12 binaries" on the
+  // line for two re-probes, and "one of them is not answering" the moment the
+  // whole run had lasted ten seconds. Its own phase speaks of its own count.
+  const late = full({ phase: "reprobe", elapsed: 300, tools: 12, total: 2 });
+  const texts = eligible(late);
+  assert.ok(
+    texts.some((t) => t.includes("2 tools to read again")),
+    `the re-probe count is what this phase measured: ${texts.join(" | ")}`,
+  );
+  for (const t of texts)
+    assert.doesNotMatch(t, /12|not answering|binaries/, `"${t}" speaks of another phase`);
 });
 
 test("an empty grep says so instead of implying a search happened", () => {

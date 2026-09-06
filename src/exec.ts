@@ -125,9 +125,10 @@ export interface StreamResult {
 /**
  * Run a command with the terminal: its stdout and stderr are the caller's own,
  * written by the child directly, so a `brew upgrade` shows its progress as it
- * happens instead of as one block when it returns. Nothing is captured, and
- * there is no timeout — this is the interactive path, and Ctrl-C reaches the
- * child through `killChildren()`.
+ * happens instead of as one block when it returns. Nothing is captured. A
+ * timeout applies only when the caller sets one — the caller knows whether
+ * somebody is watching — and Ctrl-C reaches the child through `killChildren()`
+ * either way.
  *
  * `stdio` is not a caller's option: passing "pipe" would silently defeat the
  * point. stdin is /dev/null, not a closed pipe as in `run`, and satisfies the
@@ -144,6 +145,7 @@ export function stream(
   opts: Omit<SpawnOptions, "stdio"> = {},
 ): Promise<StreamResult> {
   return new Promise((resolve, reject) => {
+    const started = Date.now();
     const child = spawn(file, args, { ...opts, stdio: ["ignore", "inherit", "inherit"] });
     running.add(child);
     child.once("error", (err) => {
@@ -154,7 +156,16 @@ export function stream(
       running.delete(child);
       if (code === 0) return resolve({ code, signal });
       // Bare, so a caller can put its own "<name>: update failed:" in front.
-      reject(new Error(signal ? `killed by ${signal}` : `exited ${code}`));
+      // A signal at or past the deadline is spawn's own timeout kill, named
+      // as such for the same reason run() names it: "killed by SIGTERM"
+      // twenty minutes into a brew upgrade reads as brew dying on its own.
+      const timedOut =
+        signal !== null &&
+        opts.timeout !== undefined &&
+        opts.timeout > 0 &&
+        Date.now() - started >= opts.timeout;
+      const why = signal ? `killed by ${signal}` : `exited ${code}`;
+      reject(new Error(timedOut ? `timed out after ${opts.timeout} ms: ${why}` : why));
     });
   });
 }

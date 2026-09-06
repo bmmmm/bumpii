@@ -162,11 +162,6 @@ export function untrackedOutdated(outdated: OutdatedPackage[], tools: ToolConfig
   return outdated.filter((p) => !trackedNames.has(p.name));
 }
 
-/** The count of {@link untrackedOutdated}, for the --json document. */
-export function untrackedOutdatedCount(outdated: OutdatedPackage[], tools: ToolConfig[]): number {
-  return untrackedOutdated(outdated, tools).length;
-}
-
 /**
  * The tag that carried a version, from the releases the forge actually
  * published. Returns null rather than a guess: a compare URL built from an
