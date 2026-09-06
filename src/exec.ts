@@ -1,13 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// One execFile wrapper for the whole tool, for one reason beyond deduplication:
-// it closes the child's stdin immediately.
+// The two child-process wrappers for the whole tool — `run` buffers, `stream`
+// hands the child the terminal — for one reason beyond deduplication: every
+// child either starts is tracked so `killChildren()` can take it along, and
+// neither ever gives a child an open stdin.
 //
 // bumpii runs binaries it did not choose — every formula the user tracks, and
 // during `add` every binary a formula installs, some of them with no arguments
 // at all (the last entry in discover.ts's PROBES). A CLI invoked bare is quite
 // often a REPL, and an inherited open stdin pipe keeps it alive until the
-// timeout fires. Closing stdin makes it read EOF and exit at once.
-import { type ChildProcess, type ExecFileOptions, execFile } from "node:child_process";
+// timeout fires. `run` closes stdin at once; `stream` opens it on /dev/null,
+// which reads EOF the same way.
+import {
+  type ChildProcess,
+  type ExecFileOptions,
+  execFile,
+  type SpawnOptions,
+  spawn,
+} from "node:child_process";
 
 export interface ExecOutput {
   stdout: string;
@@ -17,6 +26,12 @@ export interface ExecOutput {
 /** What a failed run rejects with: an Error carrying whatever it managed to print. */
 export interface ExecError extends Error {
   code?: number | string;
+  /**
+   * True when a signal reached the child — execFile's own timeout kill, or
+   * ours from `killChildren()`. A maxBuffer kill builds its error before it
+   * sends the signal and leaves this unset (measured).
+   */
+  killed?: boolean;
   stdout?: string;
   stderr?: string;
 }
@@ -62,6 +77,7 @@ export function killChildren(signal: NodeJS.Signals = "SIGTERM"): number {
 
 export function run(file: string, args: string[], opts: ExecFileOptions = {}): Promise<ExecOutput> {
   return new Promise((resolve, reject) => {
+    const started = Date.now();
     // Explicit encoding, though utf8 is the default: it is what picks the
     // overload whose callback hands back strings rather than Buffers.
     const child = execFile(
@@ -76,11 +92,70 @@ export function run(file: string, args: string[], opts: ExecFileOptions = {}): P
         // non-zero exit can still have printed the version they were after.
         e.stdout = stdout;
         e.stderr = stderr;
+        // A timeout arrives as `killed: true, signal: "SIGTERM", code: null` and
+        // a message that says only "Command failed" (measured) — which reads as
+        // the command dying on its own, twenty minutes into a `brew upgrade`.
+        // `killed` alone does not identify it: `killChildren()` sets the same
+        // flag on its way to exit. The elapsed time does; a kill from outside
+        // that lands at exactly the deadline is one the deadline was about to
+        // deliver anyway. Prepended, never replaced: the callers wrap this
+        // message and still need the original text after the colon.
+        if (
+          opts.timeout !== undefined &&
+          opts.timeout > 0 &&
+          e.killed &&
+          Date.now() - started >= opts.timeout
+        ) {
+          e.message = `timed out after ${opts.timeout} ms: ${e.message}`;
+        }
         reject(e);
       },
     );
     running.add(child);
     child.stdin?.end();
+  });
+}
+
+/** How a streamed child ended: one of the two is set, as Node reports it. */
+export interface StreamResult {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+}
+
+/**
+ * Run a command with the terminal: its stdout and stderr are the caller's own,
+ * written by the child directly, so a `brew upgrade` shows its progress as it
+ * happens instead of as one block when it returns. Nothing is captured, and
+ * there is no timeout — this is the interactive path, and Ctrl-C reaches the
+ * child through `killChildren()`.
+ *
+ * `stdio` is not a caller's option: passing "pipe" would silently defeat the
+ * point. stdin is /dev/null, not a closed pipe as in `run`, and satisfies the
+ * same REPL concern — EOF on the first read.
+ *
+ * Two listeners, and both are needed. A binary that is not there emits
+ * `error` and then `close`, and never `exit` (measured), so an `exit`-only
+ * version hangs forever on ENOENT; a child that ran to an exit code emits
+ * `exit` and no `error`.
+ */
+export function stream(
+  file: string,
+  args: string[],
+  opts: Omit<SpawnOptions, "stdio"> = {},
+): Promise<StreamResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(file, args, { ...opts, stdio: ["ignore", "inherit", "inherit"] });
+    running.add(child);
+    child.once("error", (err) => {
+      running.delete(child);
+      reject(err);
+    });
+    child.once("exit", (code, signal) => {
+      running.delete(child);
+      if (code === 0) return resolve({ code, signal });
+      // Bare, so a caller can put its own "<name>: update failed:" in front.
+      reject(new Error(signal ? `killed by ${signal}` : `exited ${code}`));
+    });
   });
 }
 
