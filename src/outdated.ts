@@ -68,8 +68,8 @@ export async function brewOutdated(): Promise<OutdatedPackage[]> {
 }
 
 /**
- * The packages `brew outdated` hides: casks marked `auto_updates` or versioned
- * `:latest`, which only `--greedy` reveals.
+ * The packages `brew outdated` hides: casks marked `auto_updates true`, which
+ * only a greedy listing reveals.
  *
  * Leaving them out of the upgrade list is right — `brew upgrade` is not how
  * they get updated, and mixing them in would fill it with applications nobody
@@ -79,26 +79,44 @@ export async function brewOutdated(): Promise<OutdatedPackage[]> {
  * digest read "no other brew updates pending". Both were reporting a question
  * that had not been asked as a question that had been answered.
  *
- * So they get their own state, never folded into the pending ones. The cost
- * objection does not survive measurement: the plain call took 1.10s on the
- * machine this was found on and the greedy one 0.77s — brew does the same work
- * either way.
+ * `--greedy-auto-updates`, NOT `--greedy`. The wide flag also takes in
+ * `version :latest` casks, and for those brew cannot compare versions at all —
+ * it downloads the artefact to hash it (`outdated_download_sha?` →
+ * `new_download_sha` → `Installer#download` in brew's cask.rb). A report is
+ * read-only work and must not pull an app bundle to produce a line, least of
+ * all from a cron. The narrow flag covers the case this exists for — measured
+ * here: both flags return exactly `["gcloud-cli"]`, the narrow one in 0.75s.
+ *
+ * `pending` is what the plain listing returned, and it must be a real answer:
+ * pass the caller's empty array only when the plain listing genuinely returned
+ * nothing, never when it failed. Subtracting against a stand-in empty list
+ * makes every ordinary pending formula come back out of here labelled a
+ * self-updating cask.
  */
 export async function brewSelfUpdating(pending: OutdatedPackage[]): Promise<OutdatedPackage[]> {
-  const greedy = parseOutdated(await runOutdated(["--greedy"]), "brew outdated --greedy");
+  const greedy = parseOutdated(
+    await runOutdated(["--greedy-auto-updates"]),
+    "brew outdated --greedy-auto-updates",
+  );
   return greedyOnly(greedy, pending);
 }
 
 /**
  * What the greedy listing adds to the plain one. Exported so a test can drive
  * the real subtraction rather than re-implement it — and it is a subtraction,
- * not a filter on `kind`: which casks brew hides is brew's business (today
- * `auto_updates` and `:latest`), and hardcoding today's rule here would make
- * this quietly wrong the day it changes.
+ * not a filter on `kind`: which casks brew hides is brew's business, and
+ * hardcoding today's rule here would make this quietly wrong the day it
+ * changes.
+ *
+ * Entries whose installed version equals the latest are dropped. brew answers
+ * `installed_versions: ["latest"], current_version: "latest"` for a
+ * `version :latest` cask, which would otherwise render as `foo latest → latest`
+ * under a heading claiming it is behind — and would narrow the all-clear
+ * headline permanently, for a package brew cannot compare at all.
  */
 export function greedyOnly(greedy: OutdatedPackage[], pending: OutdatedPackage[]): OutdatedPackage[] {
   const already = new Set(pending.map((p) => p.name));
-  return greedy.filter((p) => !already.has(p.name));
+  return greedy.filter((p) => !already.has(p.name) && p.installed !== p.latest);
 }
 
 async function runOutdated(extra: string[]): Promise<string> {

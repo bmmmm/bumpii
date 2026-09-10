@@ -983,14 +983,21 @@ async function dispatch(progress: Progress): Promise<number> {
     } catch {
       otherPending = undefined;
     }
-    try {
-      // Its own try: an older brew, or one that errors only on --greedy, must
-      // cost this line and not the count above it. Left undefined on failure,
-      // which renders as nothing at all — silence, not "none".
-      const self = await brewSelfUpdating(outdated ?? []);
-      selfUpdatingNames = self.length > 0 ? self.map((p) => p.name) : undefined;
-    } catch {
-      selfUpdatingNames = undefined;
+    // Only when the plain listing actually answered. `outdated ?? []` looks
+    // harmless and is not: with the plain call failed, the subtraction has
+    // nothing to subtract, so every ordinary pending FORMULA comes back out of
+    // it and gets printed as a self-updating cask brew will not touch —
+    // measured, with gh and node. No plain answer means no line here at all.
+    if (outdated !== undefined) {
+      try {
+        // Its own try: an older brew, or one that errors only on the greedy
+        // path, must cost this line and not the count above it. Left undefined,
+        // which renders as nothing at all — silence, not "none".
+        const self = await brewSelfUpdating(outdated);
+        selfUpdatingNames = self.length > 0 ? self.map((p) => p.name) : undefined;
+      } catch {
+        selfUpdatingNames = undefined;
+      }
     }
   }
 
@@ -1002,7 +1009,13 @@ async function dispatch(progress: Progress): Promise<number> {
     // The whole engine, not just its label: a scheduled run that acts on this
     // should be able to branch on "was anything actually judged" without
     // parsing prose.
-    process.stdout.write(`${JSON.stringify({ engine, otherPending, reports }, null, 2)}\n`);
+    // selfUpdatingNames belongs here as much as in the text report: a
+    // `bumpii digest --json` cron reading only `otherPending: 0` would get a
+    // clean all-clear over a cask twelve versions behind — the machine-readable
+    // half of exactly the bug this field exists to close.
+    process.stdout.write(
+      `${JSON.stringify({ engine, otherPending, selfUpdatingNames, reports }, null, 2)}\n`,
+    );
   } else {
     process.stdout.write(
       renderReport(reports, {

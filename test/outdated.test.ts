@@ -113,6 +113,19 @@ test("greedyOnly keeps what --greedy adds and drops what both listings hold", ()
   );
 });
 
+test("greedyOnly drops a cask brew cannot compare at all", () => {
+  // A `version :latest` cask comes back as installed "latest", current
+  // "latest". Rendering that as `foo latest → latest` under a heading saying it
+  // is behind would be an invented claim — and it would narrow the all-clear
+  // headline permanently, on every run, for a package with no versions to
+  // compare.
+  const got = greedyOnly(
+    [{ name: "foo", installed: "latest", latest: "latest", kind: "cask" as const, pinned: false }],
+    [],
+  );
+  assert.deepEqual(got, []);
+});
+
 test("greedyOnly is empty when the greedy listing adds nothing", () => {
   // The ordinary case on a machine with no self-updating cask behind, and it
   // must stay distinguishable from "not checked" — the caller turns one into a

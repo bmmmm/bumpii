@@ -691,6 +691,28 @@ test("overview exits 2 when brew itself cannot answer", async () => {
   assert.match(r.stderr, /brew outdated failed/);
 });
 
+test("a --only slice hiding a self-updating cask does not claim the machine is clean", async () => {
+  // Found by review, and only reachable end to end: the count lives in
+  // buildOverview, not in the renderer. Filtering the self-updating half
+  // without counting what the filter removed let `filteredOut` stay 0, and the
+  // headline fell through to the one sentence this whole change exists to
+  // delete — measured as "nothing outdated — brew has no newer version for
+  // anything installed" with gcloud-cli twelve versions behind.
+  const selfy = `printf '{"formulae":[],"casks":[{"name":"selfy","installed_versions":["1.0.0"],"current_version":"2.0.0"}]}'`;
+  const dir = await fakeBrew(
+    `case "$1:$3" in outdated:--greedy-auto-updates) ${selfy} ;; outdated:*) printf '{"formulae":[],"casks":[]}' ;; esac`,
+  );
+  const home = await freshHome();
+  await writeConfig(home, [tool()]);
+
+  // --only has to name something the config knows, or the run stops on "nothing
+  // matched" before a report is ever rendered. `app` is tracked and is not the
+  // cask, which is exactly the slice that used to over-claim.
+  const r = await runCli(["overview", "--no-judge", "--only", "app"], home, { PATH: dir });
+  assert.doesNotMatch(r.stdout, /anything installed/, "the over-claim must not come back via --only");
+  assert.match(r.stdout, /pending outside that filter/);
+});
+
 test("--yes --dry-run prints the commands and runs none of them", async (t) => {
   const url = await stubForge(["v2.0.0", "v1.0.0"]);
   if (!url) return t.skip(SKIP);
@@ -1190,13 +1212,61 @@ test("a cask only --greedy reveals is named, not counted as nothing pending", as
   const { tool: app } = await fileTool(home, "1.0.0", { source: url });
   await writeConfig(home, [app]);
   const greedy = `printf '{"formulae":[],"casks":[{"name":"selfy","installed_versions":["1.0.0"],"current_version":"2.0.0"}]}'`;
+  // The flag is part of what this pins: --greedy would also drag in
+  // `version :latest` casks, which brew can only compare by DOWNLOADING the
+  // artefact. A read-only report must not do that.
   const dir = await fakeBrew(
-    `case "$1:$3" in outdated:--greedy) ${greedy} ;; outdated:*) ${NOTHING_OUTDATED} ;; esac`,
+    `case "$1:$3" in outdated:--greedy-auto-updates) ${greedy} ;; outdated:*) ${NOTHING_OUTDATED} ;; esac`,
   );
 
   const r = await runCli(["digest", "--no-judge"], home, { PATH: dir });
+  // 0, deliberately: the exit code answers "is a TRACKED tool behind", and an
+  // untracked cask does not change that any more than `otherPending` does. The
+  // report names it; the code keeps its existing meaning.
+  assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /1 self-updating cask is behind: selfy/);
   assert.match(r.stdout, /brew upgrade will not touch it/);
+});
+
+test("a failed plain listing produces no self-updating line, not a wrong one", async (t) => {
+  // Found by review. `brewSelfUpdating(outdated ?? [])` reads a failed plain
+  // listing as "nothing pending", so the subtraction subtracts nothing and
+  // every ordinary pending FORMULA comes back out of it labelled a
+  // self-updating cask brew will not touch — measured with gh and node. No
+  // plain answer has to mean no line.
+  const url = await stubForge(["v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  const { tool: app } = await fileTool(home, "1.0.0", { source: url });
+  await writeConfig(home, [app]);
+  const formulae = `printf '{"formulae":[{"name":"gh","installed_versions":["1.0.0"],"current_version":"2.0.0"}],"casks":[]}'`;
+  const dir = await fakeBrew(
+    `case "$1:$3" in outdated:--greedy-auto-updates) ${formulae} ;; outdated:*) echo 'Error: nope' >&2; exit 1 ;; esac`,
+  );
+
+  const r = await runCli(["digest", "--no-judge"], home, { PATH: dir });
+  assert.doesNotMatch(r.stdout, /self-updating/, "a formula must never be described as a cask");
+  assert.doesNotMatch(r.stdout, /gh/, "and it must not be named under a heading that does not fit");
+});
+
+test("digest --json carries the self-updating casks, not just the pending count", async (t) => {
+  // Found by review: a cron reading only `otherPending: 0` got a clean
+  // all-clear over a cask twelve versions behind — the machine-readable half of
+  // the same bug.
+  const url = await stubForge(["v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  const { tool: app } = await fileTool(home, "1.0.0", { source: url });
+  await writeConfig(home, [app]);
+  const selfy = `printf '{"formulae":[],"casks":[{"name":"selfy","installed_versions":["1.0.0"],"current_version":"2.0.0"}]}'`;
+  const dir = await fakeBrew(
+    `case "$1:$3" in outdated:--greedy-auto-updates) ${selfy} ;; outdated:*) ${NOTHING_OUTDATED} ;; esac`,
+  );
+
+  const r = await runCli(["digest", "--no-judge", "--json"], home, { PATH: dir });
+  const parsed = JSON.parse(r.stdout) as { otherPending?: number; selfUpdatingNames?: string[] };
+  assert.equal(parsed.otherPending, 0);
+  assert.deepEqual(parsed.selfUpdatingNames, ["selfy"]);
 });
 
 test("a failed brew update skips the upgrade instead of running it blind", async (t) => {

@@ -174,10 +174,21 @@ updates itself (1)
 
 A digest names them on its own line too, under the pending count, so
 `bumpii digest --brew-upgrade` no longer reads "no other brew updates pending"
-over a package that is behind. The second `brew outdated` costs nothing worth
-weighing — 0.77s against 1.10s for the plain one, measured. And if the greedy
-listing itself fails, the report says *that* ("self-updating casks were not
-checked") rather than falling back to the reassuring sentence.
+over a package that is behind — and `--json` carries them as
+`selfUpdatingNames`, because a cron reading `otherPending: 0` alone would get
+the same false all-clear the text report used to give.
+
+The flag is `--greedy-auto-updates`, not `--greedy`. The wide one also takes in
+`version :latest` casks, and brew cannot compare versions for those at all — it
+*downloads* the artefact to hash it. A report is read-only work and must not
+pull an app bundle to produce a line. The narrow flag costs 0.75s here against
+1.10s for the plain listing, and both flags return the same answer on this
+machine.
+
+If the greedy listing itself fails, nothing is claimed in its place: an
+`overview` with nothing else pending says so out loud ("self-updating casks were
+not checked"), and everywhere else the line is simply absent rather than
+replaced by a reassuring one. Silence is the honest answer there, not "none".
 
 Three states are deliberately kept out of "up to date", because each means
 bumpii could not check rather than checked and found nothing. A package whose

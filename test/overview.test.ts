@@ -458,9 +458,18 @@ test("a self-updating cask is not mixed into the upgrade candidates", () => {
   // Its own section, because the answer differs: `brew upgrade` does nothing
   // for these, and listing them as pending would send you to a command that
   // cannot help.
-  const text = renderOverview(overview({ selfUpdating: [SELF_UPDATING] }));
-  assert.doesNotMatch(text, /★ digested[\s\S]*gcloud-cli/);
-  assert.match(text, /nothing to upgrade/);
+  //
+  // A real pending entry has to be in the fixture, or this proves nothing: with
+  // `entries: []` the "★ digested" heading is never printed at all (section()
+  // returns early on an empty list), so an assertion that the cask is not under
+  // it cannot fail for its own reason. Review caught exactly that here.
+  const pending = entry({ name: "gh", bucket: "digested", refs: 3 });
+  const text = renderOverview(overview({ entries: [pending], selfUpdating: [SELF_UPDATING] }));
+  const heading = text.indexOf("updates itself");
+  assert.ok(heading > 0, "the section has to exist for the position check to mean anything");
+  assert.match(text, /★ digested/, "and so does the section it must stay out of");
+  assert.doesNotMatch(text.slice(0, heading), /gcloud-cli/, "named nowhere above its own heading");
+  assert.ok(text.indexOf("gcloud-cli") > heading);
 });
 
 test("an unchecked greedy listing is not reported as nothing outdated either", () => {

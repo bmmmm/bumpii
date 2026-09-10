@@ -300,6 +300,7 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
   // an aliased, pending tool disappear behind "nothing matched".
   const only = expandOnly(opts.only ?? [], config.tools);
   const wanted = only.size ? outdated.filter((p) => only.has(p.name)) : outdated;
+  const wantedSelf = only.size ? (selfUpdating ?? []).filter((p) => only.has(p.name)) : (selfUpdating ?? []);
 
   const usage = await resolveUsagePaths(config.usagePaths);
 
@@ -495,12 +496,17 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
     missingUsagePaths: usage.missing,
     noUsagePaths: config.usagePaths.length === 0,
     usageIncomplete: refs.incomplete,
-    filteredOut: outdated.length - wanted.length,
+    // Both halves count towards it. Filtering the self-updating casks without
+    // counting what the filter removed put the headline straight back into the
+    // over-claim this whole change is about: `overview --only app` with
+    // gcloud-cli behind fell through to `filteredOut === 0` and printed
+    // "nothing outdated — brew has no newer version for anything installed".
+    filteredOut: outdated.length - wanted.length + ((selfUpdating?.length ?? 0) - wantedSelf.length),
     // Filtered the same way as the pending half: with --only active, listing
     // self-updating casks the filter excluded would answer a question nobody
     // asked, and the two halves disagreeing about what --only means is the bug
     // expandOnly was written to end.
-    selfUpdating: only.size ? selfUpdating?.filter((p) => only.has(p.name)) : selfUpdating,
+    selfUpdating: selfUpdating === undefined ? undefined : wantedSelf,
     engine: opts.engine,
   };
 }
