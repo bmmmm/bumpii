@@ -15,6 +15,7 @@ import { limiter } from "./limit.ts";
 import {
   brewInstalledVersions,
   brewOutdated,
+  brewSelfUpdating,
   compareUrl,
   type OutdatedPackage,
   resolveSources,
@@ -114,6 +115,16 @@ export interface Overview {
    * have five packages pending that the question simply excluded.
    */
   filteredOut: number;
+  /**
+   * Casks that update themselves, so `brew outdated` never lists them and
+   * `brew upgrade` would not touch them — collected with `--greedy` and kept
+   * out of `entries` on purpose. They are not upgrade candidates, but they ARE
+   * out of date, and folding that into "nothing outdated" is the confident
+   * wrong answer this tool exists to avoid. `undefined` when the greedy call
+   * itself failed: nothing was checked, which is again not the same as nothing
+   * being there.
+   */
+  selfUpdating?: OutdatedPackage[];
   engine: Engine;
 }
 
@@ -273,6 +284,15 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
   // silence before anything else can start.
   progress?.phase("brew");
   const outdated = await brewOutdated();
+  // Asked separately, and allowed to fail on its own: an older brew without
+  // --greedy, or one that errors only on that path, must cost this line and not
+  // the whole report. `undefined` then says "not checked" rather than "none".
+  let selfUpdating: OutdatedPackage[] | undefined;
+  try {
+    selfUpdating = await brewSelfUpdating(outdated);
+  } catch {
+    selfUpdating = undefined;
+  }
   // --only names whatever the user calls the tool; brew prints its own name.
   // Expanded through every alias a tracked entry answers to, so `--only fj`
   // matches the `forgejo-cli` brew reports as outdated — the quiet half below
@@ -476,6 +496,11 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
     noUsagePaths: config.usagePaths.length === 0,
     usageIncomplete: refs.incomplete,
     filteredOut: outdated.length - wanted.length,
+    // Filtered the same way as the pending half: with --only active, listing
+    // self-updating casks the filter excluded would answer a question nobody
+    // asked, and the two halves disagreeing about what --only means is the bug
+    // expandOnly was written to end.
+    selfUpdating: only.size ? selfUpdating?.filter((p) => only.has(p.name)) : selfUpdating,
     engine: opts.engine,
   };
 }

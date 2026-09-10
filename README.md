@@ -156,6 +156,29 @@ them. Security and breaking items are never in that tail, however many there
 are: they are the lines that make you act. `bumpii digest` does not cap, because
 you asked it about a tool.
 
+**`updates itself` is the section that exists because the report was wrong.**
+`brew outdated` hides every cask marked `auto_updates` — the apps that update
+themselves — and `brew upgrade` would not touch them anyway, so keeping them out
+of the upgrade list is right. Keeping them out of the *answer* was not: on one
+machine `brew outdated` printed nothing at all while `brew outdated --greedy`
+listed `gcloud-cli` four versions behind, and `overview` headlined "nothing
+outdated — brew has no newer version for anything installed". They are now
+collected with `--greedy`, reported under their own heading, and the all-clear
+headline narrows to `nothing to upgrade` whenever any of them are behind:
+
+```console
+updates itself (1)
+  brew only lists these with --greedy, and brew upgrade will not touch them
+  gcloud-cli  551.0.0 → 555.0.0
+```
+
+A digest names them on its own line too, under the pending count, so
+`bumpii digest --brew-upgrade` no longer reads "no other brew updates pending"
+over a package that is behind. The second `brew outdated` costs nothing worth
+weighing — 0.77s against 1.10s for the plain one, measured. And if the greedy
+listing itself fails, the report says *that* ("self-updating casks were not
+checked") rather than falling back to the reassuring sentence.
+
 Three states are deliberately kept out of "up to date", because each means
 bumpii could not check rather than checked and found nothing. A package whose
 brew URLs name no forge (node ships from nodejs.org) says so instead of having

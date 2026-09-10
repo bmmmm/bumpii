@@ -25,7 +25,7 @@ import { discoverImage, untrackedContainers } from "./images.ts";
 import { buildInbox, markThreadsRead, shownThreads } from "./inbox.ts";
 import { digest, type Engine, resolveEngine } from "./judge.ts";
 import { limiter } from "./limit.ts";
-import { brewOutdated, type OutdatedPackage } from "./outdated.ts";
+import { brewOutdated, brewSelfUpdating, type OutdatedPackage } from "./outdated.ts";
 import { buildOverview, namesOf, untrackedOutdated } from "./overview.ts";
 import { type Progress, startProgress } from "./progress.ts";
 import { type Reprobe, renderInbox, renderOverview, renderReport, reprobeVerdict } from "./render.ts";
@@ -960,6 +960,10 @@ async function dispatch(progress: Progress): Promise<number> {
   // The names behind the count, for the report's trailing line — the same
   // list, so the two cannot disagree. --json carries the count alone.
   let otherPendingNames: string[] | undefined;
+  // The casks brew hides from `outdated` because they update themselves. They
+  // are behind, and `brew upgrade` is not what fixes them — so they are named
+  // on their own line instead of being counted above or left out entirely.
+  let selfUpdatingNames: string[] | undefined;
   // Kept for the re-probe after the update: what brew itself listed as
   // pending is what tells a "still 1.0.0" apart from brew having nothing.
   let outdated: OutdatedPackage[] | undefined;
@@ -979,6 +983,15 @@ async function dispatch(progress: Progress): Promise<number> {
     } catch {
       otherPending = undefined;
     }
+    try {
+      // Its own try: an older brew, or one that errors only on --greedy, must
+      // cost this line and not the count above it. Left undefined on failure,
+      // which renders as nothing at all — silence, not "none".
+      const self = await brewSelfUpdating(outdated ?? []);
+      selfUpdatingNames = self.length > 0 ? self.map((p) => p.name) : undefined;
+    } catch {
+      selfUpdatingNames = undefined;
+    }
   }
 
   // Everything below writes the report, so the line comes down first — an
@@ -996,6 +1009,7 @@ async function dispatch(progress: Progress): Promise<number> {
         engine,
         otherPending,
         otherPendingNames,
+        selfUpdatingNames,
         // Only when brew upgrade will in fact run: a failed brew update has
         // already cancelled it, and the report must not say it comes next.
         brewUpgrade: args.brewUpgrade && !args.dryRun && brewUpdateError === undefined,

@@ -59,16 +59,61 @@ export function toPackages(raw: RawOutdated[] | undefined, kind: OutdatedPackage
  * Casks are included because they upgrade the same way and plenty of them are
  * ordinary tooling — a font, a small utility. Deliberately not `--greedy`:
  * that adds every cask that updates itself, which would list applications you
- * are never going to run `brew upgrade` for.
+ * are never going to run `brew upgrade` for. {@link brewSelfUpdating} collects
+ * exactly those, separately, because "not an upgrade candidate" is not the same
+ * answer as "not out of date".
  */
 export async function brewOutdated(): Promise<OutdatedPackage[]> {
-  let stdout: string;
+  return parseOutdated(await runOutdated([]), "brew outdated");
+}
+
+/**
+ * The packages `brew outdated` hides: casks marked `auto_updates` or versioned
+ * `:latest`, which only `--greedy` reveals.
+ *
+ * Leaving them out of the upgrade list is right — `brew upgrade` is not how
+ * they get updated, and mixing them in would fill it with applications nobody
+ * runs it for. Leaving them out of the ANSWER is not, and that is what was
+ * happening: with gcloud-cli behind, `bumpii overview` said "nothing outdated —
+ * brew has no newer version for anything installed", and the count under a
+ * digest read "no other brew updates pending". Both were reporting a question
+ * that had not been asked as a question that had been answered.
+ *
+ * So they get their own state, never folded into the pending ones. The cost
+ * objection does not survive measurement: the plain call took 1.10s on the
+ * machine this was found on and the greedy one 0.77s — brew does the same work
+ * either way.
+ */
+export async function brewSelfUpdating(pending: OutdatedPackage[]): Promise<OutdatedPackage[]> {
+  const greedy = parseOutdated(await runOutdated(["--greedy"]), "brew outdated --greedy");
+  return greedyOnly(greedy, pending);
+}
+
+/**
+ * What the greedy listing adds to the plain one. Exported so a test can drive
+ * the real subtraction rather than re-implement it — and it is a subtraction,
+ * not a filter on `kind`: which casks brew hides is brew's business (today
+ * `auto_updates` and `:latest`), and hardcoding today's rule here would make
+ * this quietly wrong the day it changes.
+ */
+export function greedyOnly(greedy: OutdatedPackage[], pending: OutdatedPackage[]): OutdatedPackage[] {
+  const already = new Set(pending.map((p) => p.name));
+  return greedy.filter((p) => !already.has(p.name));
+}
+
+async function runOutdated(extra: string[]): Promise<string> {
   try {
-    ({ stdout } = await run("brew", ["outdated", "--json=v2"], { timeout: 300_000 }));
+    const { stdout } = await run("brew", ["outdated", "--json=v2", ...extra], { timeout: 300_000 });
+    return stdout;
   } catch (err) {
-    throw new Error(`brew outdated failed: ${(err as Error).message}`);
+    throw new Error(
+      `brew outdated${extra.length ? ` ${extra.join(" ")}` : ""} failed: ${(err as Error).message}`,
+    );
   }
-  const d = parseBrewJson<{ formulae?: RawOutdated[]; casks?: RawOutdated[] }>(stdout, "brew outdated");
+}
+
+function parseOutdated(stdout: string, what: string): OutdatedPackage[] {
+  const d = parseBrewJson<{ formulae?: RawOutdated[]; casks?: RawOutdated[] }>(stdout, what);
   return [...toPackages(d.formulae, "formula"), ...toPackages(d.casks, "cask")];
 }
 

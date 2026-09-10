@@ -61,6 +61,10 @@ function overview(over: Partial<Overview>): Overview {
     missingUsagePaths: [],
     noUsagePaths: false,
     filteredOut: 0,
+    // Checked, and none — deliberately not `undefined`, which means the greedy
+    // listing never ran. The two render differently, so a fixture has to pick
+    // one and say which.
+    selfUpdating: [],
     engine: ENGINE,
     ...over,
   };
@@ -426,6 +430,54 @@ test("reference counts are taken across every name a tool answers to", async () 
   assert.equal(counts.get("forgejo-cli"), 0, "brew's name appears nowhere");
   const best = Math.max(...namesOf(tool).map((n) => counts.get(n) ?? 0));
   assert.equal(best, 3, "but the tool is named in three files under its binary name");
+});
+
+// The cask brew hides from `outdated`: gcloud-cli on the machine this was found
+// on, four versions behind and invisible to every command bumpii ran.
+const SELF_UPDATING = {
+  name: "gcloud-cli",
+  installed: "551.0.0",
+  latest: "555.0.0",
+  kind: "cask" as const,
+  pinned: false,
+};
+
+test("a self-updating cask that is behind is not reported as nothing outdated", () => {
+  // Measured on a real machine: `brew outdated` printed nothing at all while
+  // `brew outdated --greedy` listed gcloud-cli, and `bumpii overview` answered
+  // "nothing outdated — brew has no newer version for anything installed".
+  // That sentence was false, which is the one output this tool must not produce.
+  const text = renderOverview(overview({ selfUpdating: [SELF_UPDATING] }));
+  assert.doesNotMatch(text, /anything installed/, "the over-claim must be gone");
+  assert.match(text, /updates itself \(1\)/);
+  assert.match(text, /gcloud-cli\s+551\.0\.0 → 555\.0\.0/);
+  assert.match(text, /brew upgrade will not touch them/);
+});
+
+test("a self-updating cask is not mixed into the upgrade candidates", () => {
+  // Its own section, because the answer differs: `brew upgrade` does nothing
+  // for these, and listing them as pending would send you to a command that
+  // cannot help.
+  const text = renderOverview(overview({ selfUpdating: [SELF_UPDATING] }));
+  assert.doesNotMatch(text, /★ digested[\s\S]*gcloud-cli/);
+  assert.match(text, /nothing to upgrade/);
+});
+
+test("an unchecked greedy listing is not reported as nothing outdated either", () => {
+  // brew erroring only on --greedy means nobody knows whether a self-updating
+  // cask is behind. Silence is not evidence of absence.
+  const text = renderOverview(overview({ selfUpdating: undefined }));
+  assert.match(text, /self-updating casks were not checked/);
+  assert.doesNotMatch(text, /anything installed/);
+});
+
+test("with none of them behind, the plain all-clear headline still stands", () => {
+  // The narrowed wording is for the case that earns it; a machine that really
+  // is current should not be told about a distinction that does not apply.
+  const text = renderOverview(overview({}));
+  assert.match(text, /nothing outdated/);
+  assert.match(text, /anything installed/);
+  assert.doesNotMatch(text, /updates itself/);
 });
 
 test("a clean --only slice does not claim the whole machine is clean", () => {

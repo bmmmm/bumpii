@@ -1171,7 +1171,32 @@ test("--brew-upgrade runs brew update before brew outdated, and brew upgrade las
 
   const r = await runCli(["digest", "--brew-upgrade", "--no-judge"], home, { PATH: dir });
   assert.equal(r.code, 0, r.stderr);
-  assert.equal(await readFile(log, "utf8"), "update\noutdated\nupgrade\n");
+  // Two `outdated` calls: the plain listing, then the --greedy one that reveals
+  // the casks the plain one hides. Both sit between update and upgrade, which
+  // is the ordering this test exists for.
+  assert.equal(await readFile(log, "utf8"), "update\noutdated\noutdated\nupgrade\n");
+});
+
+test("a cask only --greedy reveals is named, not counted as nothing pending", async (t) => {
+  // The end-to-end half of the gcloud-cli bug: `brew outdated` answers with an
+  // empty list while `--greedy` has a cask two versions behind. Without the
+  // greedy call the report reads "no other brew updates pending" and stops —
+  // true about the question it asked, false about the machine. Driving a real
+  // brew stub is what holds the FLAG in place; a unit test on the subtraction
+  // stays green if the argument is dropped.
+  const url = await stubForge(["v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  const { tool: app } = await fileTool(home, "1.0.0", { source: url });
+  await writeConfig(home, [app]);
+  const greedy = `printf '{"formulae":[],"casks":[{"name":"selfy","installed_versions":["1.0.0"],"current_version":"2.0.0"}]}'`;
+  const dir = await fakeBrew(
+    `case "$1:$3" in outdated:--greedy) ${greedy} ;; outdated:*) ${NOTHING_OUTDATED} ;; esac`,
+  );
+
+  const r = await runCli(["digest", "--no-judge"], home, { PATH: dir });
+  assert.match(r.stdout, /1 self-updating cask is behind: selfy/);
+  assert.match(r.stdout, /brew upgrade will not touch it/);
 });
 
 test("a failed brew update skips the upgrade instead of running it blind", async (t) => {

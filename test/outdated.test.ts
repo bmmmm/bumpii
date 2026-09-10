@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import {
   compareUrl,
+  greedyOnly,
   installedVersionMap,
   readSourceCache,
   resolveSources,
@@ -91,6 +92,35 @@ test("pinned survives the parse, since brew lists pinned packages it will not mo
     "formula",
   );
   assert.equal(got[0]?.pinned, true);
+});
+
+test("greedyOnly keeps what --greedy adds and drops what both listings hold", () => {
+  // `brew outdated --greedy` is a superset: everything the plain call reports
+  // plus the casks it hides. Reporting the raw greedy list would double-count
+  // every ordinary pending package under a heading saying brew will not touch
+  // them — which is the opposite of true for those.
+  const pending = [
+    { name: "gh", installed: "2.96.0", latest: "2.97.0", kind: "formula" as const, pinned: false },
+  ];
+  const greedy = [
+    ...pending,
+    { name: "gcloud-cli", installed: "551.0.0", latest: "555.0.0", kind: "cask" as const, pinned: false },
+  ];
+  const got = greedyOnly(greedy, pending);
+  assert.deepEqual(
+    got.map((p) => p.name),
+    ["gcloud-cli"],
+  );
+});
+
+test("greedyOnly is empty when the greedy listing adds nothing", () => {
+  // The ordinary case on a machine with no self-updating cask behind, and it
+  // must stay distinguishable from "not checked" — the caller turns one into a
+  // silent section and the other into a sentence saying so.
+  const pending = [
+    { name: "gh", installed: "2.96.0", latest: "2.97.0", kind: "formula" as const, pinned: false },
+  ];
+  assert.deepEqual(greedyOnly([...pending], pending), []);
 });
 
 test("installedVersionMap answers under the name that was asked, tap-qualified included", () => {

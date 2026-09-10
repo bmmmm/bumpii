@@ -286,6 +286,13 @@ export interface RenderOptions {
   /** Their names, in brew's order; the count above is this list's length. */
   otherPendingNames?: string[];
   /**
+   * Names of casks that update themselves — out of date, but invisible to
+   * `brew outdated` and untouched by `brew upgrade`. Without this the line
+   * above read "no other brew updates pending" over a package that was in fact
+   * behind, which is the one output this tool must not produce.
+   */
+  selfUpdatingNames?: string[];
+  /**
    * The run will go on to `brew upgrade`: the pending line says so instead
    * of advising it, and an update line brew will not run gets marked.
    */
@@ -496,6 +503,19 @@ export function renderReport(rawReports: ToolReport[], opts: RenderOptions): str
     out.push(
       dim(
         `${opts.otherPending} other package${one ? "" : "s"} ${one ? "has" : "have"} brew updates pending${names} — ${tail}`,
+      ),
+    );
+  }
+  // Said separately from the pending count, and after it, because the answer is
+  // different: these have a newer version and `brew upgrade` is not what gets
+  // it. Folding them into the count would send you to a command that does
+  // nothing for them.
+  if (opts.selfUpdatingNames?.length) {
+    const one = opts.selfUpdatingNames.length === 1;
+    out.push(
+      dim(
+        `${opts.selfUpdatingNames.length} self-updating cask${one ? "" : "s"} ${one ? "is" : "are"} behind: ` +
+          `${opts.selfUpdatingNames.join(", ")} — brew upgrade will not touch ${one ? "it" : "them"}`,
       ),
     );
   }
@@ -751,14 +771,29 @@ export function renderOverview(raw: Overview): string {
     // With --only active, "anything installed" would claim more than was
     // answered: brew may have plenty pending that the filter excluded, and the
     // count says so instead of letting a clean slice read as a clean machine.
-    out.push(
+    //
+    // The self-updating casks are owed exactly the same care. "brew has no
+    // newer version for anything installed" was flatly untrue while gcloud-cli
+    // sat behind — brew never lists it without --greedy — so when there are
+    // any, the headline narrows to what it actually covers and the section
+    // below names them.
+    const headline =
       o.filteredOut > 0
         ? `${green("nothing outdated among what --only names")}  ${dim(
             `brew has ${o.filteredOut} package${o.filteredOut === 1 ? "" : "s"} pending outside that filter — run without --only to see them`,
           )}`
-        : `${green("nothing outdated")}  ${dim("brew has no newer version for anything installed")}`,
-      "",
-    );
+        : o.selfUpdating === undefined
+          ? // Not checked is its own answer: the greedy listing failed, so
+            // whether a self-updating cask is behind is unknown, and claiming
+            // "anything installed" would be asserting an absence nothing here
+            // established.
+            `${green("nothing to upgrade")}  ${dim(
+              "brew has no newer version for anything it would upgrade — self-updating casks were not checked",
+            )}`
+          : o.selfUpdating.length > 0
+            ? `${green("nothing to upgrade")}  ${dim("brew has no newer version for anything it would upgrade")}`
+            : `${green("nothing outdated")}  ${dim("brew has no newer version for anything installed")}`;
+    out.push(headline, "");
   }
 
   const ctx: OverviewCtx = { engine: o.engine, usageIncomplete: o.usageIncomplete };
@@ -802,6 +837,23 @@ export function renderOverview(raw: Overview): string {
             : `${e.source.replace(/\/$/, "")}/releases`;
         out.push(`    ${dim(link(repo, repo))}`);
       }
+    }
+    out.push("");
+  }
+
+  // Out of date, but not for `brew upgrade` to fix. Its own section rather than
+  // a line inside the pending ones: everything above answers "what should I
+  // upgrade", and an entry whose answer is "nothing you can run" does not
+  // belong under that question — while leaving it out entirely is what made the
+  // report say "nothing outdated" over a package four versions behind.
+  if (o.selfUpdating && o.selfUpdating.length > 0) {
+    out.push(
+      bold(`updates itself (${o.selfUpdating.length})`),
+      dim("  brew only lists these with --greedy, and brew upgrade will not touch them"),
+    );
+    const width = Math.max(...o.selfUpdating.map((p) => p.name.length));
+    for (const p of o.selfUpdating) {
+      out.push(`  ${p.name.padEnd(width)}  ${p.installed} → ${p.latest}`);
     }
     out.push("");
   }
