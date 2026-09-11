@@ -1954,3 +1954,28 @@ esac`,
   assert.match(r.stderr, /skipped, brew update failed above/);
   assert.equal(r.code, 2);
 });
+
+test("a greedy dry run does not promise the casks are out of reach either", async () => {
+  // The quieter half of the same contradiction: a dry run prints `$ brew
+  // upgrade --greedy-auto-updates` as what it would do, so a section above it
+  // saying brew upgrade will not touch those casks describes a different
+  // command than the one on the page.
+  const dir = await fakeBrew(
+    `case "$1:$3" in
+  outdated:--greedy-auto-updates) ${SELFY} ;;
+  outdated:*) ${NOTHING} ;;
+  info:*) printf '{"formulae":[]}' ;;
+  *) exit 0 ;;
+esac`,
+  );
+  const home = await freshHome();
+  await writeConfig(home, [tool()]);
+
+  const r = await runCli(
+    ["overview", "--no-judge", "--brew-upgrade", "--greedy-auto-updates", "--dry-run"],
+    home,
+    { PATH: dir },
+  );
+  assert.match(r.stdout, /\$ brew upgrade --greedy-auto-updates/, "the command it would run");
+  assert.doesNotMatch(r.stdout, /will not touch them/, "and no section calling that command powerless");
+});

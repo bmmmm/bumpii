@@ -1177,7 +1177,10 @@ async function dispatch(progress: Progress): Promise<number> {
     }
     // The report has to describe the run it belongs to: with a greedy upgrade
     // coming, "brew upgrade will not touch them" is the opposite of true.
-    const greedyUpgrade = args.brewUpgrade && args.greedyAutoUpdates && !args.dryRun;
+    // A dry run counts as well — it prints `$ brew upgrade
+    // --greedy-auto-updates` as what it would do, and a report saying those
+    // casks are out of reach directly above that is the same contradiction.
+    const greedyUpgrade = args.brewUpgrade && args.greedyAutoUpdates;
     process.stdout.write(
       args.json ? `${JSON.stringify(overview, null, 2)}\n` : renderOverview(overview, { greedyUpgrade }),
     );
