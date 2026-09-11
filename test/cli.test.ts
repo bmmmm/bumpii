@@ -1698,3 +1698,48 @@ esac`,
   assert.ok(!calls.includes("update"), "nor refresh the tap it would upgrade against");
   assert.equal(r.code, 1, "something is still pending, and a dry run keeps saying so");
 });
+
+test("a filtered report does not hide what the global upgrade touched", async () => {
+  // --only narrows the report; `brew upgrade` does not narrow with it. Measured
+  // before this line existed: `overview --only jq --brew-upgrade` printed
+  // "nothing outdated among what --only names" directly above a command that
+  // upgraded six other packages, none of them shown and none verified.
+  const two = `printf '{"formulae":[{"name":"uv","installed_versions":["0.1.0"],"current_version":"0.2.0"},{"name":"other","installed_versions":["1.0"],"current_version":"2.0"}],"casks":[]}'`;
+  const dir = await fakeBrew(
+    `case "$1" in
+  outdated) ${two} ;;
+  info) printf '{"formulae":[]}' ;;
+  *) exit 0 ;;
+esac`,
+  );
+  const home = await freshHome();
+  await writeConfig(home, [tool()]);
+
+  const r = await runCli(["overview", "--no-judge", "--only", "uv", "--brew-upgrade"], home, { PATH: dir });
+  assert.match(
+    r.stdout,
+    /ranged over 1 package --only kept out of this report/,
+    "a run that upgraded more than it showed has to say so",
+  );
+});
+
+test("an upgrade run names the tracked tools brew never checked", async () => {
+  // They are not in `entries`, so nothing ran for them and nothing verified
+  // them. Without this line an upgrade that touched only brew reads as the
+  // whole machine being current — the tracked non-brew entries sit under a
+  // heading well above, easy to take for a footnote about the listing.
+  const dir = await fakeBrew(
+    `case "$1" in
+  outdated) printf '{"formulae":[{"name":"uv","installed_versions":["0.1.0"],"current_version":"0.2.0"}],"casks":[]}' ;;
+  info) printf '{"formulae":[]}' ;;
+  *) exit 0 ;;
+esac`,
+  );
+  const home = await freshHome();
+  // A container entry: brew does not manage it, so it lands in `unchecked`.
+  await writeConfig(home, [tool({ name: "sidecar", update: "docker pull sidecar" })]);
+
+  const r = await runCli(["overview", "--no-judge", "--brew-upgrade"], home, { PATH: dir });
+  assert.match(r.stdout, /sidecar — brew does not manage/, "what the run did not touch has to be named");
+  assert.match(r.stdout, /bumpii digest --yes/, "and the command that does touch it");
+});

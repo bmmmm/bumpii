@@ -625,6 +625,33 @@ async function upgradeFromOverview(
     );
   }
 
+  // `--only` narrows the report; `brew upgrade` does not narrow with it. So a
+  // filtered run upgrades packages that were never shown and are not verified
+  // below — measured: `overview --only jq --brew-upgrade` prints "nothing
+  // outdated among what --only names" directly above a command that would
+  // upgrade six others. The report cannot be allowed to read as the whole
+  // story of what the run did.
+  if (args.brewUpgrade && overview.filteredOut > 0) {
+    const n = overview.filteredOut;
+    say(
+      `\nbrew upgrade also ranged over ${n} package${n === 1 ? "" : "s"} --only kept out of this report` +
+        ` — nothing here checked ${n === 1 ? "it" : "them"}\n`,
+    );
+  }
+
+  // Tracked tools brew does not manage never reach `entries`, so nothing above
+  // ran for them and nothing below checks them. After an upgrade that is a
+  // gap worth naming: the report's own "tracked, not covered here" is easy to
+  // read as a footnote to the listing rather than a limit on what just ran.
+  const notBrew = overview.unchecked.filter((u) => u.reason === "not-brew").map((u) => u.name);
+  if (notBrew.length > 0) {
+    say(
+      `\n${notBrew.join(" · ")} — brew does not manage ${notBrew.length === 1 ? "this one" : "these"},` +
+        ` so nothing here upgraded or checked ${notBrew.length === 1 ? "it" : "them"};` +
+        ` bumpii digest --yes runs their own update lines\n`,
+    );
+  }
+
   if (verify.length === 0) return updateFailures > 0 ? 2 : 0;
 
   progress.phase("reprobe", { total: verify.length, done: 0 });

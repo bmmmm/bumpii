@@ -209,6 +209,13 @@ deliberately not the same sentence as "uv is now 0.12.13", because nothing here
 read a version out of uv. Where an entry *is* tracked, `bumpii digest --yes`
 does read the binary, and that is the stronger check of the two.
 
+Two limits the run states rather than leaves you to infer. `--only` narrows the
+report but not `brew upgrade`, so a filtered run says how many packages it
+upgraded outside what it showed — none of which it checked. And tracked tools
+brew does not manage (containers, anything installed by hand) never enter the
+listing at all, so an upgrade run names them and points at `bumpii digest
+--yes`, which does run their own update lines and reads their versions back.
+
 `--greedy-auto-updates` widens the upgrade to the self-updating casks, which are
 otherwise reported and never touched. It is off by default and refused without
 `--brew-upgrade`: these are running applications, and reinstalling one
