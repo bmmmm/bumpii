@@ -8,6 +8,26 @@ import test from "node:test";
 import { eligible, type Phase, QUIP_SECONDS, type QuipState, quipFor } from "../src/quips.ts";
 import { PROBE_TIMEOUT_MS } from "../src/version.ts";
 
+/**
+ * Every member of the `Phase` union, which TypeScript checks exhaustively: add
+ * a phase to quips.ts and this object stops compiling until it is named here,
+ * which is what makes the test below able to see it at all.
+ */
+const ALL_PHASES = Object.keys({
+  config: 0,
+  engine: 0,
+  brew: 0,
+  probe: 0,
+  fetch: 0,
+  judge: 0,
+  grep: 0,
+  notifications: 0,
+  discover: 0,
+  update: 0,
+  reprobe: 0,
+  recheck: 0,
+} satisfies Record<Phase, number>) as Phase[];
+
 const PHASES: Phase[] = [
   "config",
   "engine",
@@ -20,7 +40,25 @@ const PHASES: Phase[] = [
   "discover",
   "update",
   "reprobe",
+  "recheck",
 ];
+
+test("every phase a quip speaks for is inside the gate above", () => {
+  // PHASES is hand-written and the three gates below only ever see what is in
+  // it, so a phase added to quips.ts without a line here is a phase nothing
+  // checks — measured: a quip printing `${s.releases} releases behind` under a
+  // missing phase passed the whole suite, while the identical quip under a
+  // listed one failed two tests.
+  const spoken = new Set(PHASES.flatMap((p) => (eligible({ phase: p, elapsed: 0 }).length > 0 ? [p] : [])));
+  for (const phase of ALL_PHASES) {
+    if (eligible({ phase, elapsed: 0 }).length === 0) continue;
+    assert.ok(
+      PHASES.includes(phase),
+      `quips.ts speaks for "${phase}", which PHASES does not list — the gates never see it`,
+    );
+  }
+  assert.ok(spoken.size > 0, "the helper has to find quips at all, or this test proves nothing");
+});
 
 /** Everything a long-running command would eventually know about itself. */
 const full = (patch: Partial<QuipState> = {}): QuipState => ({

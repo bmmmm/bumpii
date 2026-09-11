@@ -210,8 +210,10 @@ read a version out of uv. Where an entry *is* tracked, `bumpii digest --yes`
 does read the binary, and that is the stronger check of the two.
 
 Two limits the run states rather than leaves you to infer. `--only` narrows the
-report but not `brew upgrade`, so a filtered run says how many packages it
-upgraded outside what it showed — none of which it checked. And tracked tools
+report but not `brew upgrade`, so a filtered run says how many pending packages
+the filter kept out, and the re-check asks brew about its whole list rather than
+the slice — a package still listed afterwards keeps the exit code at 1 whether
+the filter showed it or not. And tracked tools
 brew does not manage (containers, anything installed by hand) never enter the
 listing at all, so an upgrade run names them and points at `bumpii digest
 --yes`, which does run their own update lines and reads their versions back.
@@ -221,7 +223,9 @@ otherwise reported and never touched. It is off by default and refused without
 `--brew-upgrade`: these are running applications, and reinstalling one
 underneath its user is a decision rather than a default. It works on `digest`
 too, and on either command the casks it takes in are checked afterwards like
-anything else the report named as behind.
+anything else the report named as behind — or, where the greedy listing itself
+failed and the upgrade ran regardless, the run says it cannot name them and
+exits 2 rather than reporting success over applications it reinstalled.
 
 The second listing is read with the same flag — without that, `brew outdated`
 would not list a self-updating cask at all, and every one of them would come

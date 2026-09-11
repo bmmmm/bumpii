@@ -88,7 +88,8 @@ box in the template unticked and an explanation:
   codes rest on a weaker measurement, because its entries carry no
   `version.cmd` to run: the re-check is a second `brew outdated`, asked with
   the same `--greedy-auto-updates` the upgrade used — `0` brew stopped listing
-  them, `1` it still does, `2` the listing could not be taken: either the
+  them, `1` it still lists something, including packages `--only` kept out of
+  the report, since `brew upgrade` does not narrow with that filter; `2` the listing could not be taken: either the
   second one failed, or the greedy one failed before the upgrade, which leaves
   a run that upgraded casks it cannot name. The wording
   keeps that distinction visible: "brew no longer lists it as outdated" is

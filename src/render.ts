@@ -565,13 +565,17 @@ export function renderReport(rawReports: ToolReport[], opts: RenderOptions): str
   // nothing for them.
   if (opts.selfUpdatingNames?.length) {
     const one = opts.selfUpdatingNames.length === 1;
-    const greedy = opts.brewUpgrade && opts.greedyAutoUpdates;
+    // Not `&& opts.brewUpgrade`: that one is false under --dry-run, which is
+    // exactly a run that prints `$ brew upgrade --greedy-auto-updates` as what
+    // it would do. The caller decides what this means; the parser already
+    // guarantees greedy never arrives without --brew-upgrade.
+    const greedy = opts.greedyAutoUpdates;
     out.push(
       dim(
         `${opts.selfUpdatingNames.length} self-updating cask${one ? "" : "s"} ${one ? "is" : "are"} behind: ` +
           `${opts.selfUpdatingNames.join(", ")} — ` +
           (greedy
-            ? `this run will upgrade ${one ? "it" : "them"} too`
+            ? `this run was asked to upgrade ${one ? "it" : "them"} too`
             : `brew upgrade will not touch ${one ? "it" : "them"}`),
       ),
     );
@@ -848,7 +852,15 @@ export function renderOverview(raw: Overview, opts: { greedyUpgrade?: boolean } 
               "brew has no newer version for anything it would upgrade — self-updating casks were not checked",
             )}`
           : o.selfUpdating.length > 0
-            ? `${green("nothing to upgrade")}  ${dim("brew has no newer version for anything it would upgrade")}`
+            ? // "anything it would upgrade" is exactly what the greedy flag
+              // changes: these casks ARE upgrade targets for this run, and brew
+              // has a newer version for them. Green here said the opposite of
+              // the section printed two lines below it.
+              opts.greedyUpgrade
+              ? dim(
+                  "nothing in brew's ordinary listing — the self-updating casks below are what this run will upgrade",
+                )
+              : `${green("nothing to upgrade")}  ${dim("brew has no newer version for anything it would upgrade")}`
             : `${green("nothing outdated")}  ${dim("brew has no newer version for anything installed")}`;
     out.push(headline, "");
   }
