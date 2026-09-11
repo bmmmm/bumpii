@@ -43,23 +43,6 @@ const PHASES: Phase[] = [
   "recheck",
 ];
 
-test("every phase a quip speaks for is inside the gate above", () => {
-  // PHASES is hand-written and the three gates below only ever see what is in
-  // it, so a phase added to quips.ts without a line here is a phase nothing
-  // checks — measured: a quip printing `${s.releases} releases behind` under a
-  // missing phase passed the whole suite, while the identical quip under a
-  // listed one failed two tests.
-  const spoken = new Set(PHASES.flatMap((p) => (eligible({ phase: p, elapsed: 0 }).length > 0 ? [p] : [])));
-  for (const phase of ALL_PHASES) {
-    if (eligible({ phase, elapsed: 0 }).length === 0) continue;
-    assert.ok(
-      PHASES.includes(phase),
-      `quips.ts speaks for "${phase}", which PHASES does not list — the gates never see it`,
-    );
-  }
-  assert.ok(spoken.size > 0, "the helper has to find quips at all, or this test proves nothing");
-});
-
 /** Everything a long-running command would eventually know about itself. */
 const full = (patch: Partial<QuipState> = {}): QuipState => ({
   phase: "fetch",
@@ -73,6 +56,26 @@ const full = (patch: Partial<QuipState> = {}): QuipState => ({
   engine: "openai",
   concurrency: 3,
   ...patch,
+});
+
+test("every phase a quip speaks for is inside the gate above", () => {
+  // PHASES is hand-written and the gates below only ever see what is in it, so
+  // a phase added to quips.ts without a line here is a phase nothing checks.
+  //
+  // Probed with a SATURATED state, not an empty one: a quip whose predicate
+  // needs measured numbers yields nothing for `{phase, elapsed: 0}`, so an
+  // emptiness check skipped precisely the phases most able to print a number
+  // they made up. Measured: a quip `${s.total} leftovers` under a phase left
+  // out of PHASES passed the entire suite.
+  for (const phase of ALL_PHASES) {
+    if (eligible(full({ phase })).length === 0) continue;
+    assert.ok(
+      PHASES.includes(phase),
+      `quips.ts speaks for "${phase}", which PHASES does not list — the gates never see it`,
+    );
+  }
+  // The helper has to find quips at all, or the loop above proves nothing.
+  assert.ok(ALL_PHASES.some((phase) => eligible(full({ phase })).length > 0));
 });
 
 test("a quip never states a number the run has not measured", () => {

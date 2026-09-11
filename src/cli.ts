@@ -730,7 +730,7 @@ async function upgradeFromOverview(
   // is a question about brew's whole list rather than the filtered slice.
   // Counting only the slice let a filtered run exit 0 while brew still listed
   // packages that same run had upgraded and never looked at.
-  if (args.brewUpgrade && listed !== undefined) {
+  if (args.brewUpgrade && upgraded && listed !== undefined) {
     const seen = new Set(verify.map((t) => t.name));
     const rest = [...listed.keys()].filter((n) => !seen.has(n));
     if (rest.length > 0) {
@@ -1197,7 +1197,12 @@ async function dispatch(progress: Progress): Promise<number> {
       args.only.length > 0 &&
       overview.entries.length === 0 &&
       overview.current.length === 0 &&
-      overview.unchecked.length === 0
+      overview.unchecked.length === 0 &&
+      // A self-updating cask is a package by that name, installed and out of
+      // date — it is simply kept out of `entries` because `brew upgrade` will
+      // not touch it. Leaving it out of this check answered "no package by
+      // that name is installed or tracked" about one the report can see.
+      !(overview.selfUpdating && overview.selfUpdating.length > 0)
     ) {
       throw new Error(
         `nothing matched --only ${args.only.join(",")} — no package by that name is installed or tracked; ` +
@@ -1209,7 +1214,8 @@ async function dispatch(progress: Progress): Promise<number> {
     // A dry run counts as well — it prints `$ brew upgrade
     // --greedy-auto-updates` as what it would do, and a report saying those
     // casks are out of reach directly above that is the same contradiction.
-    const greedyUpgrade = args.brewUpgrade && args.greedyAutoUpdates;
+    const greedyUpgrade =
+      args.brewUpgrade && args.greedyAutoUpdates && (args.dryRun || brewUpdateError === undefined);
     process.stdout.write(
       args.json ? `${JSON.stringify(overview, null, 2)}\n` : renderOverview(overview, { greedyUpgrade }),
     );
@@ -1455,10 +1461,12 @@ async function dispatch(progress: Progress): Promise<number> {
         // Only when brew upgrade will in fact run: a failed brew update has
         // already cancelled it, and the report must not say it comes next.
         brewUpgrade: args.brewUpgrade && !args.dryRun && brewUpdateError === undefined,
-        // A dry run still announces the greedy command, so the section above
-        // it may not call those casks untouchable. A failed `brew update`
-        // means no upgrade will run at all, greedy or not.
-        greedyAutoUpdates: args.greedyAutoUpdates && (args.dryRun || brewUpdateError === undefined),
+        // Not gated on brewUpgrade: that is false under --dry-run, which is
+        // exactly the run that prints `$ brew upgrade --greedy-auto-updates`
+        // as what it would do. A failed `brew update` needs no guard here —
+        // selfUpdatingNames is only ever set when that succeeded, so the line
+        // this feeds has nothing to render either way.
+        greedyAutoUpdates: args.greedyAutoUpdates,
         yes: args.yes,
       }),
     );
@@ -1506,6 +1514,10 @@ async function dispatch(progress: Progress): Promise<number> {
     // A placeholder still reports 2 — it is broken now, not once it runs.
     if (updateFailures > 0) return 2;
     if (reports.some((r) => !r.error && r.behind.length > 0)) return 1;
+    // A greedy dry run prints `$ brew upgrade --greedy-auto-updates` and says
+    // the casks are behind; exiting 0 under both told a scheduler the machine
+    // was current. `overview` has counted these since it learned to upgrade.
+    if (args.greedyAutoUpdates && selfPending && selfPending.length > 0) return 1;
     if (reports.some((r) => r.error)) return 2;
     return 0;
   }
@@ -1615,6 +1627,15 @@ async function dispatch(progress: Progress): Promise<number> {
   // matching the pending count uses, so the blame and the count cannot
   // disagree about what brew had.
   let stillPending = 0;
+  /**
+   * Every name the re-probe loop below actually reached a verdict for.
+   *
+   * Built from `again`, not from `reports`: a tracked tool the filter excludes
+   * — no source, nothing behind, not installed — never gets a verdict there,
+   * so treating it as "already probed" removed it from the greedy check too
+   * and left a just-reinstalled cask with no line at all, under exit 0.
+   */
+  const reprobed = new Set<string>();
   if ((args.yes || args.brewUpgrade) && !args.dryRun) {
     const again = reports.filter((r) => {
       const how = ran.get(r.tool.name);
@@ -1626,6 +1647,7 @@ async function dispatch(progress: Progress): Promise<number> {
     // them is not answering" the moment a run has lasted ten seconds.
     progress.phase("reprobe", { total: again.length, done: 0 });
     progress.resume();
+    for (const r of again) for (const n of namesOf(r.tool)) reprobed.add(n);
     for (const r of again) {
       const how = ran.get(r.tool.name);
       const update = r.tool.update;
@@ -1656,7 +1678,15 @@ async function dispatch(progress: Progress): Promise<number> {
       // this very run had listed and upgraded, which renders as "brew outdated
       // did not list it, so brew upgrade had nothing to do": a premise the
       // same run disproves two lines later.
-      const pool = args.greedyAutoUpdates && selfPending ? [...(outdated ?? []), ...selfPending] : outdated;
+      // Under greedy, `outdated` alone is not brew's answer about a
+      // self-updating cask — it structurally cannot list one. Without the
+      // greedy half the list was never taken, and `undefined` says exactly
+      // that, where falling back asserts "brew did not list it".
+      const pool = args.greedyAutoUpdates
+        ? selfPending
+          ? [...(outdated ?? []), ...selfPending]
+          : undefined
+        : outdated;
       const listed = pool?.find((p) => names.includes(p.name));
       const brew =
         pool === undefined ? undefined : listed ? { latest: listed.latest, pinned: listed.pinned } : null;
@@ -1696,17 +1726,20 @@ async function dispatch(progress: Progress): Promise<number> {
   // anyway: the same ignorance `overview` refuses to exit 0 on. Without this
   // the digest reinstalled running applications, said nothing about them, and
   // reported success — while the same fake brew made `overview` exit 2.
-  if (
-    args.brewUpgrade &&
-    args.greedyAutoUpdates &&
-    !args.dryRun &&
-    selfPending === undefined &&
-    brewUpgradeOk
-  ) {
-    updateFailures++;
-    progress.err(
-      "self-updating casks were upgraded, but the greedy listing failed earlier — this run cannot say which\n",
-    );
+  if (args.brewUpgrade && args.greedyAutoUpdates && !args.dryRun && selfPending === undefined) {
+    if (brewUpgradeOk) {
+      updateFailures++;
+      progress.err(
+        "self-updating casks were upgraded, but the greedy listing failed earlier — this run cannot say which\n",
+      );
+    } else {
+      // The upgrade never ran, so nothing was upgraded — the failure that
+      // stopped it is counted where it happened. Said anyway, because silence
+      // here reads as "there were none".
+      progress.err(
+        "the greedy listing failed earlier, so this run cannot say which self-updating casks were pending\n",
+      );
+    }
   }
 
   if (args.brewUpgrade && args.greedyAutoUpdates && !args.dryRun && selfPending && selfPending.length > 0) {
@@ -1722,9 +1755,8 @@ async function dispatch(progress: Progress): Promise<number> {
     // A tracked cask was already re-probed above, through its own version.cmd —
     // the stronger of the two checks. Running it through brew's list as well
     // printed two verdicts for one package, the second contradicting the first.
-    const alreadyProbed = new Set(reports.flatMap((r) => namesOf(r.tool)));
     for (const p of selfPending) {
-      if (alreadyProbed.has(p.name)) {
+      if (reprobed.has(p.name)) {
         progress.step();
         continue;
       }

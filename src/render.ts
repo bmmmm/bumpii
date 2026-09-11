@@ -838,29 +838,39 @@ export function renderOverview(raw: Overview, opts: { greedyUpgrade?: boolean } 
     // sat behind — brew never lists it without --greedy — so when there are
     // any, the headline narrows to what it actually covers and the section
     // below names them.
-    const headline =
+    const filterNote =
       o.filteredOut > 0
-        ? `${green("nothing outdated among what --only names")}  ${dim(
+        ? `  ${dim(
             `brew has ${o.filteredOut} package${o.filteredOut === 1 ? "" : "s"} pending outside that filter — run without --only to see them`,
           )}`
-        : o.selfUpdating === undefined
-          ? // Not checked is its own answer: the greedy listing failed, so
-            // whether a self-updating cask is behind is unknown, and claiming
-            // "anything installed" would be asserting an absence nothing here
-            // established.
-            `${green("nothing to upgrade")}  ${dim(
-              "brew has no newer version for anything it would upgrade — self-updating casks were not checked",
-            )}`
-          : o.selfUpdating.length > 0
-            ? // "anything it would upgrade" is exactly what the greedy flag
-              // changes: these casks ARE upgrade targets for this run, and brew
-              // has a newer version for them. Green here said the opposite of
-              // the section printed two lines below it.
-              opts.greedyUpgrade
+        : "";
+    const headline =
+      // Order matters, and it was wrong: the --only branch used to win, so a
+      // filtered run printed a green "nothing outdated among what --only
+      // names" over a self-updating cask that --only had named and that was
+      // out of date. What brew could not check, and what it found behind, both
+      // outrank the filter note — which is appended instead of replacing them.
+      o.selfUpdating === undefined
+        ? // Not checked is its own answer: the greedy listing failed, so
+          // whether a self-updating cask is behind is unknown, and claiming
+          // "anything installed" would be asserting an absence nothing here
+          // established.
+          `${green("nothing to upgrade")}  ${dim(
+            "brew has no newer version for anything it would upgrade — self-updating casks were not checked",
+          )}${filterNote}`
+        : o.selfUpdating.length > 0
+          ? // "anything it would upgrade" is exactly what the greedy flag
+            // changes: these casks ARE upgrade targets for this run, and brew
+            // has a newer version for them. Green here said the opposite of
+            // the section printed two lines below it.
+            (opts.greedyUpgrade
               ? dim(
                   "nothing in brew's ordinary listing — the self-updating casks below are what this run will upgrade",
                 )
-              : `${green("nothing to upgrade")}  ${dim("brew has no newer version for anything it would upgrade")}`
+              : `${green("nothing to upgrade")}  ${dim("brew has no newer version for anything it would upgrade")}`) +
+            filterNote
+          : o.filteredOut > 0
+            ? `${green("nothing outdated among what --only names")}${filterNote}`
             : `${green("nothing outdated")}  ${dim("brew has no newer version for anything installed")}`;
     out.push(headline, "");
   }

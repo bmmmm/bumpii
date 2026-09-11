@@ -89,11 +89,12 @@ box in the template unticked and an explanation:
   `version.cmd` to run: the re-check is a second `brew outdated`, asked with
   the same `--greedy-auto-updates` the upgrade used — `0` brew stopped listing
   them, `1` it still lists something, including packages `--only` kept out of
-  the report, since `brew upgrade` does not narrow with that filter; `2` the listing could not be taken: either the
-  second one failed, or the greedy one failed before the upgrade, which leaves
-  a run that upgraded casks it cannot name. The wording
-  keeps that distinction visible: "brew no longer lists it as outdated" is
-  deliberately not a claim about the version on PATH. `141` is 128+SIGPIPE and
+  the report, since `brew upgrade` does not narrow with that filter, `2` as
+  above plus the two ways this check itself can fail: the second listing did
+  not come back, or the greedy one failed before the upgrade and the run
+  cannot name the casks it upgraded. The wording keeps the weaker measurement
+  visible: "brew no longer lists it as outdated" is deliberately not a claim
+  about the version on PATH. `141` is 128+SIGPIPE and
   means the reader closed the pipe (`bumpii | head`) — nothing was learned about
   any package, which is why it is not one of the three.
 - **`--json` shape** — `{ engine: { kind, model, label }, otherPending,

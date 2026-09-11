@@ -2200,3 +2200,222 @@ esac`,
   const verdicts = r.stdout.match(/^selfy:/gm) ?? [];
   assert.equal(verdicts.length, 1, `one package, one verdict — got ${verdicts.length}`);
 });
+
+test("a tracked cask the re-probe never reached still gets its verdict", async () => {
+  // The regression the third review found, and it came from the fix for the
+  // duplicate verdict: the "already probed" set was built from every tracked
+  // tool rather than from the ones the re-probe loop actually walked. A
+  // tracked entry the loop excludes — no source here, but equally nothing
+  // behind, or not installed — was then dropped from BOTH checks. The run had
+  // just reinstalled the cask and said nothing at all, under exit 0.
+  const dir = await fakeBrew(
+    `case "$1:$3" in
+  outdated:--greedy-auto-updates) ${SELFY} ;;
+  outdated:*) ${NOTHING} ;;
+  info:*) printf '{"formulae":[]}' ;;
+  *) exit 0 ;;
+esac`,
+  );
+  const home = await freshHome();
+  // A perfectly ordinary entry that `bumpii list` tolerates: no source yet.
+  await writeConfig(home, [tool({ name: "selfy", source: "", update: "brew upgrade --cask selfy" })]);
+
+  const r = await runCli(["digest", "--no-judge", "--brew-upgrade", "--greedy-auto-updates"], home, {
+    PATH: dir,
+  });
+  assert.match(r.stdout, /selfy: brew still lists it as outdated/, "it was upgraded — it needs a verdict");
+  assert.notEqual(r.code, 0, "a cask brew still lists is not a clean run");
+});
+
+test("a failed refresh keeps the report from promising a greedy upgrade", async () => {
+  // `brew update` failed, so no upgrade of any kind runs. The overview headline
+  // and the self-updating section were still written as though one would.
+  const dir = await fakeBrew(
+    `case "$1:$3" in
+  update:*) echo 'Error: tap' >&2 ; exit 1 ;;
+  outdated:--greedy-auto-updates) ${SELFY} ;;
+  outdated:*) ${NOTHING} ;;
+  info:*) printf '{"formulae":[]}' ;;
+  *) exit 0 ;;
+esac`,
+  );
+  const home = await freshHome();
+  await writeConfig(home, [tool()]);
+
+  const r = await runCli(["overview", "--no-judge", "--brew-upgrade", "--greedy-auto-updates"], home, {
+    PATH: dir,
+  });
+  assert.doesNotMatch(
+    r.stdout,
+    /what this run will upgrade/,
+    "nothing will be upgraded — the refresh failed",
+  );
+  assert.doesNotMatch(r.stdout, /asked to upgrade them too/);
+  assert.match(r.stderr, /brew upgrade skipped/);
+});
+
+test("a greedy digest dry run does not report the machine as current", async () => {
+  // It prints the command and says the cask is behind; exiting 0 under both
+  // told a scheduler there was nothing to do.
+  const dir = await fakeBrew(
+    `case "$1:$3" in
+  outdated:--greedy-auto-updates) ${SELFY} ;;
+  outdated:*) ${NOTHING} ;;
+  info:*) printf '{"formulae":[]}' ;;
+  *) exit 0 ;;
+esac`,
+  );
+  const home = await freshHome();
+  await writeConfig(home, [tool()]);
+
+  const r = await runCli(
+    ["digest", "--no-judge", "--brew-upgrade", "--greedy-auto-updates", "--dry-run"],
+    home,
+    { PATH: dir },
+  );
+  assert.match(r.stdout, /self-updating cask is behind/);
+  assert.equal(r.code, 1, "a cask is behind and the printed command would take it");
+});
+
+test("a greedy listing that failed leaves brew's answer unknown, not negative", async (t) => {
+  // With the greedy half missing, the plain listing is not brew's answer about
+  // a self-updating cask — it structurally cannot hold one. Falling back to it
+  // asserted "brew outdated did not list it, so brew upgrade had nothing to
+  // do" about a package the same run had upgraded greedily.
+  const url = await stubForge(["v2.0.0", "v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  const { tool: selfy } = await fileTool(home, "1.0.0", {
+    name: "selfy",
+    source: url,
+    update: "brew upgrade --cask selfy",
+  });
+  await writeConfig(home, [selfy]);
+  const dir = await fakeBrew(
+    `case "$1:$3" in
+  outdated:--greedy-auto-updates) echo 'Error: no greedy' >&2 ; exit 1 ;;
+  outdated:*) printf '{"formulae":[],"casks":[]}' ;;
+  info:*) printf '{"formulae":[]}' ;;
+  *) exit 0 ;;
+esac`,
+  );
+
+  const r = await runCli(["digest", "--no-judge", "--brew-upgrade", "--greedy-auto-updates"], home, {
+    PATH: dir,
+  });
+  assert.doesNotMatch(r.stdout, /had nothing to do/, "the list that would have held it was never taken");
+  assert.match(r.stdout, /pending list was not available/);
+});
+
+test("a filter does not turn a self-updating cask into a clean bill", async () => {
+  // --only used to win over the self-updating branch, so a filtered run printed
+  // a green "nothing outdated among what --only names" over the very cask
+  // --only had named, listed one section below as out of date.
+  const dir = await fakeBrew(
+    `case "$1:$3" in
+  outdated:--greedy-auto-updates) ${SELFY} ;;
+  outdated:*) printf '{"formulae":[{"name":"other","installed_versions":["1.0"],"current_version":"2.0"}],"casks":[]}' ;;
+  info:*) printf '{"formulae":[]}' ;;
+  *) exit 0 ;;
+esac`,
+  );
+  const home = await freshHome();
+  await writeConfig(home, [tool()]);
+
+  const r = await runCli(["overview", "--no-judge", "--only", "selfy"], home, { PATH: dir });
+  assert.doesNotMatch(
+    r.stdout,
+    /nothing outdated among what --only names/,
+    "selfy is what --only names, and selfy is out of date",
+  );
+  assert.match(r.stdout, /selfy/);
+});
+
+test("a greedy cask is not counted twice by the leftover check", async () => {
+  // `seen` is built from everything the run verifies, not only from what --yes
+  // would run — otherwise a self-updating cask gets its verdict AND is counted
+  // again as a package "this report did not cover", two lines apart, with
+  // stillPending at 2 for one package.
+  const scratch = await freshHome();
+  const done = join(scratch, "done");
+  const dir = await fakeBrew(
+    `case "$1:$3" in
+  upgrade:*) : > ${done} ; exit 0 ;;
+  outdated:--greedy-auto-updates) ${SELFY} ;;
+  outdated:*) printf '{"formulae":[{"name":"other","installed_versions":["1.0"],"current_version":"2.0"}],"casks":[]}' ;;
+  info:*) printf '{"formulae":[]}' ;;
+  *) exit 0 ;;
+esac`,
+  );
+  const home = await freshHome();
+  await writeConfig(home, [tool()]);
+
+  // --only names the cask, so it IS verified; `other` is what the filter hid.
+  const r = await runCli(
+    ["overview", "--no-judge", "--only", "selfy", "--brew-upgrade", "--greedy-auto-updates"],
+    home,
+    { PATH: dir },
+  );
+  assert.match(r.stdout, /selfy: brew still lists it as outdated/, "the cask gets its verdict");
+  assert.doesNotMatch(
+    r.stdout,
+    /did not cover: .*selfy/,
+    "and is not also counted as a package the report skipped",
+  );
+  assert.match(r.stdout, /did not cover: other/, "which `other` genuinely is");
+});
+
+test("the leftover line does not imply an upgrade that never ran", async () => {
+  // `brew update` failed, so `brew upgrade` was skipped — nothing ranged past
+  // the filter, and saying so under "brew upgrade skipped" describes a run
+  // that did not happen.
+  const dir = await fakeBrew(
+    `case "$1" in
+  update) echo 'Error: tap' >&2 ; exit 1 ;;
+  outdated) printf '{"formulae":[{"name":"uv","installed_versions":["0.1.0"],"current_version":"0.2.0"},{"name":"other","installed_versions":["1.0"],"current_version":"2.0"}],"casks":[]}' ;;
+  info) printf '{"formulae":[]}' ;;
+  *) exit 0 ;;
+esac`,
+  );
+  const home = await freshHome();
+  await writeConfig(home, [tool()]);
+
+  const r = await runCli(["overview", "--no-judge", "--only", "uv", "--brew-upgrade"], home, {
+    PATH: dir,
+  });
+  assert.match(r.stderr, /brew upgrade skipped/);
+  assert.doesNotMatch(r.stdout, /did not cover/, "nothing ranged past the filter — the upgrade never ran");
+});
+
+test("a tool whose formula is named differently is still recognised as probed", async (t) => {
+  // The last survivor of the review's mutation set. A tools.json entry is keyed
+  // on the binary, not on brew's name — `gcloud` installs from
+  // `google-cloud-sdk`, `fj` from `forgejo-cli`. brew's greedy listing speaks
+  // brew's name, so matching on `tool.name` alone misses it and the cask is
+  // judged a second time, from brew's list, contradicting the binary probe
+  // that already ran.
+  const url = await stubForge(["v2.0.0", "v1.0.0"]);
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  const { tool: gcloud } = await fileTool(home, "1.0.0", {
+    name: "gcloud",
+    source: url,
+    update: "brew upgrade --cask google-cloud-sdk",
+  });
+  await writeConfig(home, [gcloud]);
+  const greedy = `printf '{"formulae":[],"casks":[{"name":"google-cloud-sdk","installed_versions":["1.0.0"],"current_version":"2.0.0"}]}'`;
+  const dir = await fakeBrew(
+    `case "$1:$3" in
+  outdated:--greedy-auto-updates) ${greedy} ;;
+  outdated:*) printf '{"formulae":[],"casks":[]}' ;;
+  info:*) printf '{"formulae":[]}' ;;
+  *) exit 0 ;;
+esac`,
+  );
+
+  const r = await runCli(["digest", "--no-judge", "--brew-upgrade", "--greedy-auto-updates"], home, {
+    PATH: dir,
+  });
+  const verdicts = r.stdout.match(/^(gcloud|google-cloud-sdk):/gm) ?? [];
+  assert.equal(verdicts.length, 1, `one package, one verdict — got ${verdicts.length}: ${verdicts}`);
+});
