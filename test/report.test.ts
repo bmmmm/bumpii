@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Engine } from "../src/judge.ts";
 import { parseItems } from "../src/judge.ts";
-import { type Reprobe, renderReport, reprobeVerdict } from "../src/render.ts";
+import { brewReprobeVerdict, type Reprobe, renderReport, reprobeVerdict } from "../src/render.ts";
 import type { Release, ToolConfig, ToolReport } from "../src/types.ts";
 
 const engine: Engine = { kind: "openai", model: "local", label: "openai-compatible/local" };
@@ -553,4 +553,55 @@ test("a forge-supplied URL is not spliced into a terminal escape unchecked", () 
   const out = renderReport([report({ behind: [bad] })], { engine: noEngine });
   assert.ok(!out.includes(`${ESC}]8;;`), "no OSC 8 sequence may be built from that");
   assert.match(out, /javascript:alert\(1\)/, "the text is still shown, so nothing is hidden");
+});
+
+// --- brewReprobeVerdict ------------------------------------------------------
+//
+// The verdict `overview` reaches for, and the digest's greedy path with it.
+// It decides whether a package counts as upgraded, so every branch here is a
+// claim about the machine — and one of them is the reassuring one.
+
+const pkg = { installed: "1.0.0", latest: "2.0.0", pinned: false };
+
+test("a package brew has dropped from its list counts as upgraded", () => {
+  const { line, state } = brewReprobeVerdict("uv", pkg, { listed: false });
+  assert.equal(state, "updated");
+  assert.match(line, /no longer lists it as outdated/);
+  // What it must NOT say: nothing here read a version out of uv, so naming one
+  // would be a measurement this path never took.
+  assert.doesNotMatch(line, /2\.0\.0/);
+});
+
+test("a package brew still lists is pending, and says so with both versions", () => {
+  const { line, state } = brewReprobeVerdict("uv", pkg, { listed: true });
+  assert.equal(state, "pending");
+  assert.match(line, /still lists it as outdated \(1\.0\.0 → 2\.0\.0\)/);
+});
+
+test("a pinned package is still pending, and the reason is not invented", () => {
+  // The branch a mutation could turn green unnoticed: pinned means brew
+  // declined on purpose, which is a different next step from an upgrade that
+  // ran and achieved nothing — but it is emphatically not "updated".
+  const { line, state } = brewReprobeVerdict("uv", { ...pkg, pinned: true }, { listed: true });
+  assert.equal(state, "pending", "pinned is a package brew left behind, not one it upgraded");
+  assert.match(line, /pinned/);
+  assert.doesNotMatch(line, /no longer lists/, "the reassuring string may not appear for a pinned package");
+});
+
+test("a listing that could not be taken is unknown, never a pass", () => {
+  const { line, state } = brewReprobeVerdict("uv", pkg, { error: "brew exploded" });
+  assert.equal(state, "unknown", "a check that could not run is not a check that passed");
+  assert.match(line, /could not ask brew again: brew exploded/);
+  assert.doesNotMatch(line, /no longer lists/);
+});
+
+test("brewReprobeVerdict strips control bytes from every side it prints", () => {
+  // Package names and versions reach this from brew's JSON, which is as much
+  // "not ours" as a forge's. An ESC here could paint over the lines above it.
+  const ESC = String.fromCharCode(27);
+  const { line } = brewReprobeVerdict(`uv${ESC}[2K`, { ...pkg, installed: `1.0${ESC}[1A` }, { listed: true });
+  // Built from the constant, never written as a regex literal: an ESC byte
+  // inside one is a lint error in this repo (AGENTS.md § Traps).
+  assert.ok(!line.includes(`${ESC}[2K`), "an erase-line sequence must not survive into the report");
+  assert.ok(!line.includes(`${ESC}[1A`), "nor a cursor-up, which could paint over the lines above");
 });

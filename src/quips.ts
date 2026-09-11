@@ -31,7 +31,8 @@ export type Phase =
   | "notifications"
   | "discover"
   | "update"
-  | "reprobe";
+  | "reprobe"
+  | "recheck";
 
 /**
  * Everything a quip may speak about. Anything absent is unknown — not zero —
@@ -226,6 +227,19 @@ const QUIPS: Quip[] = [
     phase: "reprobe",
     when: (s) => s.total !== undefined && s.total > 0,
     text: (s) => `${plural(s.total ?? 0, "tool", "tools")} to read again, now that the updates ran`,
+  },
+
+  // -- asking brew again, after the upgrade ------------------------------
+  //
+  // Its own phase, not "reprobe": nothing here reads a version out of a
+  // binary. These packages are mostly untracked, there is no version.cmd to
+  // run for them, and the only thing measured is whether brew still lists
+  // them. A quip may name what the run measured and nothing else.
+  { phase: "recheck", when: () => true, text: () => "asking brew what is still pending" },
+  {
+    phase: "recheck",
+    when: (s) => s.total !== undefined && s.total > 0,
+    text: (s) => `${plural(s.total ?? 0, "package", "packages")} to check against brew's list`,
   },
 ];
 

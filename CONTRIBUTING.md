@@ -88,7 +88,9 @@ box in the template unticked and an explanation:
   codes rest on a weaker measurement, because its entries carry no
   `version.cmd` to run: the re-check is a second `brew outdated`, asked with
   the same `--greedy-auto-updates` the upgrade used — `0` brew stopped listing
-  them, `1` it still does, `2` the second listing itself failed. The wording
+  them, `1` it still does, `2` the listing could not be taken: either the
+  second one failed, or the greedy one failed before the upgrade, which leaves
+  a run that upgraded casks it cannot name. The wording
   keeps that distinction visible: "brew no longer lists it as outdated" is
   deliberately not a claim about the version on PATH. `141` is 128+SIGPIPE and
   means the reader closed the pipe (`bumpii | head`) — nothing was learned about

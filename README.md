@@ -219,10 +219,17 @@ listing at all, so an upgrade run names them and points at `bumpii digest
 `--greedy-auto-updates` widens the upgrade to the self-updating casks, which are
 otherwise reported and never touched. It is off by default and refused without
 `--brew-upgrade`: these are running applications, and reinstalling one
-underneath its user is a decision rather than a default. The second listing is
-read with the same flag — without that, `brew outdated` would not list a
-self-updating cask at all, and every one of them would come back "no longer
-listed" whether the upgrade reached it or not.
+underneath its user is a decision rather than a default. It works on `digest`
+too, and on either command the casks it takes in are checked afterwards like
+anything else the report named as behind.
+
+The second listing is read with the same flag — without that, `brew outdated`
+would not list a self-updating cask at all, and every one of them would come
+back "no longer listed" whether the upgrade reached it or not. For the same
+reason the report itself changes wording under the flag: "brew upgrade will not
+touch them" is true of an ordinary run and the exact opposite of a greedy one,
+and a report that contradicts the command printed two lines below it is worse
+than no report.
 
 Three states are deliberately kept out of "up to date", because each means
 bumpii could not check rather than checked and found nothing. A package whose

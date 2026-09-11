@@ -344,6 +344,13 @@ export interface RenderOptions {
    */
   brewUpgrade?: boolean;
   /**
+   * …and that upgrade was asked to be greedy, so the self-updating casks are
+   * upgrade targets after all. Without this the report stated the opposite of
+   * what the same run was about to do — "brew upgrade will not touch them",
+   * two lines above `$ brew upgrade --greedy-auto-updates` touching them.
+   */
+  greedyAutoUpdates?: boolean;
+  /**
    * The run will also run each tool's own update line (--yes), so a non-brew
    * line is not left out after all — the marker would be wrong then.
    */
@@ -558,10 +565,14 @@ export function renderReport(rawReports: ToolReport[], opts: RenderOptions): str
   // nothing for them.
   if (opts.selfUpdatingNames?.length) {
     const one = opts.selfUpdatingNames.length === 1;
+    const greedy = opts.brewUpgrade && opts.greedyAutoUpdates;
     out.push(
       dim(
         `${opts.selfUpdatingNames.length} self-updating cask${one ? "" : "s"} ${one ? "is" : "are"} behind: ` +
-          `${opts.selfUpdatingNames.join(", ")} — brew upgrade will not touch ${one ? "it" : "them"}`,
+          `${opts.selfUpdatingNames.join(", ")} — ` +
+          (greedy
+            ? `this run will upgrade ${one ? "it" : "them"} too`
+            : `brew upgrade will not touch ${one ? "it" : "them"}`),
       ),
     );
   }
@@ -798,7 +809,7 @@ function safeEntry(e: OverviewEntry): OverviewEntry {
   };
 }
 
-export function renderOverview(raw: Overview): string {
+export function renderOverview(raw: Overview, opts: { greedyUpgrade?: boolean } = {}): string {
   const o: Overview = {
     ...raw,
     usageIncomplete: raw.usageIncomplete === undefined ? undefined : safe(raw.usageIncomplete),
@@ -895,7 +906,11 @@ export function renderOverview(raw: Overview): string {
   if (o.selfUpdating && o.selfUpdating.length > 0) {
     out.push(
       bold(`updates itself (${o.selfUpdating.length})`),
-      dim("  brew only lists these with --greedy, and brew upgrade will not touch them"),
+      dim(
+        opts.greedyUpgrade
+          ? "  brew only lists these with --greedy — this run was asked to upgrade them too"
+          : "  brew only lists these with --greedy, and brew upgrade will not touch them",
+      ),
     );
     const width = Math.max(...o.selfUpdating.map((p) => p.name.length));
     for (const p of o.selfUpdating) {
