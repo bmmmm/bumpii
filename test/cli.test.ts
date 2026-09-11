@@ -1523,3 +1523,178 @@ test("--json --yes keeps stdout to one document", async (t) => {
   assert.match(r.stderr, /^pretending-to-upgrade$/m, "the update output still has to be shown");
   assert.equal(r.code, 0, "the update itself succeeded");
 });
+
+// --- overview --brew-upgrade -------------------------------------------------
+//
+// These need no forge stub on purpose: with no usagePaths every package has a
+// reference count of zero, so overview never contacts a forge and the run is
+// the brew half alone — which is the half the upgrade path is made of. That
+// also keeps them out of the group that skips when a port cannot be bound.
+
+const UV_PENDING = `printf '{"formulae":[{"name":"uv","installed_versions":["0.1.0"],"current_version":"0.2.0"}],"casks":[]}'`;
+const NOTHING = `printf '{"formulae":[],"casks":[]}'`;
+const SELFY = `printf '{"formulae":[],"casks":[{"name":"selfy","installed_versions":["1.0.0"],"current_version":"2.0.0"}]}'`;
+
+test("overview --brew-upgrade reaches brew, in the order the report depends on", async () => {
+  // The regression this pins: the flag was parsed, accepted, and dropped —
+  // `overview` returned before the upgrade block could ever run, so the run
+  // printed a report and exited 0 having upgraded nothing. Asserted against
+  // brew's own call log, because the report quotes `→ brew upgrade uv` either
+  // way and matching that string passes without brew ever being called.
+  const scratch = await freshHome();
+  const log = join(scratch, "log");
+  const done = join(scratch, "done");
+  const dir = await fakeBrew(
+    `echo "$1" >> ${log}
+case "$1" in
+  update) exit 0 ;;
+  upgrade) : > ${done} ; exit 0 ;;
+  outdated) if [ -f ${done} ]; then ${NOTHING} ; else ${UV_PENDING} ; fi ;;
+  *) printf '{"formulae":[]}' ;;
+esac`,
+  );
+  const home = await freshHome();
+  await writeConfig(home, [tool()]);
+
+  const r = await runCli(["overview", "--no-judge", "--brew-upgrade"], home, { PATH: dir });
+  const calls = (await readFile(log, "utf8")).trim().split("\n");
+  assert.ok(calls.includes("upgrade"), "the flag has to reach brew, not just be accepted");
+  assert.equal(calls[0], "update", "the listing the report is built from must come after the refresh");
+  assert.ok(calls.indexOf("update") < calls.indexOf("outdated"), "update, then the listing");
+  assert.ok(
+    calls.lastIndexOf("outdated") > calls.indexOf("upgrade"),
+    "brew is asked again after the upgrade",
+  );
+  assert.equal(r.code, 0, "brew stopped listing it, so nothing is pending any more");
+});
+
+test("a package brew still lists after the upgrade is never called updated", async () => {
+  // `brew upgrade` exits 0 with a package still pending whenever brew has no
+  // newer bottle yet. The reassuring string has to be absent, not merely
+  // outweighed by a second line somewhere below it.
+  const dir = await fakeBrew(
+    `case "$1" in
+  outdated) ${UV_PENDING} ;;
+  info) printf '{"formulae":[]}' ;;
+  *) exit 0 ;;
+esac`,
+  );
+  const home = await freshHome();
+  await writeConfig(home, [tool()]);
+
+  const r = await runCli(["overview", "--no-judge", "--brew-upgrade"], home, { PATH: dir });
+  assert.match(r.stdout, /still lists it as outdated/, "the run has to say the upgrade changed nothing");
+  assert.doesNotMatch(
+    r.stdout,
+    /no longer lists/,
+    "an upgrade that achieved nothing must not read as success",
+  );
+  assert.equal(r.code, 1, "still pending is exit 1, not a clean run");
+});
+
+test("a greedy upgrade is verified greedily, or every self-updating cask reads as clean", async () => {
+  // The trap, and the reason the flag is threaded through to the second read:
+  // `brew outdated` never lists an auto_updates cask at all. Ask again without
+  // the flag the upgrade used and the cask is simply absent — which the
+  // verdict would read as "no longer listed", upgraded or not. This fake never
+  // upgrades anything; only asking greedily can tell the difference.
+  const dir = await fakeBrew(
+    `case "$1:$3" in
+  outdated:--greedy-auto-updates) ${SELFY} ;;
+  outdated:*) ${NOTHING} ;;
+  info) printf '{"formulae":[]}' ;;
+  *) exit 0 ;;
+esac`,
+  );
+  const home = await freshHome();
+  await writeConfig(home, [tool()]);
+
+  const r = await runCli(["overview", "--no-judge", "--brew-upgrade", "--greedy-auto-updates"], home, {
+    PATH: dir,
+  });
+  assert.match(r.stdout, /selfy/, "the cask the greedy listing found has to be verified too");
+  assert.match(r.stdout, /still lists it as outdated/, "asked greedily, brew still has it");
+  assert.doesNotMatch(
+    r.stdout,
+    /no longer lists/,
+    "the plain listing's silence is not evidence of an upgrade",
+  );
+  assert.equal(r.code, 1);
+});
+
+test("--greedy-auto-updates is refused where there is no upgrade to widen", async () => {
+  const home = await freshHome();
+  await writeConfig(home, [tool()]);
+  const r = await runCli(["overview", "--no-judge", "--greedy-auto-updates"], home);
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /needs --brew-upgrade/, "a flag that changes nothing is refused, not swallowed");
+});
+
+test("overview --yes runs each entry's own command, with the cask flag brew needs", async () => {
+  // What the entry carries is what runs: a cask's line is `brew upgrade --cask
+  // <name>`, and dropping the flag makes brew look for a formula by that name.
+  const scratch = await freshHome();
+  const log = join(scratch, "log");
+  const dir = await fakeBrew(
+    `echo "$*" >> ${log}
+case "$1" in
+  outdated) ${SELFY} ;;
+  info) printf '{"formulae":[]}' ;;
+  *) exit 0 ;;
+esac`,
+  );
+  const home = await freshHome();
+  await writeConfig(home, [tool()]);
+
+  await runCli(["overview", "--no-judge", "--yes"], home, { PATH: dir });
+  const calls = await readFile(log, "utf8");
+  assert.match(calls, /^upgrade --cask selfy$/m, "the cask's own command has to run as the entry spells it");
+});
+
+test("a second listing that fails is not a clean bill of health", async () => {
+  // The re-read is the evidence. If it cannot be taken, the run knows nothing
+  // about whether the upgrade worked — and that is exit 2, the same as any
+  // other re-probe that could not run.
+  const scratch = await freshHome();
+  const done = join(scratch, "done");
+  const dir = await fakeBrew(
+    `case "$1" in
+  upgrade) : > ${done} ; exit 0 ;;
+  outdated)
+    if [ -f ${done} ]; then echo 'Error: brew is broken now' >&2 ; exit 1 ; fi
+    ${UV_PENDING} ;;
+  info) printf '{"formulae":[]}' ;;
+  *) exit 0 ;;
+esac`,
+  );
+  const home = await freshHome();
+  await writeConfig(home, [tool()]);
+
+  const r = await runCli(["overview", "--no-judge", "--brew-upgrade"], home, { PATH: dir });
+  assert.match(r.stdout, /could not ask brew again/, "the run has to name what it could not check");
+  assert.doesNotMatch(r.stdout, /no longer lists/, "a failed check is not a passed one");
+  assert.equal(r.code, 2, "a check that could not run is 2, not 0");
+});
+
+test("overview --brew-upgrade --dry-run prints the commands and runs none", async () => {
+  const scratch = await freshHome();
+  const log = join(scratch, "log");
+  const dir = await fakeBrew(
+    `echo "$1" >> ${log}
+case "$1" in
+  outdated) ${UV_PENDING} ;;
+  info) printf '{"formulae":[]}' ;;
+  *) exit 0 ;;
+esac`,
+  );
+  const home = await freshHome();
+  await writeConfig(home, [tool()]);
+
+  const r = await runCli(["overview", "--no-judge", "--brew-upgrade", "--dry-run"], home, { PATH: dir });
+  assert.match(r.stdout, /\$ brew upgrade/);
+  assert.match(r.stdout, /nothing was run/);
+  const calls = (await readFile(log, "utf8")).trim().split("\n");
+  assert.ok(!calls.includes("upgrade"), "--dry-run may print the command but never run it");
+  assert.ok(!calls.includes("update"), "nor refresh the tap it would upgrade against");
+  assert.equal(r.code, 1, "something is still pending, and a dry run keeps saying so");
+});

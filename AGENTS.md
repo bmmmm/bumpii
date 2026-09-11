@@ -27,7 +27,7 @@ test/` looks for a *module* called `test` and fails with MODULE_NOT_FOUND):
 node --test
 ```
 
-**A green run with skips is not a green run.** Seventeen tests stand up a
+**A green run with skips is not a green run.** Thirty-five tests stand up a
 loopback HTTP server as a stub forge, and a sandbox that cannot bind a port
 skips them — the summary then reads `fail 0` with every forge integration path
 unchecked. Read the `skipped` line, not just `fail 0`. Whether they can bind

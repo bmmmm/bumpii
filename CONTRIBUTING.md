@@ -84,7 +84,13 @@ box in the template unticked and an explanation:
   probed again afterwards: `0` every one came back no longer behind, `1` one
   is still behind for a reason that is not a failure (brew did not list it,
   the formula is pinned, the update line is not brew's or is `manual:`), `2`
-  an update failed or a re-probe could not run. `141` is 128+SIGPIPE and
+  an update failed or a re-probe could not run. On `overview` the same three
+  codes rest on a weaker measurement, because its entries carry no
+  `version.cmd` to run: the re-check is a second `brew outdated`, asked with
+  the same `--greedy-auto-updates` the upgrade used — `0` brew stopped listing
+  them, `1` it still does, `2` the second listing itself failed. The wording
+  keeps that distinction visible: "brew no longer lists it as outdated" is
+  deliberately not a claim about the version on PATH. `141` is 128+SIGPIPE and
   means the reader closed the pipe (`bumpii | head`) — nothing was learned about
   any package, which is why it is not one of the three.
 - **`--json` shape** — `{ engine: { kind, model, label }, otherPending,

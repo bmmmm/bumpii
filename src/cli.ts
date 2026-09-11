@@ -26,9 +26,16 @@ import { buildInbox, markThreadsRead, shownThreads } from "./inbox.ts";
 import { digest, type Engine, resolveEngine } from "./judge.ts";
 import { limiter } from "./limit.ts";
 import { brewOutdated, brewSelfUpdating, type OutdatedPackage } from "./outdated.ts";
-import { buildOverview, namesOf, untrackedOutdated } from "./overview.ts";
+import { buildOverview, namesOf, type Overview, type OverviewEntry, untrackedOutdated } from "./overview.ts";
 import { type Progress, startProgress } from "./progress.ts";
-import { type Reprobe, renderInbox, renderOverview, renderReport, reprobeVerdict } from "./render.ts";
+import {
+  brewReprobeVerdict,
+  type Reprobe,
+  renderInbox,
+  renderOverview,
+  renderReport,
+  reprobeVerdict,
+} from "./render.ts";
 import { channelStatus, listReleases, parseSource } from "./sources.ts";
 import type { DigestItem, Release, ToolConfig, ToolReport } from "./types.ts";
 import { mentioned, resolveUsagePaths } from "./usage.ts";
@@ -71,6 +78,10 @@ const HELP = `bumpii — what changed in the CLIs and containers you run, judged
   bumpii digest --brew-upgrade
                           brew update, the digest, then brew upgrade —
                           everything brew has pending, tracked or not
+  bumpii overview --brew-upgrade
+                          the same for the whole machine: every pending
+                          package is reported first, tracked or not, then
+                          upgraded and read back from brew's list
 
 Any argument at all runs the command it names, so 'bumpii --only gh' and
 'bumpii --json' still digest — only the bare name is help.
@@ -94,7 +105,12 @@ Options:
                       with --yes/--brew-upgrade: print the update commands
                       that would run, and run none of them
   --brew-upgrade      brew update before the report, brew upgrade after it —
-                      unjudged, and not limited to tools.json
+                      not limited to tools.json; on overview the report is
+                      judged first, on digest it is not
+  --greedy-auto-updates
+                      with --brew-upgrade: upgrade the casks that update
+                      themselves too, instead of only naming them. They are
+                      running applications — off unless you ask
   -h, --help
 
 Config: ${configPath()}
@@ -122,6 +138,17 @@ interface Args {
   /** Run `brew update && brew upgrade` after the digest — everything brew has
    * pending, not only tools.json, and never judged first. */
   brewUpgrade: boolean;
+  /**
+   * Hand `--greedy-auto-updates` to `brew upgrade`, so the casks that update
+   * themselves are upgraded too rather than only named.
+   *
+   * Off by default, and deliberately not folded into --brew-upgrade: these are
+   * running applications — a browser, a VPN client, a menu-bar app — and
+   * reinstalling one underneath its user is a side effect an unattended run
+   * must not have without being asked. Reporting them is the default; touching
+   * them is a decision.
+   */
+  greedyAutoUpdates: boolean;
   /** With `add`: the repo, when the image does not state it. One tool only. */
   source?: string;
   only: string[];
@@ -185,6 +212,7 @@ export function parseArgs(argv: string[]): Args {
     deps: false,
     markRead: false,
     brewUpgrade: false,
+    greedyAutoUpdates: false,
     only: [],
     rest: [],
   };
@@ -231,6 +259,7 @@ export function parseArgs(argv: string[]): Args {
     else if (v === "--deps") a.deps = true;
     else if (v === "--mark-read") a.markRead = true;
     else if (v === "--brew-upgrade") a.brewUpgrade = true;
+    else if (v === "--greedy-auto-updates") a.greedyAutoUpdates = true;
     else if (v === "--since") a.sinceDays = parseWindow(takeValue(argv, ++i, v));
     else if (v === "--source") a.source = takeValue(argv, ++i, v);
     else if (v === "--only") {
@@ -245,6 +274,16 @@ export function parseArgs(argv: string[]): Args {
     } else if (v === "--model") a.model = takeValue(argv, ++i, v);
     else if (v.startsWith("-")) throw new Error(`unknown option: ${v}`);
     else a.rest.push(v);
+  }
+  // A flag that changes nothing is refused rather than ignored. Without
+  // --brew-upgrade there is no `brew upgrade` for this to widen, and swallowing
+  // it would let a run that touched no self-updating cask look like one that
+  // did — the same reason `overview` refuses positionals instead of printing
+  // the report as though the question had been answered.
+  if (a.greedyAutoUpdates && !a.brewUpgrade) {
+    throw new Error(
+      "--greedy-auto-updates widens `brew upgrade`, so it needs --brew-upgrade — on its own there is nothing for it to widen",
+    );
   }
   return a;
 }
@@ -348,6 +387,278 @@ function installSignalHandlers(progress: Progress): void {
   // Node's default for it also terminates without running exit listeners, same
   // as SIGINT.
   process.once("SIGHUP", () => handle(129));
+}
+
+/**
+ * A child that inherited a pipe whose reader has gone dies of SIGPIPE, the
+ * way `bumpii digest --yes | head` ends it. That is the reader leaving, not
+ * an update failing, and exitQuietlyOnBrokenPipe already answers 141 for the
+ * same event when it hits this process's own write. Matched on stream()'s
+ * exact wording, never on a substring: under --json the buffered error
+ * carries the child's stderr, and a command that merely *prints* SIGPIPE
+ * must not turn its own failure into 141. `exited 141` is the shell
+ * reporting the same death of a command it ran.
+ */
+function readerLeft(err: unknown): boolean {
+  return /^(killed by SIGPIPE|exited 141)$/.test((err as Error).message);
+}
+
+/**
+ * The two things every path that runs an update command needs, in one place
+ * because both `digest` and `overview` run them and a second copy would drift.
+ *
+ * `say`: under --json, everything a human reads goes to stderr, because stdout
+ * has already carried the document and a line appended after it is a parse
+ * error for whatever is reading. `bumpii digest --json --yes | jq` is
+ * precisely the combination an unattended run uses, and it is the one that
+ * was broken.
+ *
+ * `runUpdate`: one update command, with the terminal — or buffered under
+ * --json. The progress line comes down before the child starts and goes back
+ * up after it, and that order is load-bearing: a child writing to an inherited
+ * stderr shares the row the spinner redraws every frame, and the `\r\x1b[K`
+ * that clears the frame takes the child's last line with it. Between commands
+ * the spinner is the right thing to show; during one, the command's own output
+ * is — a `brew upgrade` pouring nine bottles used to be minutes of spinner and
+ * then ninety lines at once.
+ *
+ * The ceiling stays wherever nobody is watching. "Not --json" is not
+ * "interactive": a cron line writing to a log file streams too, and there
+ * a brew upgrade stuck on a network fetch or a sudo prompt on /dev/tty used
+ * to be killed after twenty minutes, exit 2 — now it would hold brew's lock
+ * until the next scheduled run stacked up behind it. So the timeout is
+ * dropped only while stdout is a terminal, where Ctrl-C is the ceiling and
+ * a person sees what is being waited on. Under --json the document is
+ * already on stdout and the buffered run keeps its ceiling — with the
+ * child's stderr shown too, which the old buffered path dropped.
+ */
+function upgradeRunner(progress: Progress, json: boolean) {
+  const say = json ? (t: string) => progress.err(t) : (t: string) => progress.out(t);
+  const runUpdate = async (file: string, argv: string[], echo: string, timeout: number): Promise<void> => {
+    progress.pause();
+    say(`\n$ ${echo}\n`);
+    try {
+      if (json) {
+        const out = await run(file, argv, { timeout, env: updateEnv() });
+        say(out.stdout);
+        if (out.stderr) say(out.stderr);
+      } else {
+        await flushStdio();
+        await stream(file, argv, { env: updateEnv(), timeout: process.stdout.isTTY ? undefined : timeout });
+      }
+    } finally {
+      progress.resume();
+    }
+  };
+  return { say, runUpdate };
+}
+
+/**
+ * `brew upgrade`, with the self-updating casks included only when asked.
+ *
+ * The flag is brew's own narrow one, never the wide `--greedy`: that also
+ * takes in `version :latest` casks, which brew cannot compare without
+ * downloading the artefact — the same reason `outdated.ts` reads with
+ * `--greedy-auto-updates` and not `--greedy`. Reading and writing therefore
+ * range over exactly the same set of casks, which is what lets the re-probe
+ * below believe brew's second answer.
+ */
+function brewUpgradeArgv(greedyAutoUpdates: boolean): string[] {
+  return greedyAutoUpdates ? ["upgrade", "--greedy-auto-updates"] : ["upgrade"];
+}
+
+/**
+ * brew's pending list, read again after an upgrade has run.
+ *
+ * The same two calls `buildOverview` makes, and deliberately not a cached
+ * answer — the whole question is what brew says *now*. The greedy half is
+ * asked for only when the upgrade itself was greedy, and then it must be
+ * asked: `brew outdated` on its own never lists a self-updating cask, so every
+ * one of them would come back through the verdict as "no longer listed",
+ * upgraded or not. Reading and writing have to range over the same set.
+ */
+async function pendingNow(greedy: boolean): Promise<OutdatedPackage[]> {
+  const pending = await brewOutdated();
+  if (!greedy) return pending;
+  return [...pending, ...(await brewSelfUpdating(pending))];
+}
+
+/** One package `overview` may upgrade, and everything the verdict needs after. */
+interface OverviewTarget {
+  name: string;
+  installed: string;
+  latest: string;
+  pinned: boolean;
+  update: string;
+}
+
+function targetOf(e: OverviewEntry): OverviewTarget {
+  return { name: e.name, installed: e.installed, latest: e.latest, pinned: e.pinned, update: e.update };
+}
+
+/**
+ * Everything `overview` does after the report is on the page.
+ *
+ * Why this is not the digest's upgrade block with a different argument: the
+ * two answer the same question from opposite ends. A digest report carries a
+ * `ToolConfig` per entry, so afterwards it can run `version.cmd` again and
+ * read the installed version out of the binary. `overview` ranges over
+ * everything brew has pending — mostly packages no `tools.json` mentions —
+ * and there is no probe to run for those. What it has instead is brew's list,
+ * which is also where the entries came from, so the honest re-check is to ask
+ * brew again. The wording in `brewReprobeVerdict` keeps that distinction
+ * visible rather than dressing it up as a version reading.
+ */
+async function upgradeFromOverview(
+  progress: Progress,
+  args: Args,
+  overview: Overview,
+  brewUpdateError: string | undefined,
+): Promise<number> {
+  const { say, runUpdate } = upgradeRunner(progress, args.json);
+
+  // Every entry is a package brew has pending: buildOverview builds them from
+  // `brew outdated`, and a tracked tool brew does not manage goes to
+  // `unchecked` instead of here. That is what makes brew's own list the right
+  // thing to re-read, and why this path needs no version.cmd.
+  const runnable = overview.entries.map(targetOf);
+
+  // Self-updating casks are reported and never touched — unless this run was
+  // asked to be greedy, and then they are targets like any other.
+  const greedy = args.greedyAutoUpdates;
+  const selfTargets: OverviewTarget[] = greedy
+    ? (overview.selfUpdating ?? []).map((p) => ({
+        name: p.name,
+        installed: p.installed,
+        latest: p.latest,
+        pinned: p.pinned,
+        update: `brew upgrade --cask ${p.name}`,
+      }))
+    : [];
+  const verify = [...runnable, ...selfTargets];
+
+  if (args.dryRun) {
+    const lines = args.yes ? runnable.map((t) => `  $ ${t.update}`) : [];
+    if (args.brewUpgrade) {
+      lines.push("  $ brew update", `  $ brew ${brewUpgradeArgv(greedy).join(" ")}`);
+    }
+    process.stdout.write(
+      lines.length > 0
+        ? `\nwould run ${lines.length} command${lines.length === 1 ? "" : "s"}:\n${lines.join("\n")}\n` +
+            `\n--dry-run: nothing was run\n`
+        : `\nnothing to run\n`,
+    );
+    // Nothing ran, so whatever was pending still is — the same reasoning the
+    // digest's dry run uses for keeping 1 rather than borrowing the --yes code.
+    return overview.entries.length > 0 ? 1 : 0;
+  }
+
+  let updateFailures = 0;
+  let stillPending = 0;
+  // Names whose own command was run and failed: brew will still list them, and
+  // the verdict must not read that as "the upgrade achieved nothing" when the
+  // failure was already reported where it happened.
+  const failed = new Set<string>();
+
+  if (args.yes) {
+    progress.phase("update", { total: runnable.length, done: 0 });
+    progress.resume();
+    for (const t of runnable) {
+      // The same `&&` as `brew update && brew upgrade`: a brew line run against
+      // a tap that failed to refresh is not what was asked for.
+      if (brewUpdateError !== undefined && formulaOf(t.update) !== null) {
+        updateFailures++;
+        failed.add(t.name);
+        progress.err(`${t.name}: ${t.update.trim()} — skipped, brew update failed above\n`);
+        progress.step();
+        continue;
+      }
+      if (isManualUpdate(t.update)) {
+        say(`${t.name}: ${t.update.trim()} — skipped\n`);
+        progress.step();
+        continue;
+      }
+      if (isPlaceholderUpdate(t.update)) {
+        updateFailures++;
+        failed.add(t.name);
+        progress.err(`${t.name}: update line is still a placeholder (${t.update.trim()}) — skipped\n`);
+        progress.step();
+        continue;
+      }
+      try {
+        await runUpdate("/bin/sh", ["-c", t.update], t.update, 600_000);
+      } catch (err) {
+        if (readerLeft(err)) return 141;
+        updateFailures++;
+        failed.add(t.name);
+        progress.err(`${t.name}: update failed: ${(err as Error).message}\n`);
+      }
+      progress.step();
+    }
+    progress.pause();
+  }
+
+  if (args.brewUpgrade) {
+    progress.phase("update");
+    if (brewUpdateError !== undefined) {
+      updateFailures++;
+      progress.err("brew upgrade skipped — brew update failed above\n");
+    } else {
+      try {
+        const argv = brewUpgradeArgv(greedy);
+        await runUpdate("brew", argv, `brew ${argv.join(" ")}`, 1_200_000);
+      } catch (err) {
+        if (readerLeft(err)) return 141;
+        updateFailures++;
+        progress.err(`brew upgrade failed: ${(err as Error).message}\n`);
+      }
+    }
+    progress.pause();
+  }
+
+  // Asked to be greedy over a listing that never came back: the upgrade did
+  // range over the self-updating casks, and this run cannot name which. Said
+  // out loud, because the alternative is a report that looks complete.
+  if (greedy && overview.selfUpdating === undefined) {
+    progress.err(
+      "self-updating casks were upgraded, but the greedy listing failed earlier — this run cannot say which\n",
+    );
+  }
+
+  if (verify.length === 0) return updateFailures > 0 ? 2 : 0;
+
+  progress.phase("reprobe", { total: verify.length, done: 0 });
+  progress.resume();
+  let listed: Map<string, OutdatedPackage> | undefined;
+  let listError: string | undefined;
+  try {
+    listed = new Map((await pendingNow(greedy)).map((p) => [p.name, p]));
+  } catch (err) {
+    listError = (err as Error).message;
+  }
+  for (const t of verify) {
+    // Its own command failed, and that was counted where it happened. Asking
+    // brew now would only rediscover it and count it twice.
+    if (failed.has(t.name)) {
+      progress.step();
+      continue;
+    }
+    const after = listError !== undefined ? { error: listError } : { listed: listed?.has(t.name) === true };
+    const { line, state } = brewReprobeVerdict(t.name, t, after);
+    say(`${line}\n`);
+    if (state === "failed" || state === "unknown") updateFailures++;
+    else if (state === "pending") stillPending++;
+    progress.step();
+  }
+  progress.pause();
+
+  // The contract the digest already keeps, and for the same reasons:
+  // `brew upgrade` exits 0 with a package still pending whenever brew has no
+  // newer bottle yet, so 0 here means the second listing agreed.
+  if (updateFailures > 0) return 2;
+  if (overview.entries.some((e) => e.error)) return 2;
+  if (stillPending > 0) return 1;
+  return 0;
 }
 
 async function dispatch(progress: Progress): Promise<number> {
@@ -763,6 +1074,21 @@ async function dispatch(progress: Progress): Promise<number> {
         `overview takes no arguments — did you mean --only ${args.rest.join(",")}? (or 'bumpii add ${args.rest.join(" ")}')`,
       );
     }
+    // `brew update` before the listing, not alongside it. The digest can run
+    // the two in parallel because it reads brew's list late, after every forge
+    // has answered; here the list is the first thing the report is built from,
+    // and building it from a tap that is about to be refreshed would report a
+    // machine that no longer exists by the time the upgrade runs.
+    let brewUpdateError: string | undefined;
+    if (args.brewUpgrade && !args.dryRun) {
+      progress.phase("brew");
+      try {
+        await run("brew", ["update"], { timeout: 600_000, env: updateEnv() });
+      } catch (err) {
+        brewUpdateError = (err as Error).message;
+        progress.err(`brew update failed: ${brewUpdateError}\n`);
+      }
+    }
     progress.phase("engine");
     const engine = await engineFor(args);
     progress.set({ engine: engine.kind });
@@ -790,6 +1116,9 @@ async function dispatch(progress: Progress): Promise<number> {
       );
     }
     process.stdout.write(args.json ? `${JSON.stringify(overview, null, 2)}\n` : renderOverview(overview));
+    if (args.yes || args.brewUpgrade) {
+      return await upgradeFromOverview(progress, args, overview, brewUpdateError);
+    }
     // Same contract as the digest: non-zero when something is pending, so a
     // scheduled run can act on it without parsing the report.
     return overview.entries.length > 0 ? 1 : 0;
@@ -1060,7 +1389,8 @@ async function dispatch(progress: Progress): Promise<number> {
     // Two lines because they run apart: update before the report, upgrade
     // after it. Listing them as one `&&` described an ordering the run no
     // longer has.
-    if (args.brewUpgrade) runnable.push("  $ brew update", "  $ brew upgrade");
+    if (args.brewUpgrade)
+      runnable.push("  $ brew update", `  $ brew ${brewUpgradeArgv(args.greedyAutoUpdates).join(" ")}`);
     process.stdout.write(
       runnable.length > 0
         ? `\nwould run ${runnable.length} command${runnable.length === 1 ? "" : "s"}:\n${runnable.join("\n")}\n` +
@@ -1076,60 +1406,7 @@ async function dispatch(progress: Progress): Promise<number> {
     return 0;
   }
 
-  // Under --json, everything a human reads goes to stderr, because stdout has
-  // already carried the document and a line appended after it is a parse error
-  // for whatever is reading. `bumpii digest --json --yes | jq` is precisely the
-  // combination an unattended run uses, and it is the one that was broken.
-  const say = args.json ? (t: string) => progress.err(t) : (t: string) => progress.out(t);
-
-  /**
-   * One update command, with the terminal — or buffered under --json.
-   *
-   * The progress line comes down before the child starts and goes back up
-   * after it, and that order is load-bearing: a child writing to an inherited
-   * stderr shares the row the spinner redraws every frame, and the `\r\x1b[K`
-   * that clears the frame takes the child's last line with it. Between
-   * commands the spinner is the right thing to show; during one, the
-   * command's own output is — a `brew upgrade` pouring nine bottles used to
-   * be minutes of spinner and then ninety lines at once.
-   *
-   * The ceiling stays wherever nobody is watching. "Not --json" is not
-   * "interactive": a cron line writing to a log file streams too, and there
-   * a brew upgrade stuck on a network fetch or a sudo prompt on /dev/tty used
-   * to be killed after twenty minutes, exit 2 — now it would hold brew's lock
-   * until the next scheduled run stacked up behind it. So the timeout is
-   * dropped only while stdout is a terminal, where Ctrl-C is the ceiling and
-   * a person sees what is being waited on. Under --json the document is
-   * already on stdout and the buffered run keeps its ceiling — with the
-   * child's stderr shown too, which the old buffered path dropped.
-   */
-  const runUpdate = async (file: string, argv: string[], echo: string, timeout: number): Promise<void> => {
-    progress.pause();
-    say(`\n$ ${echo}\n`);
-    try {
-      if (args.json) {
-        const out = await run(file, argv, { timeout, env: updateEnv() });
-        say(out.stdout);
-        if (out.stderr) say(out.stderr);
-      } else {
-        await flushStdio();
-        await stream(file, argv, { env: updateEnv(), timeout: process.stdout.isTTY ? undefined : timeout });
-      }
-    } finally {
-      progress.resume();
-    }
-  };
-
-  // A child that inherited a pipe whose reader has gone dies of SIGPIPE, the
-  // way `bumpii digest --yes | head` ends it. That is the reader leaving, not
-  // an update failing, and exitQuietlyOnBrokenPipe already answers 141 for the
-  // same event when it hits this process's own write. Matched on stream()'s
-  // exact wording, never on a substring: under --json the buffered error
-  // carries the child's stderr, and a command that merely *prints* SIGPIPE
-  // must not turn its own failure into 141. `exited 141` is the shell
-  // reporting the same death of a command it ran.
-  const readerLeft = (err: unknown): boolean =>
-    /^(killed by SIGPIPE|exited 141)$/.test((err as Error).message);
+  const { say, runUpdate } = upgradeRunner(progress, args.json);
 
   // What the update loop did per tool, for the re-probe after it: its own
   // line ran, or failed (counted and reported already), or was never run
@@ -1207,7 +1484,8 @@ async function dispatch(progress: Progress): Promise<number> {
       progress.err("brew upgrade skipped — brew update failed above\n");
     } else {
       try {
-        await runUpdate("brew", ["upgrade"], "brew upgrade", 1_200_000);
+        const argv = brewUpgradeArgv(args.greedyAutoUpdates);
+        await runUpdate("brew", argv, `brew ${argv.join(" ")}`, 1_200_000);
         brewUpgradeOk = true;
       } catch (err) {
         if (readerLeft(err)) return 141;

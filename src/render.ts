@@ -263,6 +263,52 @@ export function reprobeVerdict(raw: ToolReport, p: Reprobe): { line: string; sta
 }
 
 /**
+ * The same question as reprobeVerdict, asked of brew instead of a binary.
+ *
+ * `overview` ranges over everything brew has pending, and most of it is not in
+ * tools.json — so there is no `version.cmd` to run and no way to read the
+ * installed version back. What there is, is brew's own list: ask it again
+ * after the upgrade and see whether the package is still on it.
+ *
+ * That is a weaker statement than a re-probe and the wording keeps it weaker.
+ * "brew no longer lists it as outdated" is what was measured; "uv is now
+ * 0.12.13" is not, because nothing here read a version out of uv. The
+ * difference matters the moment brew's list and the binary on PATH disagree,
+ * which is exactly the case reprobeVerdict's last branch exists for.
+ *
+ * The caller must ask brew the second time with the same `--greedy-auto-updates`
+ * it asked the first time. Without it, `brew outdated` never lists a
+ * self-updating cask at all, and every one of them would come back through
+ * here as "no longer listed" — upgraded or not.
+ */
+export function brewReprobeVerdict(
+  name: string,
+  pending: { installed: string; latest: string; pinned: boolean },
+  after: { listed: boolean } | { error: string },
+): { line: string; state: ReprobeState } {
+  const n = bold(safe(name));
+  if ("error" in after) {
+    return { line: `${n}: could not ask brew again: ${safe(after.error)}`, state: "unknown" };
+  }
+  if (!after.listed) {
+    return { line: `${n}: brew no longer lists it as outdated`, state: "updated" };
+  }
+  // Pinned is the one still-listed case with a cause this run actually knows,
+  // and naming it separates "brew declined on purpose" from "the upgrade ran
+  // and achieved nothing" — different next steps for whoever reads it.
+  if (pending.pinned) {
+    return {
+      line: `${n}: still ${safe(pending.installed)} — the formula is pinned, so brew upgrade leaves it`,
+      state: "pending",
+    };
+  }
+  return {
+    line: `${n}: brew still lists it as outdated (${safe(pending.installed)} → ${safe(pending.latest)})`,
+    state: "pending",
+  };
+}
+
+/**
  * The "→ how to update it" line under a pending entry.
  *
  * Under --brew-upgrade the run is about to run `brew upgrade`, which covers

@@ -78,6 +78,8 @@ reference counts (present everywhere), and an engine for `--judge` — see below
 | `bumpii rm <name>…` | stop tracking these |
 | `bumpii digest --yes` | digest, then run each tool's update command |
 | `bumpii digest --brew-upgrade` | `brew update`, the digest, then `brew upgrade` — everything brew has pending, tracked or not, named in the report |
+| `bumpii overview --brew-upgrade` | the same for the whole machine — every pending package is reported first, tracked or not, then upgraded and read back from brew's list |
+| `bumpii overview --brew-upgrade --greedy-auto-updates` | …and upgrade the casks that update themselves too, instead of only naming them |
 | `bumpii digest --yes --dry-run` | print the update commands that would run, run none |
 
 `bumpii --help` carries the options; the sections below cover what each of
@@ -189,6 +191,31 @@ If the greedy listing itself fails, nothing is claimed in its place: an
 `overview` with nothing else pending says so out loud ("self-updating casks were
 not checked"), and everywhere else the line is simply absent rather than
 replaced by a reassuring one. Silence is the honest answer there, not "none".
+
+## Updating the whole machine
+
+`bumpii overview --brew-upgrade` is the report above followed by the upgrade it
+describes: `brew update` first, so the listing is built from a fresh tap, then
+the judged report, then `brew upgrade`. It covers everything brew has pending
+rather than only `tools.json`, which is the half `bumpii digest --brew-upgrade`
+reports on but cannot tell you about.
+
+Afterwards **brew is asked again**, and that second answer is what the exit code
+is built from. It has to be: `brew upgrade` exits 0 with a package still pending
+whenever brew has no newer bottle yet, so the upgrade's own exit code says
+nothing about whether anything moved. The wording keeps the measurement
+visible — "brew no longer lists it as outdated" is what was checked, and it is
+deliberately not the same sentence as "uv is now 0.12.13", because nothing here
+read a version out of uv. Where an entry *is* tracked, `bumpii digest --yes`
+does read the binary, and that is the stronger check of the two.
+
+`--greedy-auto-updates` widens the upgrade to the self-updating casks, which are
+otherwise reported and never touched. It is off by default and refused without
+`--brew-upgrade`: these are running applications, and reinstalling one
+underneath its user is a decision rather than a default. The second listing is
+read with the same flag — without that, `brew outdated` would not list a
+self-updating cask at all, and every one of them would come back "no longer
+listed" whether the upgrade reached it or not.
 
 Three states are deliberately kept out of "up to date", because each means
 bumpii could not check rather than checked and found nothing. A package whose
