@@ -174,6 +174,12 @@ updates itself (1)
   gcloud-cli  551.0.0 → 555.0.0
 ```
 
+An `overview` whose only finding is a cask like that still exits `1`. The
+package is installed, named, and behind; that `brew upgrade` is not what fixes
+it says something about the remedy, not about whether anything is pending. Use
+`--greedy-auto-updates` to have the run upgrade them, and the exit code follows
+what brew says afterwards.
+
 A digest names them on its own line too, under the pending count, so
 `bumpii digest --brew-upgrade` no longer reads "no other brew updates pending"
 over a package that is behind — and `--json` carries them as

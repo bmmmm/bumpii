@@ -80,6 +80,11 @@ Changing any of these is a breaking change and belongs in its own PR with the
 box in the template unticked and an explanation:
 
 - **Exit codes** — `0` nothing pending, `1` updates available, `2` error.
+  On `overview`, a self-updating cask that is behind counts as pending: it is
+  installed, named in the report, and out of date, and `brew upgrade` not being
+  the remedy is a statement about the fix rather than about the machine. A `0`
+  there told a scheduler everything was current while the report printed
+  `gcloud-cli 572.0.0 → 584.0.0` two lines above.
   Under `--yes` and `--brew-upgrade` every tool the report said was behind is
   probed again afterwards: `0` every one came back no longer behind, `1` one
   is still behind for a reason that is not a failure (brew did not list it,

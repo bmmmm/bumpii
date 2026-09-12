@@ -2323,12 +2323,17 @@ esac`,
   await writeConfig(home, [tool()]);
 
   const r = await runCli(["overview", "--no-judge", "--only", "selfy"], home, { PATH: dir });
+  // The claim may not stand on its own: selfy is what --only names, and selfy
+  // is out of date. Matched as a whole clause, because the qualified sentence
+  // contains the bare one as a prefix.
   assert.doesNotMatch(
     r.stdout,
-    /nothing outdated among what --only names/,
-    "selfy is what --only names, and selfy is out of date",
+    /nothing outdated among what --only names(\s\s|\n)/,
+    "an unqualified all-clear over the very cask --only named",
   );
-  assert.match(r.stdout, /selfy/);
+  assert.match(r.stdout, /apart from the self-updating casks below/);
+  assert.match(r.stdout, /selfy {2}1\.0\.0 → 2\.0\.0/);
+  assert.equal(r.code, 1, "a cask that is installed, named and behind is something pending");
 });
 
 test("a greedy cask is not counted twice by the leftover check", async () => {
@@ -2418,4 +2423,109 @@ esac`,
   });
   const verdicts = r.stdout.match(/^(gcloud|google-cloud-sdk):/gm) ?? [];
   assert.equal(verdicts.length, 1, `one package, one verdict — got ${verdicts.length}: ${verdicts}`);
+});
+
+test("a typo in --only is an error, not a clean report", async () => {
+  // The guard this branch edited had no test in either direction. Without it a
+  // misspelled name reads as "nothing is outdated" — the report answers a
+  // question nobody asked, with exit 0.
+  const dir = await fakeBrew(
+    `case "$1" in
+  outdated) ${UV_PENDING} ;;
+  info) printf '{"formulae":[]}' ;;
+  *) exit 0 ;;
+esac`,
+  );
+  const home = await freshHome();
+  await writeConfig(home, [tool()]);
+
+  const r = await runCli(["overview", "--no-judge", "--only", "nosuchpkg"], home, { PATH: dir });
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /nothing matched --only nosuchpkg/);
+  assert.doesNotMatch(r.stdout, /nothing outdated/, "a typo may not read as an all-clear");
+});
+
+test("a filtered report says how many packages the filter hid, whatever else it says", async () => {
+  // The filter note is a suffix on every headline branch, and both new
+  // branches carried it untested: dropping it left a green-looking all-clear
+  // with N pending packages named nowhere in the output.
+  const twoPending = `printf '{"formulae":[{"name":"uv","installed_versions":["0.1.0"],"current_version":"0.2.0"},{"name":"other","installed_versions":["1.0"],"current_version":"2.0"}],"casks":[]}'`;
+
+  // Branch one: the greedy listing failed, so what it would have held is unknown.
+  const unknown = await fakeBrew(
+    `case "$1:$3" in
+  outdated:--greedy-auto-updates) echo 'Error: no greedy' >&2 ; exit 1 ;;
+  outdated:*) ${twoPending} ;;
+  info:*) printf '{"formulae":[]}' ;;
+  *) exit 0 ;;
+esac`,
+  );
+  const home = await freshHome();
+  await writeConfig(home, [tool()]);
+  const a = await runCli(["overview", "--no-judge", "--only", "app"], home, { PATH: unknown });
+  assert.match(a.stdout, /pending outside that filter/, "the hidden packages have to be counted");
+
+  // Branch two: a self-updating cask is behind.
+  const casks = await fakeBrew(
+    `case "$1:$3" in
+  outdated:--greedy-auto-updates) ${SELFY} ;;
+  outdated:*) ${twoPending} ;;
+  info:*) printf '{"formulae":[]}' ;;
+  *) exit 0 ;;
+esac`,
+  );
+  // --only names the cask itself here, so it survives the filter and the
+  // headline takes the "casks behind" branch while two formulae are hidden.
+  const b = await runCli(["overview", "--no-judge", "--only", "selfy"], home, { PATH: casks });
+  assert.match(b.stdout, /pending outside that filter/, "on this branch too");
+  assert.match(b.stdout, /apart from the self-updating casks below/, "and the cask is not hidden by it");
+});
+
+test("a filtered headline never claims more than the filter covered", async () => {
+  // `brew upgrade` does not narrow with --only, so "brew has no newer version
+  // for anything it would upgrade" is false about the packages the filter hid.
+  // The absolute claim belongs to unfiltered runs only.
+  const dir = await fakeBrew(
+    `case "$1:$3" in
+  outdated:--greedy-auto-updates) echo 'Error: no greedy' >&2 ; exit 1 ;;
+  outdated:*) printf '{"formulae":[{"name":"other","installed_versions":["1.0"],"current_version":"2.0"}],"casks":[]}' ;;
+  info:*) printf '{"formulae":[]}' ;;
+  *) exit 0 ;;
+esac`,
+  );
+  const home = await freshHome();
+  await writeConfig(home, [tool()]);
+
+  const r = await runCli(["overview", "--no-judge", "--only", "app"], home, { PATH: dir });
+  assert.doesNotMatch(
+    r.stdout,
+    /no newer version for anything it would upgrade/,
+    "brew has a newer version for `other`, which this run would upgrade",
+  );
+  assert.match(r.stdout, /among what --only names/, "the claim has to be scoped to the filter");
+});
+
+test("an upgrade that leaves the self-updating casks behind does not exit clean", async () => {
+  // Without --greedy-auto-updates these casks are reported and never touched,
+  // so after the upgrade they are exactly as out of date as before. Exit 0
+  // would tell a scheduler the machine is current over a package the same run
+  // printed as behind.
+  const scratch = await freshHome();
+  const done = join(scratch, "done");
+  const dir = await fakeBrew(
+    `case "$1:$3" in
+  upgrade:*) : > ${done} ; exit 0 ;;
+  outdated:--greedy-auto-updates) ${SELFY} ;;
+  outdated:*) if [ -f ${done} ]; then ${NOTHING} ; else ${UV_PENDING} ; fi ;;
+  info:*) printf '{"formulae":[]}' ;;
+  *) exit 0 ;;
+esac`,
+  );
+  const home = await freshHome();
+  await writeConfig(home, [tool()]);
+
+  const r = await runCli(["overview", "--no-judge", "--brew-upgrade"], home, { PATH: dir });
+  assert.match(r.stdout, /uv: brew no longer lists it as outdated/, "the formula was upgraded");
+  assert.match(r.stdout, /selfy/, "and the cask is still named as behind");
+  assert.equal(r.code, 1, "brew upgrade did not touch the cask, so it is still pending");
 });

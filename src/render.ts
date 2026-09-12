@@ -844,33 +844,48 @@ export function renderOverview(raw: Overview, opts: { greedyUpgrade?: boolean } 
             `brew has ${o.filteredOut} package${o.filteredOut === 1 ? "" : "s"} pending outside that filter — run without --only to see them`,
           )}`
         : "";
+    // What this run can say about the packages it actually looked at.
+    const state =
+      o.selfUpdating === undefined ? "unknown" : o.selfUpdating.length > 0 ? "casks-behind" : "clean";
     const headline =
-      // Order matters, and it was wrong: the --only branch used to win, so a
-      // filtered run printed a green "nothing outdated among what --only
-      // names" over a self-updating cask that --only had named and that was
-      // out of date. What brew could not check, and what it found behind, both
-      // outrank the filter note — which is appended instead of replacing them.
-      o.selfUpdating === undefined
-        ? // Not checked is its own answer: the greedy listing failed, so
-          // whether a self-updating cask is behind is unknown, and claiming
-          // "anything installed" would be asserting an absence nothing here
-          // established.
-          `${green("nothing to upgrade")}  ${dim(
-            "brew has no newer version for anything it would upgrade — self-updating casks were not checked",
-          )}${filterNote}`
-        : o.selfUpdating.length > 0
-          ? // "anything it would upgrade" is exactly what the greedy flag
-            // changes: these casks ARE upgrade targets for this run, and brew
-            // has a newer version for them. Green here said the opposite of
-            // the section printed two lines below it.
-            (opts.greedyUpgrade
+      // Two things decide the wording, and both used to lose to the other.
+      //
+      // `--only` narrows the report but NOT `brew upgrade`, so under a filter
+      // every claim has to be about the slice that was named — an absolute
+      // "brew has no newer version for anything it would upgrade" is false
+      // about the packages the filter hid, and appending the note below it
+      // does not repair the sentence above.
+      //
+      // Self-updating casks outrank the filter in the other direction: they
+      // are installed, named, and out of date, so a green all-clear over them
+      // is the over-claim this whole section exists to prevent.
+      o.filteredOut > 0
+        ? state === "unknown"
+          ? `${dim("nothing outdated among what --only names — self-updating casks were not checked")}${filterNote}`
+          : state === "casks-behind"
+            ? (opts.greedyUpgrade
+                ? dim(
+                    "nothing else among what --only names — the self-updating casks below are what this run will upgrade",
+                  )
+                : dim("nothing outdated among what --only names, apart from the self-updating casks below")) +
+              filterNote
+            : `${green("nothing outdated among what --only names")}${filterNote}`
+        : state === "unknown"
+          ? // Not checked is its own answer: the greedy listing failed, so
+            // whether a self-updating cask is behind is unknown, and claiming
+            // "anything installed" would assert an absence nothing established.
+            `${green("nothing to upgrade")}  ${dim(
+              "brew has no newer version for anything it would upgrade — self-updating casks were not checked",
+            )}`
+          : state === "casks-behind"
+            ? // "anything it would upgrade" is exactly what the greedy flag
+              // changes: these casks ARE upgrade targets for this run, and brew
+              // has a newer version for them.
+              opts.greedyUpgrade
               ? dim(
                   "nothing in brew's ordinary listing — the self-updating casks below are what this run will upgrade",
                 )
-              : `${green("nothing to upgrade")}  ${dim("brew has no newer version for anything it would upgrade")}`) +
-            filterNote
-          : o.filteredOut > 0
-            ? `${green("nothing outdated among what --only names")}${filterNote}`
+              : `${green("nothing to upgrade")}  ${dim("brew has no newer version for anything it would upgrade")}`
             : `${green("nothing outdated")}  ${dim("brew has no newer version for anything installed")}`;
     out.push(headline, "");
   }
