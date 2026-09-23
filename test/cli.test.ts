@@ -1121,10 +1121,13 @@ test("the echo line is not overtaken by the child it announces", async (t) => {
   // past whatever the parent still has queued — measured: at byte 65536 of a
   // 300 KB backlog. A fast reader hides this, because the parent's queue is
   // empty by the time the child starts, so the backlog is manufactured here:
-  // a report over the 64 KiB pipe buffer, and a reader that does not read for
-  // 300 ms. Stated honestly: without the flush this can still pass on a quiet
-  // machine, which is why the report size is asserted as a fixture guard.
-  const tags = Array.from({ length: 3000 }, (_, i) => `v1.0.${i + 1}`);
+  // a report bigger than the pipe absorbs, and a reader that does not read for
+  // 300 ms. "The pipe" is a socketpair, and on Linux it swallowed a whole
+  // 142 KB report — without the flush the check stayed green on ubuntu CI and
+  // only macOS caught it; 578 KB fails on both. Stated honestly: without the
+  // flush this can still pass on a quiet machine, which is why the report
+  // size is asserted as a fixture guard.
+  const tags = Array.from({ length: 12000 }, (_, i) => `v1.0.${i + 1}`);
   const url = await stubForge(tags);
   if (!url) return t.skip(SKIP);
   const home = await freshHome();
@@ -1132,14 +1135,11 @@ test("the echo line is not overtaken by the child it announces", async (t) => {
   await writeConfig(home, [app]);
 
   const p = spawnCli(["digest", "--yes", "--no-judge"], home, { PATH: await hermeticBin() });
-  // Everything is wired up before the pause, because nothing stops the CLI
-  // from finishing inside it: on Linux a socketpair buffers the whole ~140 KB
-  // report, so the run exits without a reader. `exit` fires once and is not
-  // replayed — a listener attached after it waited out the runner timeout —
-  // and on exit Node resumes every stdio stream without a `data` listener,
-  // discarding the report (the guard below then read 0 bytes). Paused first,
-  // so attaching the listener does not start the flow.
-  // `close`, not `exit`: it waits for stdout to end, so the tail has arrived.
+  // Wired up before the pause, because the CLI may exit inside it: `exit` is
+  // not replayed to a late listener, and on exit Node resumes every piped
+  // stdio stream, so a report nobody listens to yet is gone. Paused first, so
+  // attaching the listener does not start the flow. `close`, not `exit`: it
+  // waits for stdout to end, so the tail has arrived.
   p.stdout.pause();
   let stdout = "";
   p.stdout.on("data", (d) => {
@@ -1150,8 +1150,8 @@ test("the echo line is not overtaken by the child it announces", async (t) => {
   p.stdout.resume();
   await closed;
   assert.ok(
-    stdout.length > 65536,
-    `fixture guard: the report has to exceed the pipe buffer, got ${stdout.length}`,
+    stdout.length > 300_000,
+    `fixture guard: the report has to exceed what the pipe absorbs, got ${stdout.length}`,
   );
   const echo = stdout.indexOf("$ printf");
   const first = stdout.indexOf("FIRST\n");
