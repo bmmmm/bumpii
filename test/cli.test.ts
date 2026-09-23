@@ -1132,14 +1132,23 @@ test("the echo line is not overtaken by the child it announces", async (t) => {
   await writeConfig(home, [app]);
 
   const p = spawnCli(["digest", "--yes", "--no-judge"], home, { PATH: await hermeticBin() });
+  // Everything is wired up before the pause, because nothing stops the CLI
+  // from finishing inside it: on Linux a socketpair buffers the whole ~140 KB
+  // report, so the run exits without a reader. `exit` fires once and is not
+  // replayed — a listener attached after it waited out the runner timeout —
+  // and on exit Node resumes every stdio stream without a `data` listener,
+  // discarding the report (the guard below then read 0 bytes). Paused first,
+  // so attaching the listener does not start the flow.
+  // `close`, not `exit`: it waits for stdout to end, so the tail has arrived.
   p.stdout.pause();
-  await wait(300);
   let stdout = "";
   p.stdout.on("data", (d) => {
     stdout += d;
   });
+  const closed = new Promise((resolve) => p.on("close", resolve));
+  await wait(300);
   p.stdout.resume();
-  await new Promise((resolve) => p.on("exit", resolve));
+  await closed;
   assert.ok(
     stdout.length > 65536,
     `fixture guard: the report has to exceed the pipe buffer, got ${stdout.length}`,
