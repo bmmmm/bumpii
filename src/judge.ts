@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { localServerBase, localServerKey } from "./env.ts";
 import { run } from "./exec.ts";
 import { describeFetchError } from "./sources.ts";
 import type { DigestItem, ItemKind, Release } from "./types.ts";
@@ -42,7 +43,7 @@ type EngineProbe = { reachable: true; models: string[] } | { reachable: false; r
 async function probeOpenAi(base: string): Promise<EngineProbe> {
   try {
     const res = await fetch(`${base.replace(/\/$/, "")}/models`, {
-      headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY ?? "local"}` },
+      headers: { authorization: `Bearer ${localServerKey()}` },
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) return { reachable: false, reason: `HTTP ${res.status}` };
@@ -71,7 +72,7 @@ function labelWith(label: string, note: string): string {
  * though: a server is allowed to serve more than it advertises.
  */
 export async function resolveEngine(opts: { model?: string } = {}): Promise<Engine> {
-  const base = process.env.OPENAI_BASE_URL;
+  const base = localServerBase();
   let note = "";
   if (base) {
     const probe = await probeOpenAi(base);
@@ -169,12 +170,12 @@ export function parseItems(text: string): DigestItem[] {
 }
 
 async function askOpenAi(engine: Engine, text: string): Promise<string> {
-  const base = (process.env.OPENAI_BASE_URL ?? "").replace(/\/$/, "");
+  const base = (engine.base ?? localServerBase() ?? "").replace(/\/$/, "");
   const res = await fetch(`${base}/chat/completions`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      authorization: `Bearer ${process.env.OPENAI_API_KEY ?? "local"}`,
+      authorization: `Bearer ${localServerKey()}`,
     },
     body: JSON.stringify({
       model: engine.model,

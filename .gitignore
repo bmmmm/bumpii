@@ -17,3 +17,6 @@ bumpii-*.json
 
 # Written by the CI test step; the log is read back in the same step.
 test-output.txt
+
+# The oMLX sub-key lives here (omlx-keys add bumpii); ~/.gitignore_global does not travel with a clone.
+.env

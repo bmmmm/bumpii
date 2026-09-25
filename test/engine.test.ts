@@ -100,12 +100,20 @@ test("a reachable server that lists nothing falls through and says so", async ()
 });
 
 test("with no OPENAI_BASE_URL the label carries no complaint about it", async () => {
-  const prev = process.env.OPENAI_BASE_URL;
+  // "Unset" means unset everywhere: the environment, the package .env and
+  // ~/.env all feed the resolver, so the two files are pointed away as well.
+  const prev = { ...process.env };
   delete process.env.OPENAI_BASE_URL;
+  delete process.env.OMLX_URL;
+  process.env.BUMPII_DOTENV = "/nonexistent/.env";
+  process.env.HOME = "/nonexistent";
   try {
     const engine = await resolveEngine();
     assert.doesNotMatch(engine.label, /OPENAI_BASE_URL/, "unset is not a failure worth reporting");
   } finally {
-    if (prev !== undefined) process.env.OPENAI_BASE_URL = prev;
+    for (const k of ["OPENAI_BASE_URL", "OMLX_URL", "BUMPII_DOTENV", "HOME"]) {
+      if (prev[k] === undefined) delete process.env[k];
+      else process.env[k] = prev[k];
+    }
   }
 });

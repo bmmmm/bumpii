@@ -762,6 +762,10 @@ $ export OPENAI_BASE_URL=http://127.0.0.1:8080/v1   # oMLX, Ollama, vLLM, LM Stu
 $ bumpii digest
 ```
 
+`OPENAI_BASE_URL` and `OPENAI_API_KEY` are read from the environment, then
+bumpii's own `.env` (a per-app key lives there), then `~/.env`; oMLX's
+`OMLX_URL` / `OMLX_API_KEY` are accepted as the fallback spelling.
+
 No model is hardcoded — `/v1/models` is asked what it serves, and `--model`
 overrides. Without `OPENAI_BASE_URL`, the `claude` CLI is used if present. The
 engine is always named in the footer, because a summary is worth exactly as
