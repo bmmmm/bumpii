@@ -94,13 +94,118 @@ test("a forge under a base path keeps it, and owner/repo stay the last two segme
   });
 });
 
-test("a GitLab URL is refused rather than parsed as Forgejo", async () => {
-  // It used to become https://gitlab.com/api/v1, which 404s with a message
-  // about typos and missing tokens — the URL was fine, the API is simply a
-  // different one. GitLab is /api/v4 with different field names.
-  assert.throws(() => parseSource("https://gitlab.com/owner/repo"), /looks like GitLab/);
-  assert.throws(() => parseSource("https://gitlab.example.com/team/app"), /does not speak/);
-  assert.throws(() => parseSource("https://gitlab.com/owner/repo"), /track this one by hand/);
+test("a GitLab source reaches /api/v4 with the whole project path, in every written form", () => {
+  // A gitlab-named host used to become /api/v1, which 404s with a message
+  // about typos and tokens. GitLab nests groups, so the path is everything up
+  // to its `/-/` separator, not the last two segments.
+  const gl = (api: string, repo: string) => ({ kind: "gitlab", api, repo });
+  assert.deepEqual(parseSource("gitlab:team/app"), gl("https://gitlab.com/api/v4", "team/app"));
+  assert.deepEqual(parseSource("gitlab:group/sub/app"), gl("https://gitlab.com/api/v4", "group/sub/app"));
+  assert.deepEqual(
+    parseSource("https://gitlab.example.org/Team/app/-/releases"),
+    gl("https://gitlab.example.org/api/v4", "Team/app"),
+  );
+  assert.deepEqual(
+    parseSource("https://gitlab.com/owner/repo.git"),
+    gl("https://gitlab.com/api/v4", "owner/repo"),
+  );
+  // A GitLab under another name is said so explicitly; the bare URL would be
+  // Forgejo, and still is.
+  assert.deepEqual(
+    parseSource("gitlab:https://code.example.org/team/player"),
+    gl("https://code.example.org/api/v4", "team/player"),
+  );
+  assert.equal(parseSource("https://code.example.org/team/player").kind, "forgejo");
+  assert.throws(() => parseSource("gitlab:lonely"), /no group\/project path/);
+});
+
+test("a GitLab release list is read in GitLab's own field names, upcoming releases dropped", async () => {
+  const stub = stubFetch([
+    {
+      tag_name: "v3.0.0",
+      description: "future",
+      released_at: "2099-01-01T00:00:00Z",
+      upcoming_release: true,
+    },
+    {
+      tag_name: "APP_1_4",
+      description: "  the 1.4 notes  ",
+      released_at: "2024-10-12T22:00:00Z",
+      _links: { self: "https://gitlab.com/team/app/-/releases/APP_1_4" },
+    },
+    { tag_name: "v1.3.0", description: "" },
+  ]);
+  try {
+    const { releases } = await listReleases(parseSource("gitlab:group/sub/app"));
+    // The project path is one URL-encoded segment, or GitLab answers 404.
+    assert.equal(
+      stub.calls[0]?.url,
+      "https://gitlab.com/api/v4/projects/group%2Fsub%2Fapp/releases?per_page=30",
+    );
+    assert.deepEqual(releases, [
+      {
+        tag: "APP_1_4",
+        version: "1_4",
+        publishedAt: "2024-10-12T22:00:00Z",
+        notes: "the 1.4 notes",
+        url: "https://gitlab.com/team/app/-/releases/APP_1_4",
+      },
+      {
+        tag: "v1.3.0",
+        version: "1.3.0",
+        publishedAt: null,
+        notes: "",
+        url: "https://gitlab.com/group/sub/app/-/releases",
+      },
+    ]);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("a GitLab token goes to gitlab.com only, and no other forge's token goes to GitLab", async () => {
+  const saved = { ...process.env };
+  process.env.GITLAB_TOKEN = "gl-token-value";
+  process.env.GITHUB_TOKEN = "gh-token-value";
+  process.env.FORGEJO_TOKEN = "fj-token-value";
+  try {
+    const sentTo = async (source: string) => {
+      const stub = stubFetch([]);
+      try {
+        await listReleases(parseSource(source));
+        return JSON.stringify(stub.calls[0]?.headers ?? {});
+      } finally {
+        stub.restore();
+      }
+    };
+    assert.match(await sentTo("gitlab:o/r"), /"private-token":"gl-token-value"/);
+    for (const source of [
+      "https://gitlab.com.evil.tld/o/r",
+      "https://gitlab.example.org/o/r",
+      "gitlab:https://x.org/o/r",
+    ]) {
+      const sent = await sentTo(source);
+      assert.doesNotMatch(sent, /gl-token-value/, `${source} is not gitlab.com`);
+      assert.doesNotMatch(sent, /gh-token-value|fj-token-value/, `${source} got another forge's token`);
+    }
+    assert.doesNotMatch(await sentTo("github:o/r"), /gl-token-value/);
+  } finally {
+    for (const k of ["GITLAB_TOKEN", "GITHUB_TOKEN", "FORGEJO_TOKEN"]) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+});
+
+test("a channel on a GitLab source is refused, not asked of an endpoint that does not exist", async () => {
+  const stub = stubFetch([]);
+  try {
+    await assert.rejects(channelStatus(parseSource("gitlab:o/r"), "tip", "abc123"), /GitHub or Forgejo/);
+    await assert.rejects(channelStatus(parseSource("gitlab:o/r"), "tip", null), /GitHub or Forgejo/);
+    assert.equal(stub.calls.length, 0);
+  } finally {
+    stub.restore();
+  }
 });
 
 test("a host merely containing 'gitlab' in a path is unaffected", () => {

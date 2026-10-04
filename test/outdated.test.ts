@@ -172,6 +172,16 @@ test("compareUrl builds a diff link from the tags, not the versions", () => {
     compareUrl("https://gitea.com/gitea/tea", "v0.15.0", "v0.15.1"),
     "https://gitea.com/gitea/tea/compare/v0.15.0...v0.15.1",
   );
+  // GitLab keeps the page behind its `/-/` separator; the Forgejo shape would
+  // read "compare" as a subproject and 404.
+  assert.equal(
+    compareUrl("gitlab:team/app", "APP_1_3", "APP_1_4"),
+    "https://gitlab.com/team/app/-/compare/APP_1_3...APP_1_4",
+  );
+  assert.equal(
+    compareUrl("https://gitlab.example.org/Team/app", "APP_3_2_4", "APP_3_2_6"),
+    "https://gitlab.example.org/Team/app/-/compare/APP_3_2_4...APP_3_2_6",
+  );
 });
 
 test("compareUrl refuses rather than inventing half a link", () => {

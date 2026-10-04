@@ -66,6 +66,7 @@ reference counts (present everywhere), and an engine for `--judge` — see below
 | `bumpii digest --judge` | …and read the notes with a model, sorted into security / breaking / feature / fix |
 | `bumpii overview` | everything brew has pending, ranked by your own usage |
 | `bumpii inbox` | unread GitHub release notifications |
+| `bumpii notes <name>` | the newest release notes of one tool or installed package, in full |
 | `bumpii init` | write a starter config |
 | `bumpii add <formula>…` | derive entries from installed Homebrew formulae |
 | `bumpii add --image <container>…` | derive entries from running containers |
@@ -73,8 +74,9 @@ reference counts (present everywhere), and an engine for `--judge` — see below
 | `bumpii scan --image` | running containers not yet tracked |
 | `bumpii scan --new` | what was installed or upgraded recently |
 | `bumpii scan --unref` | formulae no file in `usagePaths` names |
+| `bumpii scan --unmapped` | installed packages with no release notes to read |
 | `bumpii list` | what is tracked, and what is still incomplete |
-| `bumpii set <name> <field> <value>` | change one field: `source` or `update` |
+| `bumpii set <name> <field> <value>` | change one field: `source` or `update`; for any installed package also `page` or `none` |
 | `bumpii rm <name>…` | stop tracking these |
 | `bumpii digest --yes` | digest, then run each tool's update command |
 | `bumpii digest --brew-upgrade` | `brew update`, the digest, then `brew upgrade` — everything brew has pending, tracked or not, named in the report |
@@ -316,6 +318,57 @@ This is the one command that cannot run anonymously — GitHub's /notifications
 endpoint has no unauthenticated form — so it needs `gh auth login` or a
 `GITHUB_TOKEN`, the same sources the rest of the tool already uses.
 
+## Release notes on demand
+
+`bumpii notes <name>` prints the newest release's notes in full — no model, no
+version comparison, just the text. `--last 3` shows three.
+
+```console
+$ bumpii notes some-tool
+some-tool  github:owner/some-tool
+
+v3.1.0  2026-05-12  https://github.com/owner/some-tool/releases/tag/v3.1.0
+## Fixes
+…
+```
+
+The name can be a tracked tool or any installed formula or cask, and the
+notes come from the first of these that has an answer: the tool's `source`,
+a hand-set mapping in `tools.json`'s `packages`, or whatever forge brew's own
+URLs name. A typo is not guessed at — `bumpii notes some-ap` answers
+`did you mean "some-app"?`.
+
+Plenty of software publishes its notes on no forge at all: no releases on
+GitLab or GitHub, only a `NEWS` file, or forge releases with empty bodies. For
+those, map a page:
+
+```console
+$ bumpii set some-app page 'https://some-app.example.org/relnotes/some-app-{version}.html'
+$ bumpii notes some-app
+release notes page: https://some-app.example.org/relnotes/some-app-2.4.1.html
+text extracted from that page:
+
+Some App 2.4.1 Release Notes
+…
+```
+
+`{version}` is filled with brew's newest version. The page is fetched and
+reduced to text when the forge had nothing to read — no source, an error, or
+releases without text — and its link is printed either way. Each of those
+states is said, never folded into an empty answer: `published no notes`,
+`could not read its releases`, `could not read the page`. The exit code is 0
+when there was something to read and 2 when there was not.
+
+`bumpii scan --unmapped` checks that every formula you installed on request,
+every cask and every tracked tool has somewhere to read its notes. A page
+counts as mapped; a source counts once the forge has shown a release with
+text, because a repo that only tags is a source with nothing
+behind it. A forge that cannot be reached is listed as `could not check`,
+never as mapped. Software that publishes no notes anywhere gets
+`bumpii set <name> none "<why>"`, which moves it from the gaps to an
+acknowledged list. `bumpii overview` counts the gaps in one line, without
+asking any forge.
+
 ## Adding tools
 
 For anything installed via Homebrew, let it write the entry:
@@ -506,8 +559,12 @@ Or write entries by hand. `~/.config/bumpii/tools.json`:
 
 - **`usagePaths`** — where "do I use this?" is answered. Point it at whatever
   holds your scripts, skills and dotfiles.
-- **`source`** — `github:owner/repo`, `codeberg:owner/repo`, or a full URL to
-  any Forgejo/Gitea instance (`https://git.example.com/team/app`).
+- **`source`** — `github:owner/repo`, `codeberg:owner/repo`,
+  `gitlab:group/project` (subgroups included), or a full URL to any
+  Forgejo/Gitea instance (`https://git.example.com/team/app`). A URL whose
+  host is named `gitlab.*` is read as GitLab; a GitLab under any other name is
+  written `gitlab:https://code.example.org/group/project`. A rolling `channel`
+  needs GitHub or Forgejo — GitLab has no compare endpoint of that shape.
 - **`version.cmd`** — argv, never a shell string. `version.match` is a regex
   with one capture group. Not every CLI agrees on `--version`: `fj` wants
   `fj version`, and some print to stderr — both are handled.
@@ -515,6 +572,21 @@ Or write entries by hand. `~/.config/bumpii/tools.json`:
   A tool with no CLI trigger at all (an app that updates itself) takes
   `manual: <where to click>` — a complete entry that `--yes` skips as routine,
   unlike a `#`-comment, which marks an entry still waiting to be finished.
+
+- **`packages`** — optional, keyed by brew name: where an installed package's
+  release notes are when brew's URLs do not say, without tracking it. Each
+  holds a `source` (any form above), a `page` (an http(s) URL, `{version}`
+  filled with brew's newest version), or `none` (why nothing is published):
+
+  ```json
+  "packages": {
+    "some-cask": { "source": "github:owner/repo" },
+    "some-app": { "page": "https://some-app.example.org/relnotes/some-app-{version}.html" }
+  }
+  ```
+
+  A mapped `source` is also what `overview` reads for that package, ahead of
+  brew's; a `page` is what it links when there is no forge.
 
 `bumpii add` rewrites this file, and it writes back the whole document: an
 entry you tuned by hand is never replaced, and any key bumpii does not know
@@ -565,7 +637,9 @@ no longer tracked: pg
 ```
 
 `set` only touches `source` and `update` — the two fields an entry can be
-incomplete in. `version.cmd` is argv and `version.match` is a regex; setting
+incomplete in — plus `page` and `none`, which go into `packages` for any
+installed package, tracked or not. A name that is neither tracked nor
+installed is refused rather than stored. `version.cmd` is argv and `version.match` is a regex; setting
 either from a single string argument would just be a more convenient way to
 write a broken entry, so those stay with the file. `rm` on something that is
 not tracked is an error, not a silent success, because the usual cause is a
@@ -859,6 +933,7 @@ yourself — an environment variable always wins over `gh`:
 $ export GITHUB_TOKEN=…      # or GH_TOKEN — for github: sources
 $ export CODEBERG_TOKEN=…    # for codeberg: sources
 $ export FORGEJO_TOKEN=…     # for any other https:// Forgejo/Gitea source
+$ export GITLAB_TOKEN=…      # for gitlab.com only — self-hosted GitLab gets none
 ```
 
 Each token is only ever sent to the host it belongs to (`sources.ts`) — a

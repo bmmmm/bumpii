@@ -2,7 +2,8 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Config } from "./types.ts";
+import { parseSource } from "./sources.ts";
+import type { Config, PackageMapping } from "./types.ts";
 
 export function configPath(): string {
   // `||`, never `??`: an exported-but-empty XDG_CONFIG_HOME is not a value, and
@@ -123,6 +124,16 @@ function validate(cfg: unknown): Config {
       if (!t.source) {
         throw new Error(`config: tools[${i}].channel needs a source — the tag lives in that repo`);
       }
+      // GitLab has no compare endpoint in the shape a channel reads.
+      let kind: string | null = null;
+      try {
+        kind = parseSource(t.source).kind;
+      } catch {
+        // An unparseable source is reported on the run, per tool, as before.
+      }
+      if (kind === "gitlab") {
+        throw new Error(`config: tools[${i}].channel needs a GitHub or Forgejo source, not GitLab`);
+      }
     }
     if (!Array.isArray(t.version?.cmd) || t.version.cmd.length === 0) {
       throw new Error(`config: tools[${i}].version.cmd must be a non-empty argv array`);
@@ -154,7 +165,46 @@ function validate(cfg: unknown): Config {
     }
     seen.set(t.name, i);
   }
-  return { ...c, usagePaths: c.usagePaths ?? [], tools: c.tools };
+  return { ...c, usagePaths: c.usagePaths ?? [], tools: c.tools, packages: validatePackages(c.packages) };
+}
+
+/**
+ * The `packages` map. Each value is checked here rather than where it is used,
+ * for the same reason as `version.match`: a source that does not parse would
+ * otherwise surface mid-run, per package, as an error naming neither the file
+ * nor the key.
+ */
+function validatePackages(raw: unknown): Record<string, PackageMapping> {
+  if (raw === undefined) return {};
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new Error("config: `packages` must be an object keyed by package name");
+  }
+  for (const [name, m] of Object.entries(raw as Record<string, unknown>)) {
+    const where = `config: packages["${name}"]`;
+    if (typeof m !== "object" || m === null || Array.isArray(m)) {
+      throw new Error(`${where} must be an object with source, page or none`);
+    }
+    const { source, page, none } = m as Record<string, unknown>;
+    if (source === undefined && page === undefined && none === undefined) {
+      throw new Error(`${where} needs at least one of source, page or none`);
+    }
+    if (source !== undefined) {
+      if (typeof source !== "string" || !source)
+        throw new Error(`${where}.source must be a non-empty string`);
+      try {
+        parseSource(source);
+      } catch (err) {
+        throw new Error(`${where}.source: ${(err as Error).message}`);
+      }
+    }
+    if (page !== undefined && (typeof page !== "string" || !/^https?:\/\/[^\s/]+/.test(page))) {
+      throw new Error(`${where}.page must be an http(s) URL`);
+    }
+    if (none !== undefined && (typeof none !== "string" || !none.trim())) {
+      throw new Error(`${where}.none must say why — a reason, not an empty string`);
+    }
+  }
+  return raw as Record<string, PackageMapping>;
 }
 
 /**
@@ -251,6 +301,33 @@ export async function setToolField(
   tool[field] = value;
   doc.tools = cfg.tools;
   await writeDocument(doc, path);
+}
+
+/** What `set` can write into the `packages` map. */
+export const PACKAGE_FIELDS = ["source", "page", "none"] as const;
+export type PackageField = (typeof PACKAGE_FIELDS)[number];
+
+/**
+ * Set one field of one package's mapping, creating the mapping if needed.
+ * Validated as a whole before it is written, so a source that does not parse
+ * is refused here rather than breaking every later run.
+ */
+export async function setPackageField(
+  name: string,
+  field: PackageField,
+  value: string,
+  path = configPath(),
+): Promise<void> {
+  const doc = await readDocument(path);
+  validate(doc);
+  const packages = { ...((doc.packages as Record<string, PackageMapping> | undefined) ?? {}) };
+  packages[name] = { ...packages[name], [field]: value };
+  const next = {
+    ...doc,
+    packages: Object.fromEntries(Object.entries(packages).sort(([a], [b]) => a.localeCompare(b))),
+  };
+  validate(next);
+  await writeDocument(next, path);
 }
 
 /** Write via a temp file + rename, so a crash mid-write cannot tear the config. */

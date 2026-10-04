@@ -543,6 +543,43 @@ test("a referenced package with no forge repo says so instead of guessing", () =
   assert.match(text, /bumpii add node --source github:owner\/repo/);
 });
 
+test("a no-repo package mapped to a page links the page instead of asking for a repo", () => {
+  // A project with no releases on any forge keeps its notes on a web page,
+  // and the report must point there rather than at a source nobody can give.
+  const page = "https://netscope.example.org/relnotes/netscope-3.2.1.html";
+  const text = renderOverview(
+    overview({ entries: [entry({ name: "netscope-app", kind: "cask", refs: 3, bucket: "no-repo", page })] }),
+  );
+  assert.match(text, /not digested; its release notes are on this page:\n.*netscope-3\.2\.1\.html/);
+  assert.doesNotMatch(text, /no forge repo in its brew URLs|--source github:owner/);
+});
+
+test("an unreferenced package links its releases in the forge's own shape, or its page", () => {
+  const text = renderOverview(
+    overview({
+      entries: [
+        entry({ name: "vecdraw", source: "gitlab:team/vecdraw" }),
+        entry({ name: "mediaplay", page: "https://mediaplay.example.org/releases/" }),
+      ],
+    }),
+  );
+  assert.match(text, /https:\/\/gitlab\.com\/team\/vecdraw\/-\/releases/);
+  assert.doesNotMatch(text, /gitlab:team/);
+  assert.match(text, /https:\/\/mediaplay\.example\.org\/releases\//);
+});
+
+test("the coverage hint names a gap, stays silent on a measured zero, and says when it could not count", () => {
+  assert.match(
+    renderOverview(overview({ unmapped: 3 })),
+    /3 installed packages have no release source or page/,
+  );
+  assert.match(renderOverview(overview({ unmapped: 1 })), /1 installed package has no release source/);
+  assert.doesNotMatch(renderOverview(overview({ unmapped: 0 })), /release source or page|coverage/);
+  assert.doesNotMatch(renderOverview(overview({})), /release source or page|coverage/);
+  const failed = renderOverview(overview({ unmappedError: "brew info --installed failed: boom" }));
+  assert.match(failed, /release-notes coverage not counted: brew info --installed failed: boom/);
+});
+
 test("tracked but not brew-managed is kept apart from up to date", () => {
   const text = renderOverview(
     overview({

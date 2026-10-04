@@ -6,7 +6,14 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { test } from "node:test";
-import { addTools, configPath, loadConfig, removeTools, setToolField } from "../src/config.ts";
+import {
+  addTools,
+  configPath,
+  loadConfig,
+  removeTools,
+  setPackageField,
+  setToolField,
+} from "../src/config.ts";
 import type { ToolConfig } from "../src/types.ts";
 
 const gh: ToolConfig = {
@@ -113,6 +120,60 @@ test("a channel must be a tag name, and must have a repo to live in", async () =
 
   const orphan = await configFile({ tools: [{ ...gh, source: "", channel: "tip" }] });
   await assert.rejects(loadConfig(orphan), /channel needs a source/);
+
+  // GitLab has no compare endpoint in the shape a channel reads, so the entry
+  // is refused at load instead of failing every run as a misspelled tag.
+  const gitlab = await configFile({ tools: [{ ...gh, source: "gitlab:o/r", channel: "tip" }] });
+  await assert.rejects(loadConfig(gitlab), /channel needs a GitHub or Forgejo source/);
+});
+
+test("a packages mapping is checked at load, each field for what it claims to be", async () => {
+  const ok = await configFile({
+    tools: [gh],
+    packages: {
+      "netscope-app": { page: "https://netscope.example.org/relnotes/netscope-{version}.html" },
+      vecdraw: { source: "gitlab:team/vecdraw", page: "https://vecdraw.example.org/release/" },
+      closedapp: { none: "closed source, publishes no changelog" },
+    },
+  });
+  assert.equal((await loadConfig(ok)).packages?.vecdraw?.source, "gitlab:team/vecdraw");
+
+  const bad: [unknown, RegExp][] = [
+    [["x"], /packages` must be an object/],
+    [{ x: "github:o/r" }, /must be an object with source, page or none/],
+    [{ x: {} }, /needs at least one of/],
+    [{ x: { source: "nonsense" } }, /packages\["x"\]\.source: unrecognised source/],
+    [{ x: { source: "" } }, /source must be a non-empty string/],
+    [{ x: { page: "ftp://example.com/NEWS" } }, /page must be an http\(s\) URL/],
+    [{ x: { page: "https://" } }, /page must be an http\(s\) URL/],
+    [{ x: { none: " " } }, /none must say why/],
+  ];
+  for (const [packages, why] of bad) {
+    const p = await configFile({ tools: [gh], packages, pad: why.source });
+    await assert.rejects(loadConfig(p), why, JSON.stringify(packages));
+  }
+  // Absent is not an error: every config written before the map existed.
+  assert.deepEqual((await loadConfig(await configFile({ tools: [jq] }))).packages, {});
+});
+
+test("set on a package writes its mapping and leaves the rest of the document alone", async () => {
+  const p = await configFile({
+    $schema: "keep-me",
+    tools: [gh],
+    packages: { mediaplay: { none: "placeholder" } },
+  });
+  await setPackageField("netscope-app", "page", "https://netscope.example.org/relnotes/", p);
+  await setPackageField("mediaplay", "page", "https://mediaplay.example.org/releases/", p);
+  const after = JSON.parse(await readFile(p, "utf8"));
+  assert.equal(after.$schema, "keep-me");
+  assert.deepEqual(after.tools, [gh]);
+  assert.deepEqual(after.packages, {
+    mediaplay: { none: "placeholder", page: "https://mediaplay.example.org/releases/" },
+    "netscope-app": { page: "https://netscope.example.org/relnotes/" },
+  });
+  // A value that would not load is refused before it is written.
+  await assert.rejects(setPackageField("pixbench", "source", "nonsense", p), /unrecognised source/);
+  assert.equal(JSON.parse(await readFile(p, "utf8")).packages.pixbench, undefined);
 });
 
 test("rm removes what it names and says what it removed", async () => {

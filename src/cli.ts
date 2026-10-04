@@ -9,7 +9,10 @@ import {
   isManualUpdate,
   isPlaceholderUpdate,
   loadConfig,
+  PACKAGE_FIELDS,
+  type PackageField,
   removeTools,
+  setPackageField,
   setToolField,
 } from "./config.ts";
 import {
@@ -25,13 +28,25 @@ import { discoverImage, untrackedContainers } from "./images.ts";
 import { buildInbox, markThreadsRead, shownThreads } from "./inbox.ts";
 import { digest, type Engine, resolveEngine } from "./judge.ts";
 import { limiter } from "./limit.ts";
+import {
+  coverage,
+  hasNotes,
+  type InstalledPackage,
+  installedPackages,
+  mappingKey,
+  readNotes,
+  resolveTarget,
+  unmappedCount,
+} from "./notes.ts";
 import { brewOutdated, brewSelfUpdating, type OutdatedPackage } from "./outdated.ts";
 import { buildOverview, namesOf, type Overview, type OverviewEntry, untrackedOutdated } from "./overview.ts";
 import { type Progress, startProgress } from "./progress.ts";
 import {
   brewReprobeVerdict,
   type Reprobe,
+  renderCoverage,
   renderInbox,
+  renderNotes,
   renderOverview,
   renderReport,
   reprobeVerdict,
@@ -64,16 +79,19 @@ const HELP = `bumpii — what changed in the CLIs and containers you run, judged
   bumpii digest           digest pending releases for every configured tool
   bumpii overview         everything brew has pending, ranked by your own usage
   bumpii inbox            unread GitHub release notifications, digested
+  bumpii notes <name>     the newest release notes of one tool or package
   bumpii init             write a starter config
   bumpii add <formula>…   derive entries from installed Homebrew formulae
   bumpii add --image <c>… derive entries from running containers
   bumpii list             what is tracked, and what is still incomplete
-  bumpii set <n> <f> <v>  change one field: source or update
+  bumpii set <n> <f> <v>  change one field: source or update; for any
+                          installed package also page or none
   bumpii rm <name>…       stop tracking these
   bumpii scan             list installed formulae not yet tracked
   bumpii scan --image     list running containers not yet tracked
   bumpii scan --new       list what was installed recently
   bumpii scan --unref     list formulae no file of yours names
+  bumpii scan --unmapped  list what has no release notes to read
   bumpii digest --yes     digest, then run each tool's update command
   bumpii digest --brew-upgrade
                           brew update, the digest, then brew upgrade —
@@ -91,6 +109,8 @@ Options:
                       with scan: list containers instead of formulae
   --new               with scan: what arrived recently, not what is untracked
   --unref             with scan: leaves nothing in usagePaths mentions
+  --unmapped          with scan: packages with no source or page for notes
+  --last <n>          with notes: how many releases to show (default 1)
   --since <14d|3w>    with scan --new: how far back to look (default 14d)
   --deps              with scan --new: list dependencies too, not just requests
   --source <s>        with add: set the repo yourself, for one tool at a time
@@ -118,7 +138,7 @@ Engine: OPENAI_BASE_URL (oMLX/Ollama/vLLM) is preferred, else the \`claude\` CLI
 `;
 
 interface Args {
-  cmd: "digest" | "overview" | "inbox" | "init" | "add" | "scan" | "list" | "set" | "rm" | "help";
+  cmd: "digest" | "overview" | "inbox" | "notes" | "init" | "add" | "scan" | "list" | "set" | "rm" | "help";
   yes: boolean;
   json: boolean;
   judge: boolean;
@@ -129,6 +149,10 @@ interface Args {
   onlyNew: boolean;
   /** With `scan`: leaves that no file in usagePaths names. */
   unreferenced: boolean;
+  /** With `scan`: installed packages with no source or page for their notes. */
+  unmapped: boolean;
+  /** With `notes`: how many of the newest releases to show. */
+  last: number;
   /** With `scan --new`: how far back "recently" reaches, in days. */
   sinceDays: number;
   /** With `scan --new`: list the dependencies too, not only what you asked for. */
@@ -208,6 +232,8 @@ export function parseArgs(argv: string[]): Args {
     image: false,
     onlyNew: false,
     unreferenced: false,
+    unmapped: false,
+    last: 1,
     sinceDays: SINCE_DEFAULT,
     deps: false,
     markRead: false,
@@ -240,6 +266,7 @@ export function parseArgs(argv: string[]): Args {
         v === "rm" ||
         v === "overview" ||
         v === "inbox" ||
+        v === "notes" ||
         v === "digest")
     ) {
       a.cmd = v;
@@ -256,7 +283,13 @@ export function parseArgs(argv: string[]): Args {
     else if (v === "--image") a.image = true;
     else if (v === "--new") a.onlyNew = true;
     else if (v === "--unref") a.unreferenced = true;
-    else if (v === "--deps") a.deps = true;
+    else if (v === "--unmapped") a.unmapped = true;
+    else if (v === "--last") {
+      const raw = takeValue(argv, ++i, v);
+      a.last = Number(raw);
+      if (!Number.isInteger(a.last) || a.last < 1)
+        throw new Error(`--last takes a positive whole number — got "${raw}"`);
+    } else if (v === "--deps") a.deps = true;
     else if (v === "--mark-read") a.markRead = true;
     else if (v === "--brew-upgrade") a.brewUpgrade = true;
     else if (v === "--greedy-auto-updates") a.greedyAutoUpdates = true;
@@ -797,20 +830,61 @@ async function dispatch(progress: Progress): Promise<number> {
   if (args.cmd === "set") {
     const [name, field, ...valueParts] = args.rest;
     const value = valueParts.join(" ");
+    const fields = [...new Set([...EDITABLE_FIELDS, ...PACKAGE_FIELDS])];
     if (!name || !field || !value) {
       throw new Error(
-        `set needs a tool, a field and a value: bumpii set <name> <${EDITABLE_FIELDS.join("|")}> <value>`,
+        `set needs a name, a field and a value: bumpii set <name> <${fields.join("|")}> <value>`,
       );
     }
-    if (!(EDITABLE_FIELDS as readonly string[]).includes(field)) {
+    if (!(fields as string[]).includes(field)) {
       // version.cmd is argv and version.match is a regex; setting either from
       // a single string argument would be a way to write a broken entry more
       // conveniently than editing the file.
       throw new Error(
-        `cannot set "${field}" — only ${EDITABLE_FIELDS.join(" and ")} are settable here; edit ${configPath()} for the rest`,
+        `cannot set "${field}" — only ${fields.join(", ")} are settable here; edit ${configPath()} for the rest`,
       );
     }
-    await setToolField(name, field as EditableField, value);
+    const cfg = await loadConfig();
+    const tracked = cfg.tools.some((t) => t.name === name);
+    // A tracked tool's source and update belong to the tool, under whichever
+    // of its names they are set — the brew name included, which is the one
+    // scan lists. Stored in `packages` instead, the tool's own source kept
+    // winning and the "success" changed nothing.
+    const owner = cfg.tools.find((t) => t.name === name) ?? cfg.tools.find((t) => namesOf(t).includes(name));
+    if (owner && (EDITABLE_FIELDS as readonly string[]).includes(field)) {
+      await setToolField(owner.name, field as EditableField, value);
+      if (owner.name !== name) {
+        process.stdout.write(`${owner.name}: ${field} = ${value}  (the tool that upgrades ${name})\n`);
+        return 0;
+      }
+    } else if (field === "update") {
+      await setToolField(name, "update", value); // throws: no tool by that name
+    } else {
+      // Into the packages map — but only under a name something here knows,
+      // or a typo is stored as a mapping nothing ever reads. A tracked tool's
+      // mapping goes under the brew name it upgrades, which is the name scan
+      // and the overview look it up by.
+      const known = tracked || (cfg.packages !== undefined && Object.hasOwn(cfg.packages, name));
+      progress.phase("brew");
+      let installed: InstalledPackage[] | null = null;
+      try {
+        installed = await installedPackages();
+      } catch (err) {
+        if (!known) throw err;
+      }
+      progress.pause();
+      if (!known && !installed?.some((p) => p.name === name)) {
+        throw new Error(
+          `no tool, mapped package or installed package named "${name}" — see 'bumpii scan --unmapped'`,
+        );
+      }
+      const key = mappingKey(name, cfg, installed);
+      await setPackageField(key, field as PackageField, value);
+      if (key !== name) {
+        process.stdout.write(`${key}: ${field} = ${value}  (the brew package ${name} upgrades)\n`);
+        return 0;
+      }
+    }
     process.stdout.write(`${name}: ${field} = ${value}\n`);
     return 0;
   }
@@ -831,12 +905,28 @@ async function dispatch(progress: Progress): Promise<number> {
   if (args.cmd === "scan") {
     // Each asks a different question of a different source; running two at
     // once would print two reports under one heading.
-    const modes = [args.image && "--image", args.onlyNew && "--new", args.unreferenced && "--unref"].filter(
-      (m): m is string => typeof m === "string",
-    );
+    const modes = [
+      args.image && "--image",
+      args.onlyNew && "--new",
+      args.unreferenced && "--unref",
+      args.unmapped && "--unmapped",
+    ].filter((m): m is string => typeof m === "string");
     if (modes.length > 1) {
-      throw new Error(`scan takes one of --image, --new or --unref at a time — got ${modes.join(" ")}`);
+      throw new Error(
+        `scan takes one of --image, --new, --unref or --unmapped at a time — got ${modes.join(" ")}`,
+      );
     }
+  }
+
+  if (args.cmd === "scan" && args.unmapped) {
+    const cfg = await loadConfig();
+    progress.phase("brew");
+    const installed = await installedPackages();
+    progress.phase("fetch");
+    const rows = await coverage(cfg, installed);
+    progress.pause();
+    process.stdout.write(args.json ? `${JSON.stringify(rows, null, 2)}\n` : renderCoverage(rows));
+    return 0;
   }
 
   if (args.cmd === "scan" && args.onlyNew) {
@@ -1156,6 +1246,35 @@ async function dispatch(progress: Progress): Promise<number> {
     return inbox.entries.length > 0 ? 1 : 0;
   }
 
+  if (args.cmd === "notes") {
+    const [name, ...extra] = args.rest;
+    if (!name || extra.length > 0) {
+      throw new Error("notes takes exactly one name: bumpii notes <tool or package> [--last <n>]");
+    }
+    progress.phase("config");
+    const config = await loadConfig();
+    // brew answers three things here: whether an untracked name is installed,
+    // what its URLs derive, and the version a page template is filled with.
+    // Its failure is kept, not thrown: a tracked name still has its source.
+    let installed: InstalledPackage[] | null = null;
+    let brewError: string | undefined;
+    progress.phase("brew");
+    try {
+      installed = await installedPackages();
+    } catch (err) {
+      brewError = (err as Error).message;
+    }
+    const target = resolveTarget(name, config, installed, brewError);
+    progress.phase("fetch");
+    const result = await readNotes(target, args.last);
+    progress.pause();
+    process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : renderNotes(result));
+    // 2, never 1: 1 means "updates pending" everywhere else, and this command
+    // does not ask that question. 2 when nothing readable came back, whatever
+    // the reason — the states above say which.
+    return hasNotes(result) ? 0 : 2;
+  }
+
   if (args.cmd === "overview") {
     progress.phase("config");
     const config = await loadConfig();
@@ -1190,6 +1309,14 @@ async function dispatch(progress: Progress): Promise<number> {
       concurrency: JUDGE_CONCURRENCY,
       progress,
     });
+    // The whole machine's coverage, so not for a run --only narrowed.
+    if (args.only.length === 0) {
+      try {
+        overview.unmapped = unmappedCount(config, await installedPackages());
+      } catch (err) {
+        overview.unmappedError = (err as Error).message;
+      }
+    }
     progress.pause();
     // A typo in --only must not read as "nothing is outdated". Checked after
     // the build rather than against the config, because overview ranges over

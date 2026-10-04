@@ -41,6 +41,7 @@ varies between runs of the same suite in the same session, so a run reporting
 engine, digest and its cache · `usage.ts` reference counts · `render.ts` the report ·
 `discover.ts` brew → config entry · `images.ts` container → config entry ·
 `inbox.ts` the release notifications GitHub already queued ·
+`notes.ts` one package's notes on demand, and where every package's live ·
 `outdated.ts` what brew knows is pending, and its source cache ·
 `overview.ts` the whole machine, bucketed by what can be said about it ·
 `limit.ts` the four-line concurrency cap · `exec.ts` the execFile and spawn wrappers ·

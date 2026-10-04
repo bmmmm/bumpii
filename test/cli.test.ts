@@ -433,7 +433,10 @@ test("scan takes one mode at a time rather than printing two reports at once", a
   const r = await runCli(["scan", "--new", "--unref"], home, { PATH: await hermeticBin() });
 
   assert.equal(r.code, 2);
-  assert.match(r.stderr, /one of --image, --new or --unref/);
+  assert.match(r.stderr, /one of --image, --new, --unref or --unmapped/);
+  const u = await runCli(["scan", "--unmapped", "--unref"], home, { PATH: await hermeticBin() });
+  assert.equal(u.code, 2);
+  assert.match(u.stderr, /got --unref --unmapped/);
 });
 
 test("an unknown option exits 2 and names it, rather than running a default digest", async () => {
@@ -2537,4 +2540,224 @@ esac`,
   assert.match(r.stdout, /uv: brew no longer lists it as outdated/, "the formula was upgraded");
   assert.match(r.stdout, /selfy/, "and the cask is still named as behind");
   assert.equal(r.code, 1, "brew upgrade did not touch the cask, so it is still pending");
+});
+
+// --- bumpii notes, set <package>, scan --unmapped ---------------------------
+
+/** A web page on loopback, for the release-notes pages that are not forges. */
+async function stubPage(body: string, status = 200, type = "text/html"): Promise<string | null> {
+  const server = http.createServer((_req, res) => {
+    res.writeHead(status, { "content-type": type });
+    res.end(body);
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+  } catch {
+    return null;
+  }
+  servers.push(server);
+  const addr = server.address();
+  return typeof addr === "object" && addr ? `http://127.0.0.1:${addr.port}` : null;
+}
+
+/** A fake brew whose installed list holds these casks and nothing else. */
+async function brewWithCasks(...tokens: string[]): Promise<string> {
+  const casks = tokens.map((token) => ({ token, version: "3.2.1,b1", url: "https://example.invalid/x.dmg" }));
+  return fakeBrew(
+    `case "$1" in info) printf '%s' '${JSON.stringify({ formulae: [], casks })}' ;; *) exit 1 ;; esac`,
+  );
+}
+
+async function writeDoc(home: string, doc: Record<string, unknown>): Promise<string> {
+  const path = await initConfigPath(home);
+  await writeFile(path, JSON.stringify({ usagePaths: [], tools: [], ...doc }, null, 2));
+  return path;
+}
+
+test("notes prints the newest release's text, and --last widens it", async (t) => {
+  const url = await stubForge(["v2.0.0", "v1.0.0"], "Fixed the frobnicator.");
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  await writeConfig(home, [tool({ source: url })]);
+  // No brew on this PATH: a tracked name must not need it.
+  const PATH = await hermeticBin();
+  const one = await runCli(["notes", "app"], home, { PATH });
+  assert.equal(one.code, 0, one.stderr);
+  assert.match(one.stdout, /^v2\.0\.0 .*\nFixed the frobnicator\.$/m);
+  assert.doesNotMatch(one.stdout, /v1\.0\.0/);
+  const two = await runCli(["notes", "app", "--last", "2"], home, { PATH });
+  assert.match(two.stdout, /^v1\.0\.0 /m);
+  const json = JSON.parse((await runCli(["notes", "app", "--json"], home, { PATH })).stdout);
+  assert.equal(json.releases[0].notes, "Fixed the frobnicator.");
+});
+
+test("notes on releases without text says so and exits 2, not 0", async (t) => {
+  const url = await stubForge(["v2.0.0"], "");
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  await writeConfig(home, [tool({ source: url })]);
+  const r = await runCli(["notes", "app"], home, { PATH: await hermeticBin() });
+  assert.equal(r.code, 2);
+  assert.match(r.stdout, /v2\.0\.0 published no notes/);
+});
+
+test("notes on a forge that fails names the failure and exits 2", async (t) => {
+  const url = await stubForgeFailing();
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  await writeConfig(home, [tool({ source: url })]);
+  const r = await runCli(["notes", "app"], home, { PATH: await hermeticBin() });
+  assert.equal(r.code, 2);
+  assert.match(r.stdout, /could not read its releases: 500/);
+});
+
+test("notes reads a mapped page when there is no forge, and keeps the link when the page fails", async (t) => {
+  const page = await stubPage("<main><h1>Release 3.2.1</h1><p>Parser fixes.</p></main>");
+  const broken = await stubPage("nope", 503);
+  if (!page || !broken) return t.skip(SKIP);
+  const home = await freshHome();
+  await writeDoc(home, {
+    packages: {
+      pageapp: { page: `${page}/relnotes-{version}.html` },
+      brokenapp: { page: `${broken}/notes` },
+    },
+  });
+  const PATH = await brewWithCasks("pageapp", "brokenapp");
+  const ok = await runCli(["notes", "pageapp"], home, { PATH });
+  assert.equal(ok.code, 0, ok.stderr);
+  // The cask's build suffix after the comma is not part of the page's name.
+  assert.match(ok.stdout, /relnotes-3\.2\.1\.html/);
+  assert.match(ok.stdout, /text extracted from that page:\n\nRelease 3\.2\.1\nParser fixes\./);
+  const bad = await runCli(["notes", "brokenapp"], home, { PATH });
+  assert.equal(bad.code, 2);
+  assert.match(bad.stdout, new RegExp(`release notes page: ${broken}/notes`));
+  assert.match(bad.stdout, /could not read the page: 503/);
+});
+
+test("notes on a name nothing knows exits 2, and suggests the near one", async () => {
+  const home = await freshHome();
+  await writeDoc(home, {});
+  const near = await runCli(["notes", "pageap"], home, { PATH: await brewWithCasks("pageapp") });
+  assert.equal(near.code, 2);
+  assert.match(near.stderr, /did you mean "pageapp"\?/);
+  // Without brew, the reason is brew — not "no such package".
+  const nobrew = await runCli(["notes", "pageapp"], home, { PATH: await hermeticBin() });
+  assert.equal(nobrew.code, 2);
+  assert.match(nobrew.stderr, /brew could not be asked about it/);
+  const unmapped = await runCli(["notes", "pageapp"], home, { PATH: await brewWithCasks("pageapp") });
+  assert.equal(unmapped.code, 2);
+  assert.match(unmapped.stdout, /no release source or page known — bumpii set pageapp page <url>/);
+});
+
+test("set maps an installed package, and refuses a name nothing knows", async () => {
+  const home = await freshHome();
+  const path = await writeDoc(home, {});
+  const PATH = await brewWithCasks("netscope-app");
+  const ok = await runCli(
+    ["set", "netscope-app", "page", "https://example.invalid/ws-{version}.html"],
+    home,
+    { PATH },
+  );
+  assert.equal(ok.code, 0, ok.stderr);
+  const typo = await runCli(["set", "netscpe-app", "page", "https://example.invalid/"], home, { PATH });
+  assert.equal(typo.code, 2);
+  assert.match(typo.stderr, /no tool, mapped package or installed package named "netscpe-app"/);
+  const bad = await runCli(["set", "netscope-app", "source", "nonsense"], home, { PATH });
+  assert.equal(bad.code, 2);
+  assert.deepEqual(JSON.parse(await readFile(path, "utf8")).packages, {
+    "netscope-app": { page: "https://example.invalid/ws-{version}.html" },
+  });
+});
+
+test("set on a tool's alias stores the mapping under the brew package it upgrades", async () => {
+  // scan and the overview look a mapping up by brew's name; written under the
+  // alias, it was read by `notes lang` and by nothing else.
+  const formulae = [
+    { name: "lang@8.1", installed: [{ installed_on_request: true }], versions: { stable: "8.1.34" } },
+  ];
+  const PATH = await fakeBrew(
+    `case "$1" in info) printf '%s' '${JSON.stringify({ formulae, casks: [] })}' ;; *) exit 1 ;; esac`,
+  );
+  const home = await freshHome();
+  const path = await writeDoc(home, {
+    tools: [
+      { name: "lang", source: "", version: { cmd: ["lang"], match: "(.)" }, update: "brew upgrade lang@8.1" },
+    ],
+  });
+  const r = await runCli(["set", "lang", "page", "https://example.invalid/lang"], home, { PATH });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(
+    r.stdout,
+    /^lang@8\.1: page = https:\/\/example\.invalid\/lang {2}\(the brew package lang upgrades\)$/m,
+  );
+  assert.deepEqual(JSON.parse(await readFile(path, "utf8")).packages, {
+    "lang@8.1": { page: "https://example.invalid/lang" },
+  });
+});
+
+test("set source on a tool's brew name changes the tool, not a mapping the tool outranks", async () => {
+  // scan lists the row as `lang@8.1`; a source stored under packages there
+  // lost to the tool's own source, so the reported change did nothing.
+  const home = await freshHome();
+  const path = await writeDoc(home, {
+    tools: [
+      {
+        name: "lang",
+        source: "github:o/lang",
+        version: { cmd: ["lang"], match: "(.)" },
+        update: "brew upgrade lang@8.1",
+      },
+    ],
+  });
+  const r = await runCli(["set", "lang@8.1", "source", "gitlab:g/lang"], home, { PATH: await hermeticBin() });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^lang: source = gitlab:g\/lang {2}\(the tool that upgrades lang@8\.1\)$/m);
+  const doc = JSON.parse(await readFile(path, "utf8"));
+  assert.equal(doc.tools[0].source, "gitlab:g/lang");
+  assert.equal(doc.packages, undefined);
+});
+
+test("scan --unmapped lists the installed packages with nothing to read", async () => {
+  const home = await freshHome();
+  await writeDoc(home, { packages: { mapped: { page: "https://example.invalid/notes" } } });
+  const r = await runCli(["scan", "--unmapped"], home, { PATH: await brewWithCasks("mapped", "orphan") });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^1 of 2 installed packages/m);
+  assert.match(r.stdout, /^unmapped \(1\)\n {2}orphan/m);
+});
+
+test("scan --unmapped leaves out what was only pulled in as a dependency", async () => {
+  // Nobody reads the notes of a library they never asked for; listing those
+  // would bury the packages that matter under the ones that do not.
+  const formulae = [
+    { name: "asked", installed: [{ installed_on_request: true }], versions: { stable: "1.0" } },
+    { name: "libdep", installed: [{ installed_on_request: false }], versions: { stable: "1.0" } },
+  ];
+  const PATH = await fakeBrew(
+    `case "$1" in info) printf '%s' '${JSON.stringify({ formulae, casks: [] })}' ;; *) exit 1 ;; esac`,
+  );
+  const home = await freshHome();
+  await writeDoc(home, {});
+  const r = await runCli(["scan", "--unmapped"], home, { PATH });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^unmapped \(1\)\n {2}asked$/m);
+  assert.doesNotMatch(r.stdout, /libdep/);
+});
+
+test("overview reads a package's mapped source instead of calling it unrepo'd", async (t) => {
+  const url = await stubForge(["v2.0.0", "v1.0.0"], "the 2.0 notes");
+  if (!url) return t.skip(SKIP);
+  const home = await freshHome();
+  const usage = await mkdtemp(join(tmpdir(), "bumpii-usage-"));
+  await writeFile(join(usage, "x.sh"), "pkgapp --flag\n");
+  await writeDoc(home, { usagePaths: [usage], packages: { pkgapp: { source: url } } });
+  const PATH = await stubBrewOutdated({ name: "pkgapp", installed: "1.0.0", latest: "2.0.0" });
+  const r = await runCli(["overview"], home, { PATH });
+  assert.equal(r.code, 1, r.stderr);
+  assert.doesNotMatch(r.stdout, /no forge repo in its brew URLs/);
+  assert.match(r.stdout, /pkgapp 1\.0\.0 → 2\.0\.0/);
+  assert.match(r.stdout, /example\.invalid\/v2\.0\.0/);
 });

@@ -33,10 +33,33 @@ export interface ToolConfig {
   update: string;
 }
 
+/**
+ * Where an installed package's release notes live, said by hand — for the
+ * packages whose brew metadata names no forge (a project that keeps a NEWS file), or
+ * names one that publishes no releases. Keyed by brew name or tools.json name.
+ * At least one field is set.
+ */
+export interface PackageMapping {
+  /** Any form parseSource accepts. Wins over what brew's URLs derive. */
+  source?: string;
+  /**
+   * A release-notes page, http(s). `{version}` in it is replaced by brew's
+   * newest version, for projects that publish one page per release.
+   */
+  page?: string;
+  /**
+   * Why there is nothing to map: the project publishes no notes anywhere.
+   * Turns a gap into an acknowledged one instead of hiding it.
+   */
+  none?: string;
+}
+
 export interface Config {
   /** Paths grepped to decide whether a change actually touches your usage. */
   usagePaths: string[];
   tools: ToolConfig[];
+  /** Optional on disk; validate fills in `{}`. */
+  packages?: Record<string, PackageMapping>;
 }
 
 /** A release as the forge reports it. */

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Fetch releases from a forge. Two API shapes cover everything we track:
-// GitHub's, and Forgejo/Gitea's (which Codeberg and our own instance serve).
+// Fetch releases from a forge. Three API shapes cover everything we track:
+// GitHub's, Forgejo/Gitea's (which Codeberg and our own instance serve), and
+// GitLab's (gitlab.com and its self-hosted instances).
 //
 // Deliberately dependency-free: `fetch` is in the runtime, and a release list
 // is a GET with a token header. Pulling an SDK for that would add a supply
@@ -10,10 +11,13 @@ import { limiter } from "./limit.ts";
 import type { Release } from "./types.ts";
 
 export interface ForgeRef {
-  kind: "github" | "forgejo";
-  /** API base, e.g. "https://api.github.com" or "https://codeberg.org/api/v1". */
+  kind: "github" | "forgejo" | "gitlab";
+  /**
+   * API base, e.g. "https://api.github.com", "https://codeberg.org/api/v1" or
+   * "https://gitlab.com/api/v4".
+   */
   api: string;
-  /** "owner/repo" */
+  /** "owner/repo" — on GitLab possibly "group/subgroup/repo". */
   repo: string;
 }
 
@@ -30,9 +34,30 @@ export function bare(tag: string): string {
 }
 
 /**
- * Parse "github:cli/cli", "codeberg:owner/repo", or a full forge URL
- * ("https://git.example.com/owner/repo"). The URL form assumes Forgejo/Gitea,
- * which is the only self-hosted shape we speak.
+ * A GitLab project from its web URL. The project path is everything after the
+ * host up to GitLab's own `/-/` separator, because GitLab nests groups:
+ * `gitlab.example.org/Team/app` and `gitlab.com/group/sub/project` are both
+ * one project, and taking the last two segments would name the wrong one.
+ */
+function gitlabFromUrl(source: string): ForgeRef {
+  const u = new URL(source);
+  const path = (u.pathname.split("/-/")[0] ?? "")
+    .split("/")
+    .filter(Boolean)
+    .join("/")
+    .replace(/\.git$/, "");
+  if (!path.includes("/"))
+    throw new Error(
+      `GitLab source has no group/project path: ${source} — it needs both, as in https://gitlab.example.com/team/app`,
+    );
+  return { kind: "gitlab", api: `${u.origin}/api/v4`, repo: path };
+}
+
+/**
+ * Parse "github:cli/cli", "codeberg:owner/repo", "gitlab:group/project", or a
+ * full forge URL ("https://git.example.com/owner/repo"). The URL form assumes
+ * Forgejo/Gitea unless the host is named gitlab; a GitLab instance under some
+ * other name is written "gitlab:https://code.example.org/group/project".
  */
 export function parseSource(source: string): ForgeRef {
   if (source.startsWith("github:")) {
@@ -41,19 +66,18 @@ export function parseSource(source: string): ForgeRef {
   if (source.startsWith("codeberg:")) {
     return { kind: "forgejo", api: "https://codeberg.org/api/v1", repo: source.slice(9) };
   }
+  if (source.startsWith("gitlab:")) {
+    const rest = source.slice(7);
+    if (/^https?:\/\//.test(rest)) return gitlabFromUrl(rest);
+    return gitlabFromUrl(`https://gitlab.com/${rest}`);
+  }
   if (source.startsWith("https://") || source.startsWith("http://")) {
     const u = new URL(source);
-    // The URL form means Forgejo/Gitea, and nothing else speaks that API. A
-    // GitLab URL used to be accepted and turned into /api/v1, which 404s with
-    // a message about typos and tokens — sending the reader to check the
-    // spelling of a URL that was spelled correctly. GitLab is /api/v4 with
-    // different field names; refusing is honest, silently mis-parsing is not.
-    if (/(^|\.)gitlab\./i.test(u.hostname)) {
-      throw new Error(
-        `${source} looks like GitLab, whose API bumpii does not speak (it talks GitHub and Forgejo/Gitea) — ` +
-          `track this one by hand, or open an issue if you need GitLab support`,
-      );
-    }
+    // A host named gitlab speaks GitLab's /api/v4, not Forgejo's /api/v1. It
+    // used to be turned into /api/v1, which 404s with a message about typos
+    // and tokens — sending the reader to check the spelling of a URL that was
+    // spelled correctly.
+    if (/(^|\.)gitlab\./i.test(u.hostname)) return gitlabFromUrl(source);
     const parts = u.pathname.split("/").filter(Boolean);
     if (parts.length < 2)
       throw new Error(
@@ -71,6 +95,23 @@ export function parseSource(source: string): ForgeRef {
   throw new Error(
     `unrecognised source: ${source} — use "github:owner/repo", "codeberg:owner/repo", or a full https URL`,
   );
+}
+
+/**
+ * The forge's web page listing a source's releases, or null for a source that
+ * does not parse. GitLab keeps it behind `/-/`; a link built the GitHub way
+ * names a project that does not exist.
+ */
+export function releasesPage(source: string): string | null {
+  let ref: ForgeRef;
+  try {
+    ref = parseSource(source);
+  } catch {
+    return null;
+  }
+  if (ref.kind === "github") return `https://github.com/${ref.repo}/releases`;
+  if (ref.kind === "gitlab") return `${ref.api.replace(/\/api\/v4$/, "")}/${ref.repo}/-/releases`;
+  return `${ref.api.replace(/\/api\/v1$/, "")}/${ref.repo}/releases`;
 }
 
 /**
@@ -128,6 +169,11 @@ export async function authHeaders(ref: ForgeRef): Promise<Record<string, string>
   if (ref.kind === "github") {
     const t = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || (await tokenFromGhCli());
     if (t) h.authorization = `Bearer ${t}`;
+  } else if (ref.kind === "gitlab") {
+    // gitlab.com's token goes to gitlab.com and nowhere else; a self-hosted
+    // instance is a different account on a different host.
+    const t = apiHost(ref) === "gitlab.com" ? process.env.GITLAB_TOKEN : undefined;
+    if (t) h["private-token"] = t;
   } else if (apiHost(ref) === "codeberg.org") {
     const t = process.env.CODEBERG_TOKEN;
     if (t) h.authorization = `token ${t}`;
@@ -157,13 +203,16 @@ async function rateLimitMessage(res: Response, ref: ForgeRef): Promise<string | 
   const envVar =
     ref.kind === "github"
       ? "GITHUB_TOKEN"
-      : apiHost(ref) === "codeberg.org"
-        ? "CODEBERG_TOKEN"
-        : "FORGEJO_TOKEN";
+      : ref.kind === "gitlab"
+        ? "GITLAB_TOKEN"
+        : apiHost(ref) === "codeberg.org"
+          ? "CODEBERG_TOKEN"
+          : "FORGEJO_TOKEN";
   // What to do about it depends on whether the request was authenticated at
   // all, so the answer comes from the headers that were actually sent — which
   // on the github branch may be gh's token rather than anything the user set.
-  const authed = Boolean((await authHeaders(ref)).authorization);
+  const sent = await authHeaders(ref);
+  const authed = Boolean(sent.authorization || sent["private-token"]);
   const fix =
     ref.kind === "github"
       ? `set ${envVar}, or run 'gh auth login' — bumpii uses gh's token when it finds one (anonymous callers get 60 requests/hour)`
@@ -268,10 +317,24 @@ interface RawRelease {
   url?: string;
   draft?: boolean;
   prerelease?: boolean;
+  // GitLab's names for the same things.
+  description?: string;
+  released_at?: string;
+  upcoming_release?: boolean;
+  _links?: { self?: string };
 }
 
 function toRelease(r: RawRelease, ref: ForgeRef): Release {
   const tag = r.tag_name ?? r.name ?? "";
+  if (ref.kind === "gitlab") {
+    return {
+      tag,
+      version: bare(tag),
+      publishedAt: r.released_at ?? null,
+      notes: (r.description ?? "").trim(),
+      url: r._links?.self ?? `${ref.api.replace(/\/api\/v4$/, "")}/${ref.repo}/-/releases`,
+    };
+  }
   return {
     tag,
     version: bare(tag),
@@ -412,6 +475,11 @@ export async function channelStatus(
 ): Promise<ChannelStatus> {
   // Nothing installed means nothing to compare from — report the head so the
   // entry still shows what it is watching, rather than an empty shrug.
+  // GitLab has neither endpoint in this shape. Refused rather than attempted:
+  // the request would 404 and be reported as a channel tag spelled wrong.
+  if (ref.kind === "gitlab") {
+    throw new Error(`a channel needs a GitHub or Forgejo source — ${ref.repo} is on GitLab`);
+  }
   if (!installed) {
     return { head: shortSha(await channelHead(ref, tag)), aheadBy: 0, release: null, truncated: false };
   }
@@ -493,14 +561,17 @@ export interface ReleaseList {
 /**
  * Newest-first list of published releases. Drafts and prereleases are dropped:
  * a prerelease is not something `brew upgrade` would ever hand you, so showing
- * its notes would describe changes you cannot get.
+ * its notes would describe changes you cannot get. GitLab's equivalent is a
+ * release dated in the future (`upcoming_release`).
  */
 export async function listReleases(ref: ForgeRef, opts: { limit?: number } = {}): Promise<ReleaseList> {
   const { limit = 30 } = opts;
   const url =
     ref.kind === "github"
       ? `${ref.api}/repos/${ref.repo}/releases?per_page=${limit}`
-      : `${ref.api}/repos/${ref.repo}/releases?limit=${limit}`;
+      : ref.kind === "gitlab"
+        ? `${ref.api}/projects/${encodeURIComponent(ref.repo)}/releases?per_page=${limit}`
+        : `${ref.api}/repos/${ref.repo}/releases?limit=${limit}`;
   const raw = (await getJson(url, ref)) as RawRelease[];
   if (!Array.isArray(raw))
     throw new Error(
@@ -511,6 +582,8 @@ export async function listReleases(ref: ForgeRef, opts: { limit?: number } = {})
     // Capped on the raw page, before filtering: a full page of drafts still
     // means the forge had more to give.
     capped: raw.length >= limit,
-    releases: raw.filter((r) => !r.draft && !r.prerelease).map((r) => toRelease(r, ref)),
+    releases: raw
+      .filter((r) => !r.draft && !r.prerelease && !r.upcoming_release)
+      .map((r) => toRelease(r, ref)),
   };
 }

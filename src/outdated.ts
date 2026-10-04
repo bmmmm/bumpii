@@ -12,7 +12,7 @@ import { readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { configPath } from "./config.ts";
 import { type ExecError, run } from "./exec.ts";
-import { sourceFromUrls } from "./sources.ts";
+import { type ForgeRef, parseSource, sourceFromUrls } from "./sources.ts";
 
 export interface OutdatedPackage {
   name: string;
@@ -281,7 +281,7 @@ async function writeSourceCache(cache: SourceCache, path: string): Promise<void>
 }
 
 /** Raw `brew info --json=v2` shapes, for the two fields a source comes out of. */
-interface RawInfoFormula {
+export interface RawInfoFormula {
   name?: string;
   /**
    * The tap-qualified name, present only for tapped formulae. Asked for as
@@ -292,10 +292,29 @@ interface RawInfoFormula {
   homepage?: string;
   urls?: { stable?: { url?: string }; head?: { url?: string } };
 }
-interface RawInfoCask {
+export interface RawInfoCask {
   token?: string;
   homepage?: string;
   url?: string;
+}
+
+/**
+ * Where a formula's releases live, read off its brew URLs. Shared with
+ * notes.ts, which reads the same JSON from `brew info --installed`: one rule
+ * for both, or `scan --unmapped` and the overview disagree about a package.
+ */
+export function formulaSource(f: RawInfoFormula): string | null {
+  return sourceFromUrls([f.urls?.stable?.url ?? "", f.urls?.head?.url ?? "", f.homepage ?? ""]);
+}
+
+/**
+ * The same for a cask. The download URL comes first, and for a cask that
+ * ordering matters: it usually points at a release asset, which carries the
+ * repo (…/owner/repo/releases/download/…), while the homepage is as often a
+ * product page that names no forge at all.
+ */
+export function caskSource(c: RawInfoCask): string | null {
+  return sourceFromUrls([c.url ?? "", c.homepage ?? ""]);
 }
 
 /**
@@ -327,7 +346,7 @@ export async function brewSources(names: string[]): Promise<SourceCache> {
   const out: SourceCache = {};
   for (const f of d.formulae ?? []) {
     if (!f.name) continue;
-    const source = sourceFromUrls([f.urls?.stable?.url ?? "", f.urls?.head?.url ?? "", f.homepage ?? ""]);
+    const source = formulaSource(f);
     // Under both names it answers to, the same way discover.ts indexes its
     // batch. A tapped formula is asked for by its full name and comes back
     // with the short one in `name`, so keying on `name` alone made the lookup
@@ -338,11 +357,7 @@ export async function brewSources(names: string[]): Promise<SourceCache> {
   }
   for (const c of d.casks ?? []) {
     if (!c.token) continue;
-    // The download URL comes first, and for a cask that ordering matters: it
-    // usually points at a release asset, which carries the repo
-    // (…/owner/repo/releases/download/…), while the homepage is as often a
-    // product page that names no forge at all.
-    out[c.token] = sourceFromUrls([c.url ?? "", c.homepage ?? ""]);
+    out[c.token] = caskSource(c);
   }
   return out;
 }
@@ -386,6 +401,17 @@ export function compareUrl(source: string, fromTag: string, toTag: string): stri
     return `https://github.com/${source.slice(7)}/compare/${enc(fromTag)}...${enc(toTag)}`;
   if (source.startsWith("codeberg:")) {
     return `https://codeberg.org/${source.slice(9)}/compare/${enc(fromTag)}...${enc(toTag)}`;
+  }
+  // GitLab serves the same page under its `/-/` separator; the plain-URL
+  // branch below would build a path GitLab reads as a project name.
+  let ref: ForgeRef | null = null;
+  try {
+    ref = parseSource(source);
+  } catch {
+    return null;
+  }
+  if (ref.kind === "gitlab") {
+    return `${ref.api.replace(/\/api\/v4$/, "")}/${ref.repo}/-/compare/${enc(fromTag)}...${enc(toTag)}`;
   }
   if (source.startsWith("https://") || source.startsWith("http://")) {
     return `${source.replace(/\.git$/, "").replace(/\/$/, "")}/compare/${enc(fromTag)}...${enc(toTag)}`;

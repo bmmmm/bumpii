@@ -2,7 +2,9 @@
 import { formulaOf, isManualUpdate } from "./config.ts";
 import type { Inbox } from "./inbox.ts";
 import type { Engine } from "./judge.ts";
+import type { CoverageRow, NotesResult } from "./notes.ts";
 import type { Overview, OverviewEntry } from "./overview.ts";
+import { releasesPage } from "./sources.ts";
 import type { DigestItem, ItemKind, Release, ToolReport } from "./types.ts";
 import { compareVersions, isOrderable, releaseFor } from "./version.ts";
 
@@ -398,7 +400,13 @@ function noDigestReason(releases: Release[], digestError: string | undefined, en
  * it.
  */
 function safeRelease(r: Release): Release {
-  return { ...r, tag: safe(r.tag), version: safe(r.version), url: safe(r.url) };
+  return {
+    ...r,
+    tag: safe(r.tag),
+    version: safe(r.version),
+    url: safe(r.url),
+    publishedAt: r.publishedAt === null ? null : safe(r.publishedAt),
+  };
 }
 
 function safeItem(i: DigestItem): DigestItem {
@@ -709,6 +717,13 @@ function renderEntry(e: OverviewEntry, ctx: OverviewCtx, prefix: string, cont: s
   if (e.compare) body(dim(link(e.compare, e.compare)));
 
   if (e.bucket === "no-repo") {
+    if (e.page) {
+      // Mapped by hand to a page, not a forge: nothing was read or judged, and
+      // the link is where the notes are.
+      body(dim("no forge to read — not digested; its release notes are on this page:"));
+      body(dim(link(e.page, e.page)));
+      return;
+    }
     body(dim("no forge repo in its brew URLs — nothing to read, and bumpii will not guess one"));
     // The trimmed name, not the padded one: this is the line meant to be copied.
     body(dim(`name it yourself: bumpii add ${e.name.trim()} --source github:owner/repo`));
@@ -809,6 +824,7 @@ function safeEntry(e: OverviewEntry): OverviewEntry {
     behind: e.behind.map(safeRelease),
     items: e.items.map(safeItem),
     compare: e.compare === null ? null : safe(e.compare),
+    page: e.page ? safe(e.page) : e.page,
     error: e.error === undefined ? undefined : safe(e.error),
   };
 }
@@ -817,6 +833,7 @@ export function renderOverview(raw: Overview, opts: { greedyUpgrade?: boolean } 
   const o: Overview = {
     ...raw,
     usageIncomplete: raw.usageIncomplete === undefined ? undefined : safe(raw.usageIncomplete),
+    unmappedError: raw.unmappedError === undefined ? undefined : safe(raw.unmappedError),
     entries: raw.entries.map(safeEntry),
     current: raw.current.map((c) => ({ ...c, name: safe(c.name) })),
     unchecked: raw.unchecked.map((u) => ({ ...u, name: safe(u.name) })),
@@ -921,16 +938,10 @@ export function renderOverview(raw: Overview, opts: { greedyUpgrade?: boolean } 
       out.push(
         `  ${e.name.padEnd(width)}  ${e.installed} → ${e.latest}${e.pinned ? `  ${yellow("pinned")}` : ""}`,
       );
-      if (e.source) {
-        // Untracked and unreferenced, so no releases were fetched and no tags
-        // are known — the repo itself is the only link that is certainly real.
-        const repo = e.source.startsWith("github:")
-          ? `https://github.com/${e.source.slice(7)}/releases`
-          : e.source.startsWith("codeberg:")
-            ? `https://codeberg.org/${e.source.slice(9)}/releases`
-            : `${e.source.replace(/\/$/, "")}/releases`;
-        out.push(`    ${dim(link(repo, repo))}`);
-      }
+      // Untracked and unreferenced, so no releases were fetched and no tags
+      // are known — the repo itself is the only link that is certainly real.
+      const repo = (e.source && releasesPage(e.source)) || e.page;
+      if (repo) out.push(`    ${dim(link(repo, repo))}`);
     }
     out.push("");
   }
@@ -975,6 +986,16 @@ export function renderOverview(raw: Overview, opts: { greedyUpgrade?: boolean } 
       dim("  brew manages these but does not have them — nothing was checked, and nothing is up to date"),
       "",
     );
+  }
+
+  // A measured zero says nothing; an uncounted run says it could not count.
+  if (o.unmapped !== undefined && o.unmapped > 0) {
+    out.push(
+      `${yellow(`${o.unmapped} installed package${o.unmapped === 1 ? " has" : "s have"} no release source or page`)} ${dim("— bumpii scan --unmapped")}`,
+      "",
+    );
+  } else if (o.unmappedError !== undefined) {
+    out.push(`${yellow("release-notes coverage not counted")}: ${o.unmappedError}`, "");
   }
 
   if (o.noUsagePaths) {
@@ -1030,4 +1051,120 @@ export function renderOverview(raw: Overview, opts: { greedyUpgrade?: boolean } 
   }
   out.push(dim(`engine: ${o.engine.label}`), "");
   return out.join("\n");
+}
+
+/**
+ * `bumpii notes`: the newest releases with their full text, or the page when
+ * the forge had nothing to read. Every field is of remote origin or names
+ * something that is, so every one goes through `safe` — the notes above all,
+ * which no other report prints and `safeRelease` therefore never scrubbed.
+ */
+export function renderNotes(raw: NotesResult): string {
+  const s = (v: string | null) => (v === null ? null : safe(v));
+  const r: NotesResult = {
+    ...raw,
+    name: safe(raw.name),
+    source: s(raw.source),
+    page: s(raw.page),
+    none: s(raw.none),
+    channel: s(raw.channel),
+    releases: raw.releases.map((x) => ({ ...safeRelease(x), notes: safe(x.notes) })),
+    releasesError: s(raw.releasesError),
+    pageText: s(raw.pageText),
+    pageError: s(raw.pageError),
+  };
+  const out: string[] = [""];
+  out.push(`${bold(r.name)}${r.source ? `  ${dim(r.source)}` : ""}`, "");
+
+  if (r.releasesError) out.push(`${red("could not read its releases")}: ${r.releasesError}`, "");
+  else if (r.source && r.releases.length === 0) {
+    out.push(
+      yellow(
+        r.branch
+          ? `no ${r.branch} release among the newest the forge returned`
+          : "the forge lists no stable release among its newest",
+      ),
+      "",
+    );
+  }
+  if (r.channel && r.releases.length > 0) {
+    out.push(
+      yellow(`installed from @${r.channel} — these are its stable releases; prereleases are not read`),
+      "",
+    );
+  }
+  for (const rel of r.releases) {
+    const date = rel.publishedAt ? `  ${dim(rel.publishedAt.slice(0, 10))}` : "";
+    out.push(`${bold(rel.tag)}${date}  ${dim(link(rel.url, rel.url))}`);
+    out.push(rel.notes ? rel.notes : yellow(`${rel.tag} published no notes`), "");
+  }
+
+  if (r.page) {
+    if (r.pageUnfilled) {
+      out.push(
+        `${dim("release notes page:")} ${r.page}`,
+        yellow("  version unknown — link not filled, page not read"),
+        "",
+      );
+    } else {
+      out.push(`${dim("release notes page:")} ${dim(link(r.page, r.page))}`);
+      if (r.pageText !== null) {
+        out.push(
+          dim(`text extracted from that page${r.pageTruncated ? " (cut at 2 MiB)" : ""}:`),
+          "",
+          r.pageText,
+        );
+      } else if (r.pageError !== null) {
+        out.push(`${red("could not read the page")}: ${r.pageError}`);
+      }
+      out.push("");
+    }
+  }
+
+  if (!r.source && !r.page) {
+    out.push(
+      r.none
+        ? `${yellow("no release notes published")}: ${r.none}`
+        : `${yellow("no release source or page known")} ${dim(`— bumpii set ${r.name} page <url>`)}`,
+      "",
+    );
+  }
+  return `${out.join("\n")}\n`;
+}
+
+/**
+ * `bumpii scan --unmapped`: what is mapped as a count, everything else by
+ * name, each state under its own heading — a forge that could not be read is
+ * never counted as mapped.
+ */
+export function renderCoverage(raw: CoverageRow[]): string {
+  const rows = raw.map((r) => ({ ...r, name: safe(r.name), detail: safe(r.detail) }));
+  const of = (st: CoverageRow["state"]) => rows.filter((r) => r.state === st);
+  const out: string[] = [""];
+  const mapped = of("mapped").length;
+  out.push(
+    `${green(`${mapped} of ${rows.length}`)} installed packages and tracked tools have release notes to read`,
+    "",
+  );
+  const block = (title: string, list: typeof rows, hint?: string) => {
+    if (list.length === 0) return;
+    out.push(bold(`${title} (${list.length})`));
+    const width = Math.max(...list.map((r) => r.name.length));
+    for (const r of list) out.push(`  ${r.name.padEnd(width)}  ${dim(r.detail)}`.trimEnd());
+    if (hint) out.push(dim(`  ${hint}`));
+    out.push("");
+  };
+  block(
+    "unmapped",
+    of("unmapped"),
+    "bumpii set <name> page <url>   or   bumpii set <name> source gitlab:group/project",
+  );
+  block(
+    "source, but no release notes",
+    of("no-notes"),
+    "a page carries them instead: bumpii set <name> page <url>",
+  );
+  block("could not check", of("unchecked"), "not counted as mapped — run again, or check the source");
+  block("acknowledged: nothing published", of("none"));
+  return `${out.join("\n")}\n`;
 }

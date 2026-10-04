@@ -55,6 +55,11 @@ export interface OverviewEntry {
   /** How many of your files name it. Zero is what puts an entry in "no-signal". */
   refs: number;
   source: string | null;
+  /**
+   * A release-notes page from tools.json's `packages`, `{version}` filled with
+   * the pending version. What the report links when there is no forge to read.
+   */
+  page?: string | null;
   /** The command that would upgrade it. */
   update: string;
   bucket: Bucket;
@@ -126,6 +131,14 @@ export interface Overview {
    */
   selfUpdating?: OutdatedPackage[];
   engine: Engine;
+  /**
+   * Installed packages with no source, page or acknowledged `none` — set by
+   * the caller, which asks brew for the whole installed list. `undefined`
+   * when not counted (a filtered run); `unmappedError` when brew could not
+   * be asked, which is not the same as zero.
+   */
+  unmapped?: number;
+  unmappedError?: string;
 }
 
 /**
@@ -354,7 +367,8 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
       const count = refsFor(pkg);
       // A tracked entry's own source wins: it may have been corrected by hand
       // precisely because brew's URLs point somewhere unhelpful.
-      const source = tool?.source || sources[pkg.name] || null;
+      const mapping = config.packages?.[pkg.name];
+      const source = tool?.source || mapping?.source || sources[pkg.name] || null;
       const base: OverviewEntry = {
         name: pkg.name,
         installed: pkg.installed,
@@ -364,6 +378,7 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
         tracked: Boolean(tool),
         refs: count,
         source,
+        page: mapping?.page?.replaceAll("{version}", pkg.latest) ?? null,
         update: tool?.update ?? `brew upgrade ${pkg.kind === "cask" ? "--cask " : ""}${pkg.name}`,
         bucket: "no-signal",
         behind: [],
