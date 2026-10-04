@@ -9,9 +9,10 @@
 // yours names gets a version and a link and nothing more, because there is no
 // usage to judge a release note against, and running a model over it would
 // produce an opinion rather than a verdict.
-import { formulaOf } from "./config.ts";
+import { formulaOf, namesOf } from "./config.ts";
 import { digest, type Engine } from "./judge.ts";
 import { limiter } from "./limit.ts";
+import { fillPage, pageVersion } from "./notes.ts";
 import {
   brewInstalledVersions,
   brewOutdated,
@@ -60,6 +61,8 @@ export interface OverviewEntry {
    * the pending version. What the report links when there is no forge to read.
    */
   page?: string | null;
+  /** `page` is still the template: it needs a version brew did not report. */
+  pageUnfilled?: boolean;
   /** The command that would upgrade it. */
   update: string;
   bucket: Bucket;
@@ -141,22 +144,9 @@ export interface Overview {
   unmappedError?: string;
 }
 
-/**
- * Every name a tracked tool answers to, for matching against brew's output and
- * for counting references. The formula is what brew reports, rather than the
- * binary the entry is keyed on (forgejo-cli ships `fj`).
- *
- * Both uses need all of them. brew reports `forgejo-cli`; every script calls
- * `fj`. Counting references under brew's name alone measured the wrong string —
- * 1 file instead of 19 on one real machine — and a zero there does not merely
- * mis-rank the entry, it prints "no file in your usagePaths names these" about
- * a tool named in nineteen of them.
- */
-export function namesOf(tool: ToolConfig): string[] {
-  const formula = formulaOf(tool.update);
-  const short = (s: string) => s.split("/").pop() ?? s;
-  return [...new Set([tool.name, ...(formula ? [formula, short(formula)] : [])])];
-}
+// namesOf lives in config.ts, beside formulaOf, so notes.ts can use it without
+// importing this module back — overview.ts reads fillPage from notes.ts.
+export { namesOf } from "./config.ts";
 
 /**
  * The --only list, widened to every alias of each tool it names. Exported for
@@ -291,6 +281,10 @@ export interface OverviewOptions {
   progress?: Progress;
 }
 
+function pageFields(f: { page: string; unfilled: boolean }): { page: string; pageUnfilled?: boolean } {
+  return f.unfilled ? { page: f.page, pageUnfilled: true } : { page: f.page };
+}
+
 export async function buildOverview(config: Config, opts: OverviewOptions): Promise<Overview> {
   const progress = opts.progress;
   // On a machine with a few hundred formulae this alone is several seconds of
@@ -378,7 +372,9 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
         tracked: Boolean(tool),
         refs: count,
         source,
-        page: mapping?.page?.replaceAll("{version}", pkg.latest) ?? null,
+        // The same filling `notes` uses: a cask's `,build` suffix is no part
+        // of any page's name, and "latest" is no version.
+        ...(mapping?.page ? pageFields(fillPage(mapping.page, pageVersion(pkg.latest))) : { page: null }),
         update: tool?.update ?? `brew upgrade ${pkg.kind === "cask" ? "--cask " : ""}${pkg.name}`,
         bucket: "no-signal",
         behind: [],

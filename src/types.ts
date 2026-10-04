@@ -70,6 +70,11 @@ export interface Release {
   publishedAt: string | null;
   notes: string;
   url: string;
+  /**
+   * Set only where prereleases were asked for (`notes` on an `@preview`
+   * package); everywhere else prereleases are dropped before this exists.
+   */
+  prerelease?: boolean;
 }
 
 /**

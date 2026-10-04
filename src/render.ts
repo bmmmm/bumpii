@@ -717,6 +717,12 @@ function renderEntry(e: OverviewEntry, ctx: OverviewCtx, prefix: string, cont: s
   if (e.compare) body(dim(link(e.compare, e.compare)));
 
   if (e.bucket === "no-repo") {
+    if (e.page && e.pageUnfilled) {
+      // A link built anyway would carry a literal {version} and 404.
+      body(dim("no forge to read — its release notes page needs {version}, and brew reported none:"));
+      body(dim(e.page));
+      return;
+    }
     if (e.page) {
       // Mapped by hand to a page, not a forge: nothing was read or judged, and
       // the link is where the notes are.
@@ -940,7 +946,7 @@ export function renderOverview(raw: Overview, opts: { greedyUpgrade?: boolean } 
       );
       // Untracked and unreferenced, so no releases were fetched and no tags
       // are known — the repo itself is the only link that is certainly real.
-      const repo = (e.source && releasesPage(e.source)) || e.page;
+      const repo = (e.source && releasesPage(e.source)) || (e.pageUnfilled ? null : e.page);
       if (repo) out.push(`    ${dim(link(repo, repo))}`);
     }
     out.push("");
@@ -991,7 +997,7 @@ export function renderOverview(raw: Overview, opts: { greedyUpgrade?: boolean } 
   // A measured zero says nothing; an uncounted run says it could not count.
   if (o.unmapped !== undefined && o.unmapped > 0) {
     out.push(
-      `${yellow(`${o.unmapped} installed package${o.unmapped === 1 ? " has" : "s have"} no release source or page`)} ${dim("— bumpii scan --unmapped")}`,
+      `${yellow(`${o.unmapped} installed package${o.unmapped === 1 ? " or tracked tool has" : "s or tracked tools have"} no release source or page`)} ${dim("— bumpii scan --unmapped")}`,
       "",
     );
   } else if (o.unmappedError !== undefined) {
@@ -1082,20 +1088,17 @@ export function renderNotes(raw: NotesResult): string {
       yellow(
         r.branch
           ? `no ${r.branch} release among the newest the forge returned`
-          : "the forge lists no stable release among its newest",
+          : r.channel
+            ? "the forge lists no release among its newest"
+            : "the forge lists no stable release among its newest",
       ),
-      "",
-    );
-  }
-  if (r.channel && r.releases.length > 0) {
-    out.push(
-      yellow(`installed from @${r.channel} — these are its stable releases; prereleases are not read`),
       "",
     );
   }
   for (const rel of r.releases) {
     const date = rel.publishedAt ? `  ${dim(rel.publishedAt.slice(0, 10))}` : "";
-    out.push(`${bold(rel.tag)}${date}  ${dim(link(rel.url, rel.url))}`);
+    const pre = rel.prerelease ? `  ${yellow("prerelease")}` : "";
+    out.push(`${bold(rel.tag)}${pre}${date}  ${dim(link(rel.url, rel.url))}`);
     out.push(rel.notes ? rel.notes : yellow(`${rel.tag} published no notes`), "");
   }
 
@@ -1110,10 +1113,17 @@ export function renderNotes(raw: NotesResult): string {
       out.push(`${dim("release notes page:")} ${dim(link(r.page, r.page))}`);
       if (r.pageText !== null) {
         out.push(
-          dim(`text extracted from that page${r.pageTruncated ? " (cut at 2 MiB)" : ""}:`),
+          dim(
+            `text extracted from that page${r.pageTruncated ? " (cut at 2 MiB)" : ""}${scopeNote(r.pageScope, r.pageTruncated)}:`,
+          ),
           "",
           r.pageText,
         );
+        // Above the section as well as below it: a section at lines 40–60 of
+        // 100 hides 79, not 40.
+        const hidden =
+          r.pageScope?.kind === "section" ? r.pageScope.total - (r.pageScope.to - r.pageScope.from + 1) : 0;
+        if (hidden > 0) out.push("", dim(`${hidden} more lines on the page — --full for all of it`));
       } else if (r.pageError !== null) {
         out.push(`${red("could not read the page")}: ${r.pageError}`);
       }
@@ -1121,15 +1131,34 @@ export function renderNotes(raw: NotesResult): string {
     }
   }
 
-  if (!r.source && !r.page) {
-    out.push(
-      r.none
-        ? `${yellow("no release notes published")}: ${r.none}`
-        : `${yellow("no release source or page known")} ${dim(`— bumpii set ${r.name} page <url>`)}`,
-      "",
-    );
+  // The reason a `none` gives is the answer whenever nothing had text — also
+  // beside a source brew derives that only tags, which is the usual way one
+  // gets set. Shown only without notes: with them it would contradict itself.
+  const shown = r.releases.some((x) => x.notes) || r.pageText !== null;
+  if (r.none && !shown) out.push(`${yellow("no release notes published")}: ${r.none}`, "");
+  else if (!r.source && !r.page && !r.none) {
+    out.push(`${yellow("no release source or page known")} ${dim(`— bumpii set ${r.name} page <url>`)}`, "");
   }
   return `${out.join("\n")}\n`;
+}
+
+/** What part of the page is printed, said in the line above it. */
+function scopeNote(scope: NotesResult["pageScope"], truncated: boolean): string {
+  if (!scope) return "";
+  if (scope.kind === "section") {
+    const lines = `lines ${scope.from}–${scope.to} of ${scope.total}`;
+    // Matched on a shorter version than brew's: the page never names that
+    // one, and the reader has to know.
+    return scope.matched === scope.installed
+      ? ` — the section for ${scope.matched}, ${lines}`
+      : ` — the section for ${scope.matched}, ${lines} (${scope.installed} itself is not named on it)`;
+  }
+  // Brew's newest version, which an outdated install is not; and on a page cut
+  // at the cap, only the bytes read were searched.
+  if (scope.reason === "not-found")
+    return ` — brew's newest version is not named in ${truncated ? "the part read" : "it"}, so all ${scope.total} lines`;
+  if (scope.reason === "no-version") return ` — no version known to cut it to, so all ${scope.total} lines`;
+  return "";
 }
 
 /**

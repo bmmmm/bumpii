@@ -29,8 +29,8 @@ import { buildInbox, markThreadsRead, shownThreads } from "./inbox.ts";
 import { digest, type Engine, resolveEngine } from "./judge.ts";
 import { limiter } from "./limit.ts";
 import {
+  answered,
   coverage,
-  hasNotes,
   type InstalledPackage,
   installedPackages,
   mappingKey,
@@ -111,6 +111,8 @@ Options:
   --unref             with scan: leaves nothing in usagePaths mentions
   --unmapped          with scan: packages with no source or page for notes
   --last <n>          with notes: how many releases to show (default 1)
+  --full              with notes: the whole page, not the section of the
+                      newest version
   --since <14d|3w>    with scan --new: how far back to look (default 14d)
   --deps              with scan --new: list dependencies too, not just requests
   --source <s>        with add: set the repo yourself, for one tool at a time
@@ -153,6 +155,8 @@ interface Args {
   unmapped: boolean;
   /** With `notes`: how many of the newest releases to show. */
   last: number;
+  /** With `notes`: the whole page, not the section of the installed version. */
+  full: boolean;
   /** With `scan --new`: how far back "recently" reaches, in days. */
   sinceDays: number;
   /** With `scan --new`: list the dependencies too, not only what you asked for. */
@@ -234,6 +238,7 @@ export function parseArgs(argv: string[]): Args {
     unreferenced: false,
     unmapped: false,
     last: 1,
+    full: false,
     sinceDays: SINCE_DEFAULT,
     deps: false,
     markRead: false,
@@ -284,6 +289,7 @@ export function parseArgs(argv: string[]): Args {
     else if (v === "--new") a.onlyNew = true;
     else if (v === "--unref") a.unreferenced = true;
     else if (v === "--unmapped") a.unmapped = true;
+    else if (v === "--full") a.full = true;
     else if (v === "--last") {
       const raw = takeValue(argv, ++i, v);
       a.last = Number(raw);
@@ -1266,13 +1272,13 @@ async function dispatch(progress: Progress): Promise<number> {
     }
     const target = resolveTarget(name, config, installed, brewError);
     progress.phase("fetch");
-    const result = await readNotes(target, args.last);
+    const result = await readNotes(target, { last: args.last, full: args.full });
     progress.pause();
     process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : renderNotes(result));
     // 2, never 1: 1 means "updates pending" everywhere else, and this command
-    // does not ask that question. 2 when nothing readable came back, whatever
-    // the reason — the states above say which.
-    return hasNotes(result) ? 0 : 2;
+    // does not ask that question. 2 when the question went unanswered — an
+    // acknowledged `none` is an answer; a forge or page that failed is not.
+    return answered(result) ? 0 : 2;
   }
 
   if (args.cmd === "overview") {
@@ -1303,20 +1309,23 @@ async function dispatch(progress: Progress): Promise<number> {
     progress.phase("engine");
     const engine = await engineFor(args);
     progress.set({ engine: engine.kind });
+    // The whole machine's coverage, so not for a run --only narrowed. Asked
+    // alongside the build rather than after it: it is a second of brew that
+    // nothing in the build waits on.
+    const coverageCount =
+      args.only.length === 0
+        ? installedPackages().then(
+            (installed) => ({ unmapped: unmappedCount(config, installed) }),
+            (err: Error) => ({ unmappedError: err.message }),
+          )
+        : Promise.resolve({});
     const overview = await buildOverview(config, {
       engine,
       only: args.only,
       concurrency: JUDGE_CONCURRENCY,
       progress,
     });
-    // The whole machine's coverage, so not for a run --only narrowed.
-    if (args.only.length === 0) {
-      try {
-        overview.unmapped = unmappedCount(config, await installedPackages());
-      } catch (err) {
-        overview.unmappedError = (err as Error).message;
-      }
-    }
+    Object.assign(overview, await coverageCount);
     progress.pause();
     // A typo in --only must not read as "nothing is outdated". Checked after
     // the build rather than against the config, because overview ranges over

@@ -171,9 +171,14 @@ export async function authHeaders(ref: ForgeRef): Promise<Record<string, string>
     if (t) h.authorization = `Bearer ${t}`;
   } else if (ref.kind === "gitlab") {
     // gitlab.com's token goes to gitlab.com and nowhere else; a self-hosted
-    // instance is a different account on a different host.
-    const t = apiHost(ref) === "gitlab.com" ? process.env.GITLAB_TOKEN : undefined;
-    if (t) h["private-token"] = t;
+    // instance is a different account on a different host. Over https only —
+    // `gitlab:http://gitlab.com/…` parses, and would send it in clear text.
+    // `authorization`, not GitLab's own `private-token`: fetch strips the
+    // standard header on a cross-origin redirect and keeps a custom one
+    // (measured on Node 26), so the old header followed a redirect anywhere.
+    const t =
+      apiHost(ref) === "gitlab.com" && ref.api.startsWith("https://") ? process.env.GITLAB_TOKEN : undefined;
+    if (t) h.authorization = `Bearer ${t}`;
   } else if (apiHost(ref) === "codeberg.org") {
     const t = process.env.CODEBERG_TOKEN;
     if (t) h.authorization = `token ${t}`;
@@ -211,8 +216,7 @@ async function rateLimitMessage(res: Response, ref: ForgeRef): Promise<string | 
   // What to do about it depends on whether the request was authenticated at
   // all, so the answer comes from the headers that were actually sent — which
   // on the github branch may be gh's token rather than anything the user set.
-  const sent = await authHeaders(ref);
-  const authed = Boolean(sent.authorization || sent["private-token"]);
+  const authed = Boolean((await authHeaders(ref)).authorization);
   const fix =
     ref.kind === "github"
       ? `set ${envVar}, or run 'gh auth login' — bumpii uses gh's token when it finds one (anonymous callers get 60 requests/hour)`
@@ -326,6 +330,7 @@ interface RawRelease {
 
 function toRelease(r: RawRelease, ref: ForgeRef): Release {
   const tag = r.tag_name ?? r.name ?? "";
+  const pre = r.prerelease ? { prerelease: true } : {};
   if (ref.kind === "gitlab") {
     return {
       tag,
@@ -333,6 +338,7 @@ function toRelease(r: RawRelease, ref: ForgeRef): Release {
       publishedAt: r.released_at ?? null,
       notes: (r.description ?? "").trim(),
       url: r._links?.self ?? `${ref.api.replace(/\/api\/v4$/, "")}/${ref.repo}/-/releases`,
+      ...pre,
     };
   }
   return {
@@ -341,6 +347,7 @@ function toRelease(r: RawRelease, ref: ForgeRef): Release {
     publishedAt: r.published_at ?? null,
     notes: (r.body ?? "").trim(),
     url: r.html_url ?? r.url ?? `${ref.api}/repos/${ref.repo}/releases`,
+    ...pre,
   };
 }
 
@@ -562,10 +569,15 @@ export interface ReleaseList {
  * Newest-first list of published releases. Drafts and prereleases are dropped:
  * a prerelease is not something `brew upgrade` would ever hand you, so showing
  * its notes would describe changes you cannot get. GitLab's equivalent is a
- * release dated in the future (`upcoming_release`).
+ * release dated in the future (`upcoming_release`). `prereleases` keeps them,
+ * marked, for a package installed from a prerelease channel — the one case
+ * where brew does hand you one.
  */
-export async function listReleases(ref: ForgeRef, opts: { limit?: number } = {}): Promise<ReleaseList> {
-  const { limit = 30 } = opts;
+export async function listReleases(
+  ref: ForgeRef,
+  opts: { limit?: number; prereleases?: boolean } = {},
+): Promise<ReleaseList> {
+  const { limit = 30, prereleases = false } = opts;
   const url =
     ref.kind === "github"
       ? `${ref.api}/repos/${ref.repo}/releases?per_page=${limit}`
@@ -583,7 +595,7 @@ export async function listReleases(ref: ForgeRef, opts: { limit?: number } = {})
     // means the forge had more to give.
     capped: raw.length >= limit,
     releases: raw
-      .filter((r) => !r.draft && !r.prerelease && !r.upcoming_release)
+      .filter((r) => !r.draft && (prereleases || !r.prerelease) && !r.upcoming_release)
       .map((r) => toRelease(r, ref)),
   };
 }

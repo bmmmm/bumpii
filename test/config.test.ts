@@ -121,10 +121,10 @@ test("a channel must be a tag name, and must have a repo to live in", async () =
   const orphan = await configFile({ tools: [{ ...gh, source: "", channel: "tip" }] });
   await assert.rejects(loadConfig(orphan), /channel needs a source/);
 
-  // GitLab has no compare endpoint in the shape a channel reads, so the entry
-  // is refused at load instead of failing every run as a misspelled tag.
+  // A channel on GitLab is refused per tool, by channelStatus, on the run —
+  // not by refusing the whole config and every other entry with it.
   const gitlab = await configFile({ tools: [{ ...gh, source: "gitlab:o/r", channel: "tip" }] });
-  await assert.rejects(loadConfig(gitlab), /channel needs a GitHub or Forgejo source/);
+  assert.equal((await loadConfig(gitlab)).tools[0]?.channel, "tip");
 });
 
 test("a packages mapping is checked at load, each field for what it claims to be", async () => {

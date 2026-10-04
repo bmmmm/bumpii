@@ -2761,3 +2761,51 @@ test("overview reads a package's mapped source instead of calling it unrepo'd", 
   assert.match(r.stdout, /pkgapp 1\.0\.0 → 2\.0\.0/);
   assert.match(r.stdout, /example\.invalid\/v2\.0\.0/);
 });
+
+test("notes on an acknowledged none answers with the reason and exits 0", async () => {
+  const home = await freshHome();
+  await writeDoc(home, { packages: { closedapp: { none: "publishes no changelog anywhere" } } });
+  const r = await runCli(["notes", "closedapp"], home, { PATH: await brewWithCasks("closedapp") });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /no release notes published: publishes no changelog anywhere/);
+});
+
+test("notes cuts a long page to the installed version, and --full shows all of it", async (t) => {
+  const page = await stubPage("== 3.2.1 ==\nfixed\n\n== 3.2.0 ==\nolder\n", 200, "text/plain");
+  if (!page) return t.skip(SKIP);
+  const home = await freshHome();
+  await writeDoc(home, { packages: { pageapp: { page: `${page}/NEWS` } } });
+  const PATH = await brewWithCasks("pageapp");
+  const cut = await runCli(["notes", "pageapp"], home, { PATH });
+  assert.equal(cut.code, 0, cut.stderr);
+  assert.match(cut.stdout, /the section for 3\.2\.1, lines 1–2 of 5/);
+  assert.doesNotMatch(cut.stdout, /older/);
+  const full = await runCli(["notes", "pageapp", "--full"], home, { PATH });
+  assert.match(full.stdout, /^older$/m);
+});
+
+test("overview fills a page's {version} without a cask's build suffix", async () => {
+  const home = await freshHome();
+  const usage = await mkdtemp(join(tmpdir(), "bumpii-usage-"));
+  await writeFile(join(usage, "x.sh"), "pageapp --flag\n");
+  await writeDoc(home, {
+    usagePaths: [usage],
+    packages: { pageapp: { page: "https://example.invalid/rel-{version}.html" } },
+  });
+  const PATH = await stubBrewOutdated({ name: "pageapp", installed: "1.0.0", latest: "2.0.0,b7" });
+  const r = await runCli(["overview"], home, { PATH });
+  assert.match(r.stdout, /https:\/\/example\.invalid\/rel-2\.0\.0\.html/);
+  assert.doesNotMatch(r.stdout, /rel-2\.0\.0,b7/);
+});
+
+test("overview names how many installed packages have no release notes mapped", async () => {
+  // brew's info for this package names no URL, so nothing maps it.
+  const home = await freshHome();
+  await writeDoc(home, {});
+  const PATH = await stubBrewOutdated({ name: "orphanapp", installed: "1.0.0", latest: "2.0.0" });
+  const r = await runCli(["overview"], home, { PATH });
+  assert.match(r.stdout, /1 installed package or tracked tool has no release source or page/);
+  // --only narrows the run, so it says nothing about the whole machine.
+  const only = await runCli(["overview", "--only", "orphanapp"], home, { PATH });
+  assert.doesNotMatch(only.stdout, /no release source or page/);
+});

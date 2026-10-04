@@ -554,6 +554,19 @@ test("a no-repo package mapped to a page links the page instead of asking for a 
   assert.doesNotMatch(text, /no forge repo in its brew URLs|--source github:owner/);
 });
 
+test("a page that still needs {version} is named as such, never linked with the placeholder in it", () => {
+  const page = "https://netscope.example.org/relnotes/netscope-{version}.html";
+  const text = renderOverview(
+    overview({
+      entries: [
+        entry({ name: "netscope-app", kind: "cask", refs: 3, bucket: "no-repo", page, pageUnfilled: true }),
+      ],
+    }),
+  );
+  assert.match(text, /needs \{version\}, and brew reported none:\n.*netscope-\{version\}\.html/);
+  assert.doesNotMatch(text, /its release notes are on this page/);
+});
+
 test("an unreferenced package links its releases in the forge's own shape, or its page", () => {
   const text = renderOverview(
     overview({
@@ -571,9 +584,12 @@ test("an unreferenced package links its releases in the forge's own shape, or it
 test("the coverage hint names a gap, stays silent on a measured zero, and says when it could not count", () => {
   assert.match(
     renderOverview(overview({ unmapped: 3 })),
-    /3 installed packages have no release source or page/,
+    /3 installed packages or tracked tools have no release source or page/,
   );
-  assert.match(renderOverview(overview({ unmapped: 1 })), /1 installed package has no release source/);
+  assert.match(
+    renderOverview(overview({ unmapped: 1 })),
+    /1 installed package or tracked tool has no release source/,
+  );
   assert.doesNotMatch(renderOverview(overview({ unmapped: 0 })), /release source or page|coverage/);
   assert.doesNotMatch(renderOverview(overview({})), /release source or page|coverage/);
   const failed = renderOverview(overview({ unmappedError: "brew info --installed failed: boom" }));

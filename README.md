@@ -332,7 +332,8 @@ v3.1.0  2026-05-12  https://github.com/owner/some-tool/releases/tag/v3.1.0
 …
 ```
 
-The name can be a tracked tool or any installed formula or cask, and the
+The name can be a tracked tool or any installed formula or cask — a
+dependency included — and the
 notes come from the first of these that has an answer: the tool's `source`,
 a hand-set mapping in `tools.json`'s `packages`, or whatever forge brew's own
 URLs name. A typo is not guessed at — `bumpii notes some-ap` answers
@@ -356,8 +357,22 @@ Some App 2.4.1 Release Notes
 reduced to text when the forge had nothing to read — no source, an error, or
 releases without text — and its link is printed either way. Each of those
 states is said, never folded into an empty answer: `published no notes`,
-`could not read its releases`, `could not read the page`. The exit code is 0
-when there was something to read and 2 when there was not.
+`could not read its releases`, `could not read the page`.
+
+A page that holds the whole history (a `NEWS` file, a changelog) is cut to the
+section of the version brew has: from the first line naming it to the next
+line that starts an entry the same way. The line above the text says which
+lines of how many those are; `--full` prints all of it. A page that never
+names the installed version is printed whole, and says so. Pages read are
+capped at 2 MiB, and one that is not text (a PDF) is refused rather than
+printed.
+
+A package brew installs from a prerelease line — a non-numeric `@` suffix,
+`some-app@preview`, `some-app@nightly` — has its prereleases read too, each
+marked `prerelease`; everywhere else prereleases are skipped.
+
+The exit code is 0 when the question was answered — notes shown, or a
+`none` saying the project publishes nothing — and 2 when it was not.
 
 `bumpii scan --unmapped` checks that every formula you installed on request,
 every cask and every tracked tool has somewhere to read its notes. A page
@@ -366,8 +381,10 @@ text, because a repo that only tags is a source with nothing
 behind it. A forge that cannot be reached is listed as `could not check`,
 never as mapped. Software that publishes no notes anywhere gets
 `bumpii set <name> none "<why>"`, which moves it from the gaps to an
-acknowledged list. `bumpii overview` counts the gaps in one line, without
-asking any forge.
+acknowledged list. A page needing `{version}` when brew reports none counts as
+a gap. Dependencies are left out: `notes` answers for them, but nobody has to
+map them. `bumpii overview` counts the same gaps in one line, without asking
+any forge.
 
 ## Adding tools
 

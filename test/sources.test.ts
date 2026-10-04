@@ -178,8 +178,12 @@ test("a GitLab token goes to gitlab.com only, and no other forge's token goes to
         stub.restore();
       }
     };
-    assert.match(await sentTo("gitlab:o/r"), /"private-token":"gl-token-value"/);
+    // `authorization`, which fetch strips on a cross-origin redirect; GitLab's
+    // own `private-token` header survived one.
+    assert.match(await sentTo("gitlab:o/r"), /"authorization":"Bearer gl-token-value"/);
+    assert.doesNotMatch(await sentTo("gitlab:o/r"), /private-token/);
     for (const source of [
+      "gitlab:http://gitlab.com/o/r",
       "https://gitlab.com.evil.tld/o/r",
       "https://gitlab.example.org/o/r",
       "gitlab:https://x.org/o/r",

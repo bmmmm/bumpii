@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseSource } from "./sources.ts";
-import type { Config, PackageMapping } from "./types.ts";
+import type { Config, PackageMapping, ToolConfig } from "./types.ts";
 
 export function configPath(): string {
   // `||`, never `??`: an exported-but-empty XDG_CONFIG_HOME is not a value, and
@@ -36,6 +36,23 @@ export function formulaOf(update: string): string | null {
   const m = /brew\s+(?:upgrade|install)\s+(.+)/.exec(update);
   const formula = m?.[1]?.split(/\s+/).find((w) => w && !w.startsWith("-"));
   return formula ?? null;
+}
+
+/**
+ * Every name a tracked tool answers to, for matching against brew's output and
+ * for counting references. The formula is what brew reports, rather than the
+ * binary the entry is keyed on (forgejo-cli ships `fj`).
+ *
+ * Both uses need all of them. brew reports `forgejo-cli`; every script calls
+ * `fj`. Counting references under brew's name alone measured the wrong string —
+ * 1 file instead of 19 on one real machine — and a zero there does not merely
+ * mis-rank the entry, it prints "no file in your usagePaths names these" about
+ * a tool named in nineteen of them.
+ */
+export function namesOf(tool: ToolConfig): string[] {
+  const formula = formulaOf(tool.update);
+  const short = (s: string) => s.split("/").pop() ?? s;
+  return [...new Set([tool.name, ...(formula ? [formula, short(formula)] : [])])];
 }
 
 /**
@@ -123,16 +140,6 @@ function validate(cfg: unknown): Config {
       // resolve it against, and the entry would sit there watching nothing.
       if (!t.source) {
         throw new Error(`config: tools[${i}].channel needs a source — the tag lives in that repo`);
-      }
-      // GitLab has no compare endpoint in the shape a channel reads.
-      let kind: string | null = null;
-      try {
-        kind = parseSource(t.source).kind;
-      } catch {
-        // An unparseable source is reported on the run, per tool, as before.
-      }
-      if (kind === "gitlab") {
-        throw new Error(`config: tools[${i}].channel needs a GitHub or Forgejo source, not GitLab`);
       }
     }
     if (!Array.isArray(t.version?.cmd) || t.version.cmd.length === 0) {
