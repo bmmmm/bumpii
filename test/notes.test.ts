@@ -469,6 +469,15 @@ test("versionSection stays fast on a page made of hits that never close", () => 
   const t0 = performance.now();
   versionSection([...hits, ...dense].join("\n"), "3.2.1");
   assert.ok(performance.now() - t0 < 1000, `took ${Math.round(performance.now() - t0)} ms`);
+  // A page of identical headings of the version: each line's heading is
+  // judged once, not once per hit.
+  const same = Array.from({ length: 70_000 }, (_, i) => `## [3.2.1](https://x/compare/v3.2.0...v3.2.1) ${i}`);
+  const t1 = performance.now();
+  versionSection(same.join("\n"), "3.2.1");
+  assert.ok(
+    performance.now() - t1 < 1000,
+    `identical headings took ${Math.round(performance.now() - t1)} ms`,
+  );
 });
 
 test("a heading names its version first: a compare link naming the previous one is not its section", () => {
@@ -515,6 +524,71 @@ test("a mention of the version in the next heading ends the section; dates and d
     "  * older",
   ].join("\n");
   assert.equal(versionSection(dottedName, "5.4.6")?.to, 5);
+});
+
+test("tag-prefixed links, inline ranges and from→to headings are references; a bare path heading is not", () => {
+  const entries = (h2: string, h1: string, h0: string) =>
+    [h2, "- newer", "", h1, "- the installed one", "", h0, "- old"].join("\n");
+  // Monorepo compare links carry the package in the tag.
+  const monorepo = entries(
+    "## [1.0.2](https://x.example/compare/pkg-v1.0.1...pkg-v1.0.2)",
+    "## [1.0.1](https://x.example/compare/pkg-v1.0.0...pkg-v1.0.1)",
+    "## [1.0.0](https://x.example/compare/pkg-v0.9.0...pkg-v1.0.0)",
+  );
+  assert.equal(versionSection(monorepo, "1.0.1")?.from, 4);
+  const at = entries(
+    "## 1.0.2 (https://x.example/compare/pkg@1.0.1...pkg@1.0.2)",
+    "## 1.0.1 (https://x.example/compare/pkg@1.0.0...pkg@1.0.1)",
+    "## 1.0.0",
+  );
+  assert.equal(versionSection(at, "1.0.1")?.from, 4);
+  const inline = entries("## 1.0.2 (v1.0.1..v1.0.2)", "## 1.0.1 (v1.0.0..v1.0.1)", "## 1.0.0");
+  assert.equal(versionSection(inline, "1.0.1")?.text, "## 1.0.1 (v1.0.0..v1.0.1)\n- the installed one");
+  // A from→to heading is the later release's entry.
+  const between = entries(
+    "### Changes between 3.0.15 and 3.0.16 [1 Jan 2026]",
+    "### Changes between 3.0.14 and 3.0.15 [1 Oct 2025]",
+    "### Changes between 3.0.13 and 3.0.14 [1 Jul 2025]",
+  );
+  assert.equal(versionSection(between, "3.0.15")?.from, 4);
+  assert.equal(versionSection(between, "3.0.15")?.to, 5);
+  assert.equal(versionSection(between, "3.0.16")?.from, 1);
+  // A link with no range in it is a reference too.
+  const linked = entries(
+    "## 1.0.2 (previous: https://x.example/releases/tag/v1.0.1)",
+    "## 1.0.1 (previous: https://x.example/releases/tag/v1.0.0)",
+    "## 1.0.0",
+  );
+  assert.equal(versionSection(linked, "1.0.1")?.from, 4);
+  // A range heading is the entry of the release it runs to.
+  const ranges = entries("## v1.0.1..v1.0.2", "## v1.0.0..v1.0.1", "## v0.9.0..v1.0.0");
+  assert.equal(versionSection(ranges, "1.0.1")?.text, "## v1.0.0..v1.0.1\n- the installed one");
+  // The same with the product named on both sides, and with an arrow.
+  const named = entries(
+    "## Changes between Tool 3.0.15 and Tool 3.0.16",
+    "## Changes between Tool 3.0.14 and Tool 3.0.15",
+    "## Changes between Tool 3.0.13 and Tool 3.0.14",
+  );
+  assert.equal(versionSection(named, "3.0.15")?.from, 4);
+  const arrows = entries("## 1.0.1 → 1.0.2", "## 1.0.0 → 1.0.1", "## 0.9.0 → 1.0.0");
+  assert.equal(versionSection(arrows, "1.0.1")?.text, "## 1.0.0 → 1.0.1\n- the installed one");
+  // Two releases named together are both that entry's, not a transition.
+  const joint = ["## 3.5.1 and 3.5.2 (security)", "- both", "", "## 3.5.0", "- older"].join("\n");
+  assert.equal(versionSection(joint, "3.5.1")?.text, "## 3.5.1 and 3.5.2 (security)\n- both");
+  const batch = ["## 1.0.1 to 1.0.3", "- batch", "", "## 1.0.0", "- older"].join("\n");
+  assert.equal(versionSection(batch, "1.0.1")?.text, "## 1.0.1 to 1.0.3\n- batch");
+  // A reference earlier on the line does not hide the heading's own version.
+  const refFirst = [
+    "## (see https://x.example/v1.0.1) 1.0.1",
+    "- notes",
+    "",
+    "## (see https://x.example/v1.0.0) 1.0.0",
+    "- old",
+  ].join("\n");
+  assert.equal(versionSection(refFirst, "1.0.1")?.text, "## (see https://x.example/v1.0.1) 1.0.1\n- notes");
+  // A path without a scheme or a range is the heading itself.
+  const path = entries("## releases/1.0.2", "## releases/1.0.1", "## releases/1.0.0");
+  assert.equal(versionSection(path, "1.0.1")?.text, "## releases/1.0.1\n- the installed one");
 });
 
 test("a shorter version is only trusted with a section the page closes", () => {

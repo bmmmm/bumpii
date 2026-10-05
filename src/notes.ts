@@ -599,15 +599,28 @@ export function versionSection(
     let first: Found | null = null;
     let open: Found | null = null;
     let seen = 0;
+    // The shape in front of each line's own heading of this version, or null
+    // when it names none — once per line, however many hits look at it. Asked
+    // per hit instead, a page of identical headings cost 50 full rescans.
+    const heads = new Map<number, string | null>();
+    const headShape = (j: number): string | null => {
+      let h = heads.get(j);
+      if (h === undefined) {
+        const line = lines[j] ?? "";
+        const at = headingAt(line, own);
+        h = at === -1 ? null : blur(line.slice(0, at));
+        heads.set(j, h);
+      }
+      return h;
+    };
     for (let start = 0; start < lines.length && seen < 50; start++) {
-      const startLine = lines[start] ?? "";
-      const at = own.exec(startLine);
-      // A version inside a link or a range is a reference, not a heading —
-      // `## [1.0.2](…/compare/v1.0.1...v1.0.2)` is the 1.0.2 entry, and taking
-      // it for 1.0.1 showed the newer notes as the installed release's.
-      if (!at || isReference(startLine, at.index)) continue;
+      // A version inside a link, a range or a from→to heading is a reference,
+      // not the heading's own — `## [1.0.2](…/compare/v1.0.1...v1.0.2)` is
+      // the 1.0.2 entry, and taking it for 1.0.1 showed the newer notes as the
+      // installed release's.
+      const startShape = headShape(start);
+      if (startShape === null) continue;
       seen++;
-      const startShape = blur(startLine.slice(0, at.index));
       let end = lines.length;
       // A line shaped like the start whose heading names the same release
       // again is its next packaging revision (`pkg (1.2.3-2)`, then
@@ -615,7 +628,7 @@ export function versionSection(
       // the oldest one. Only in the heading's own place: "## 1.2.2 (backport
       // of the 1.2.3 fix)" is the next release, mentioning this one.
       for (let j = start + 1; j < lines.length; j++) {
-        if (shapes[j]?.has(startShape) && !sameHeading(lines[j] ?? "", own, startShape)) {
+        if (shapes[j]?.has(startShape) && headShape(j) !== startShape) {
           end = j;
           break;
         }
@@ -649,15 +662,47 @@ export function versionSection(
   return null;
 }
 
-/** Whether the version at `index` sits in a link path or a range (`/v1.0.1`, `...v1.0.2`). */
-function isReference(line: string, index: number): boolean {
-  return /(?:\/v?|\.\.\.?v?)$/.test(line.slice(Math.max(0, index - 4), index));
+/** Where `own` names this line's heading — its first match that is no reference — or -1. */
+function headingAt(line: string, own: RegExp): number {
+  // Most lines do not name it at all; only those pay for the global search.
+  if (!own.test(line)) return -1;
+  for (const m of line.matchAll(new RegExp(own.source, "g"))) {
+    if (!isReference(line, m.index, m[0].length)) return m.index;
+  }
+  return -1;
 }
 
-/** Whether `own` names this line's heading, in the place the start line named it. */
-function sameHeading(line: string, own: RegExp, startShape: string): boolean {
-  const at = own.exec(line);
-  return at !== null && blur(line.slice(0, at.index)) === startShape;
+/**
+ * Whether the version at `index` is a reference rather than what the line is
+ * about. Judged on the word it sits in — bounded by whitespace and by the
+ * brackets of a Markdown link, so `[1.0.1](https://…)` is a heading for 1.0.1
+ * and its URL is a word of its own:
+ * - a word with `://` in it is a link, whatever prefixes the tag carries
+ *   (`compare/pkg-v1.0.1...`, `pkg@1.0.1`);
+ * - a version a range starts from (`v1.0.1..v1.0.2`) — the end it runs to
+ *   is the entry's own release, as in a from→to heading;
+ * - a version followed by an arrow and another, or by `and`/`to` and another
+ *   after `between`/`from`, is the start of a from→to heading ("Changes
+ *   between 3.0.15 and 3.0.16"), whose entry is the later release's.
+ * A bare path (`## releases/1.2.3`) is none of these, and stays a heading.
+ */
+function isReference(line: string, index: number, length: number): boolean {
+  const stop = /[\s()[\]<>]/;
+  let from = index;
+  while (from > 0 && !stop.test(line[from - 1] ?? "")) from--;
+  let to = index + length;
+  while (to < line.length && !stop.test(line[to] ?? "")) to++;
+  const after = line.slice(index + length, to);
+  if (line.slice(from, to).includes("://")) return true;
+  if (after.startsWith("..")) return true;
+  // Arrows always mean from→to; "and"/"to" only after "between"/"from" —
+  // "## 3.5.1 and 3.5.2 (security)" names two releases, not a transition.
+  const rest = line.slice(index + length);
+  if (/^\s*(?:->|→)\s+v?\d+\.\d/.test(rest)) return true;
+  return (
+    /^\s*(?:and|to)\s+(?:\S+\s+)?v?\d+\.\d/i.test(rest) &&
+    /\b(?:between|from)\s+(?:\S+\s+)?v?$/i.test(line.slice(0, index))
+  );
 }
 
 /** A version-naming prefix with its digits blurred, so dates and numbers in it do not tell entries apart. */
