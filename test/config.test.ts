@@ -9,6 +9,7 @@ import { test } from "node:test";
 import {
   addTools,
   configPath,
+  isUnanchoredMatch,
   loadConfig,
   removeTools,
   setPackageField,
@@ -271,4 +272,29 @@ test("an empty XDG_CONFIG_HOME falls back to ~/.config, not to the working direc
     if (prev === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = prev;
   }
+});
+
+test("isUnanchoredMatch flags a bare number pattern and nothing that pins it", () => {
+  // The two entries that tripped this on a real machine: claude and maccy.
+  assert.equal(isUnanchoredMatch("([0-9][0-9.]*)"), true);
+  assert.equal(isUnanchoredMatch("v?([0-9][0-9.]*)"), true);
+  // One case per way out: a start anchor, the line anchor `add` writes, a
+  // literal prefix, and a group that does not capture.
+  assert.equal(isUnanchoredMatch("^([0-9][0-9.]*)"), false);
+  assert.equal(isUnanchoredMatch("(?:^|\\n)v?([0-9][0-9.]*)"), false);
+  assert.equal(isUnanchoredMatch("gh version ([0-9][0-9.]*)"), false);
+  assert.equal(isUnanchoredMatch("(?:jq-)([0-9][0-9.]*)"), false);
+  // Found by review: each of these still starts at the first number anywhere.
+  for (const loose of [
+    "V?([0-9.]+)",
+    "[vV]?([0-9.]+)",
+    "\\s*([0-9.]+)",
+    ".*?([0-9.]+)",
+    ".*([0-9.]+)",
+    "(?<v>[0-9.]+)",
+  ]) {
+    assert.equal(isUnanchoredMatch(loose), true, loose);
+  }
+  // …while a lookahead first is not a capture, and pins nothing either way.
+  assert.equal(isUnanchoredMatch("(?=x)foo ([0-9.]+)"), false);
 });

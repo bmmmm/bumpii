@@ -119,6 +119,29 @@ export function compareVersions(a: string, b: string): number {
 }
 
 /**
+ * The leading numbers on both sides of a pending update, when the newer one
+ * is higher — "major 1 → 2" — or null when the update stays inside one.
+ *
+ * Read off the versions, not the notes, so the report can say it without a
+ * model: `hf 1.30.0 → 2.1.1` rendered like any six releases in an unjudged
+ * run. It names the number and nothing more. Whether 2.0 broke anything is
+ * the engine's call. From 100 up the leading number is not a major in that
+ * sense, on either side (`to` bounds both, being the larger): a release counter that moves weekly (gcloud-cli `572 → 587`, the
+ * first real run printed it) or a year (calver `2026.7.4`).
+ */
+export function majorJump(
+  installed: string | null,
+  latest: string | null,
+): { from: number; to: number } | null {
+  // An unorderable `latest` needs no guard of its own: it reads as 0, never
+  // above `from`. The null checks are for the compiler as much as for null.
+  if (!installed || !latest || !isOrderable(installed)) return null;
+  const from = segment(parts(installed).core[0]).n;
+  const to = segment(parts(latest).core[0]).n;
+  return to > from && to < 100 ? { from, to } : null;
+}
+
+/**
  * Whether a release carries a version that can be ordered at all.
  *
  * A tag like "nightly", "latest" or "continuous" produces an empty or

@@ -10,6 +10,7 @@ import {
   isComparable,
   isTruncated,
   latestComparable,
+  majorJump,
   releasesBehind,
 } from "../src/version.ts";
 
@@ -424,4 +425,23 @@ test("isReaderGoneError covers the whole broken-pipe family, not EPIPE alone", (
   // misreported as a reader that left.
   assert.equal(isReaderGoneError("EACCES"), false);
   assert.equal(isReaderGoneError(undefined), false);
+});
+
+test("majorJump names a crossed leading number and nothing else", () => {
+  assert.deepEqual(majorJump("1.30.0", "2.1.1"), { from: 1, to: 2 });
+  assert.deepEqual(majorJump("1.0.0", "3.0.0-rc1"), { from: 1, to: 3 });
+  assert.deepEqual(majorJump("98.1", "99.0"), { from: 98, to: 99 });
+  // One case per way the answer is null: same leading number, a 0.x minor,
+  // a lower one, a release counter or year, and versions that do not order.
+  assert.equal(majorJump("2.0.0", "2.9.0"), null);
+  assert.equal(majorJump("0.19.2", "0.20.1"), null);
+  assert.equal(majorJump("3.0.0", "2.0.0"), null);
+  assert.equal(majorJump("572.0.0", "587.0.0"), null);
+  assert.equal(majorJump("2025.12.1", "2026.1.0"), null);
+  // A switch to calver from 1.x: "major 1 → 2026" would be true and useless.
+  assert.equal(majorJump("1.9.0", "2026.1.0"), null);
+  assert.equal(majorJump(null, "2.0.0"), null);
+  assert.equal(majorJump("1.0.0", null), null);
+  assert.equal(majorJump("nightly", "2.0.0"), null);
+  assert.equal(majorJump("1.0.0", "latest"), null);
 });

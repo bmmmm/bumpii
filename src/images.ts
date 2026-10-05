@@ -179,6 +179,24 @@ export function versionFrom(label: string, imageRef: string): string {
 export const TAG_MATCH = "^[^@\\n]*?:v?([0-9][0-9.]*)[^/:@\\n]*(?:@|\\n|$)";
 
 /**
+ * The regex a labelled entry reads its version with: anchored to the start of
+ * stdout, because installedVersion appends stderr after it and a bare number
+ * pattern answered with the "2" in a removed container's "no such container:
+ * app-2". Whatever stands before the first digit of the label is kept as
+ * literal text — "release-2.3" would never match a plain `^v?` — and leading
+ * whitespace is allowed for, since the runtime prints the label verbatim.
+ */
+export function labelMatch(label: string): string {
+  const trimmed = label.trim();
+  const idx = trimmed.search(/[0-9]/);
+  // A "v" stays optional on its own, so a label that drops it next release
+  // ("v2.4.1", then "2.5.0") still reads.
+  const before = idx < 0 ? "" : trimmed.slice(0, idx).replace(/v$/i, "");
+  const prefix = before.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return `^\\s*${prefix}v?([0-9][0-9.]*)`;
+}
+
+/**
  * Build a ready-to-use tool entry from a running container.
  *
  * Deliberately not batched, unlike the brew path. Two savings were measured
@@ -244,7 +262,7 @@ export async function discoverImage(container: string): Promise<ImageDiscovery> 
   // not the output of a binary — but it is still a command producing a line
   // that a regex reads, so the existing version machinery carries it unchanged.
   const cmd = [runtime, "inspect", "--format", `{{index .Config.Labels "${LABEL_VERSION}"}}`, container];
-  const match = labelVersion.trim() ? "v?([0-9][0-9.]*)" : null;
+  const match = labelVersion.trim() ? labelMatch(labelVersion) : null;
 
   return {
     container,

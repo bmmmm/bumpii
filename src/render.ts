@@ -6,7 +6,7 @@ import type { CoverageRow, NotesResult } from "./notes.ts";
 import type { Overview, OverviewEntry } from "./overview.ts";
 import { releasesPage } from "./sources.ts";
 import type { DigestItem, ItemKind, Release, ToolReport } from "./types.ts";
-import { compareVersions, isOrderable, releaseFor } from "./version.ts";
+import { compareVersions, isOrderable, majorJump, releaseFor } from "./version.ts";
 
 /**
  * Strip anything that would drive the terminal rather than fill it.
@@ -522,7 +522,9 @@ export function renderReport(rawReports: ToolReport[], opts: RenderOptions): str
         // a person acts on, and a silent cap makes a year-old install look
         // routine.
         `${r.behind.length}${r.truncated ? "+" : ""} release${r.behind.length === 1 ? "" : "s"} behind`;
-    out.push(`${name} ${r.installed} → ${bold(r.latest)}  ${yellow(behindLabel)}`);
+    out.push(
+      `${name} ${r.installed} → ${bold(r.latest)}  ${yellow(behindLabel)}${r.channel ? "" : majorLabel(r.installed, r.latest)}`,
+    );
 
     if (r.items.length === 0) {
       // The links follow either way — unlike the overview list, this report is
@@ -697,7 +699,13 @@ function entryHead(e: OverviewEntry): string {
     e.behind.length > 0
       ? dim(`   ${e.behind.length}${e.truncated ? "+" : ""} release${e.behind.length === 1 ? "" : "s"}`)
       : "";
-  return `${name} ${e.installed} → ${bold(e.latest)}${count}   ${refs}${flags.length ? `   ${flags.join(" ")}` : ""}`;
+  return `${name} ${e.installed} → ${bold(e.latest)}${count}${majorLabel(e.installed, e.latest)}   ${refs}${flags.length ? `   ${flags.join(" ")}` : ""}`;
+}
+
+/** "  major 1 → 2" after the count, or nothing when the update stays inside one. */
+function majorLabel(installed: string | null, latest: string | null): string {
+  const jump = majorJump(installed, latest);
+  return jump ? `  ${yellow(`major ${jump.from} → ${jump.to}`)}` : "";
 }
 
 /**
@@ -942,7 +950,7 @@ export function renderOverview(raw: Overview, opts: { greedyUpgrade?: boolean } 
     const width = Math.max(...quiet.map((e) => e.name.length));
     for (const e of quiet) {
       out.push(
-        `  ${e.name.padEnd(width)}  ${e.installed} → ${e.latest}${e.pinned ? `  ${yellow("pinned")}` : ""}`,
+        `  ${e.name.padEnd(width)}  ${e.installed} → ${e.latest}${majorLabel(e.installed, e.latest)}${e.pinned ? `  ${yellow("pinned")}` : ""}`,
       );
       // Untracked and unreferenced, so no releases were fetched and no tags
       // are known — the repo itself is the only link that is certainly real.
@@ -968,7 +976,7 @@ export function renderOverview(raw: Overview, opts: { greedyUpgrade?: boolean } 
     );
     const width = Math.max(...o.selfUpdating.map((p) => p.name.length));
     for (const p of o.selfUpdating) {
-      out.push(`  ${p.name.padEnd(width)}  ${p.installed} → ${p.latest}`);
+      out.push(`  ${p.name.padEnd(width)}  ${p.installed} → ${p.latest}${majorLabel(p.installed, p.latest)}`);
     }
     out.push("");
   }

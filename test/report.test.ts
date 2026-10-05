@@ -605,3 +605,27 @@ test("brewReprobeVerdict strips control bytes from every side it prints", () => 
   assert.ok(!line.includes(`${ESC}[2K`), "an erase-line sequence must not survive into the report");
   assert.ok(!line.includes(`${ESC}[1A`), "nor a cursor-up, which could paint over the lines above");
 });
+
+test("a pending update across a major says so without a model", () => {
+  // hf 1.30.0 → 2.1.1 read like any six releases in an unjudged run.
+  const crossing = renderReport([report({ installed: "1.30.0", latest: "2.1.1", behind: [rel("2.1.1")] })], {
+    engine: noEngine,
+  });
+  assert.match(crossing, /1 release behind {2}major 1 → 2/);
+  const inside = renderReport([report({ behind: [rel("2.96.0")] })], { engine: noEngine });
+  assert.doesNotMatch(inside, /major/);
+  // A channel's two sides are commit hashes; their leading digits are not a version.
+  const channel = renderReport(
+    [
+      report({
+        tool: { ...tool, channel: "tip" },
+        installed: "1abcdef",
+        latest: "2bcdefa",
+        behind: [rel("2bcdefa")],
+        channel: { tag: "tip", aheadBy: 3 },
+      }),
+    ],
+    { engine: noEngine },
+  );
+  assert.doesNotMatch(channel, /major/);
+});

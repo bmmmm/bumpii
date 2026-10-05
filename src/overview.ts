@@ -9,7 +9,7 @@
 // yours names gets a version and a link and nothing more, because there is no
 // usage to judge a release note against, and running a model over it would
 // produce an opinion rather than a verdict.
-import { formulaOf, namesOf } from "./config.ts";
+import { formulaOf, isManualUpdate, namesOf } from "./config.ts";
 import { digest, type Engine } from "./judge.ts";
 import { limiter } from "./limit.ts";
 import { fillPage, pageVersion } from "./notes.ts";
@@ -467,11 +467,16 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
     // these unfiltered printed every tracked tool under "up to date" after a
     // question about one package, and put its own count in the summary.
     .filter((t) => only.size === 0 || namesOf(t).some((n) => only.has(n)));
-  const brewManaged = quiet.filter((t) => formulaOf(t.update) !== null);
+  // A `manual:` line runs nothing, so a `brew upgrade x` inside its prose is a
+  // note to the reader, not brew managing the tool: vhs, kept on a shim outside
+  // brew until a fixed release, was reported "not installed" next to the
+  // digest that had just probed it.
+  const brewFormula = (t: ToolConfig) => (isManualUpdate(t.update) ? null : formulaOf(t.update));
+  const brewManaged = quiet.filter((t) => brewFormula(t) !== null);
   progress?.phase("brew");
   const installedVersions = await brewInstalledVersions(
     brewManaged.flatMap((t) => {
-      const f = formulaOf(t.update);
+      const f = brewFormula(t);
       return f ? [f] : [];
     }),
   );
@@ -485,7 +490,7 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
   const current: Overview["current"] = [];
   const unchecked: Overview["unchecked"] = [];
   for (const t of quiet) {
-    const formula = formulaOf(t.update);
+    const formula = brewFormula(t);
     const installed = formula ? installedVersions.get(formula) : undefined;
     if (!formula) {
       unchecked.push({ name: t.name, refs: refsForTool(t), reason: "not-brew" });

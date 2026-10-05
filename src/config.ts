@@ -80,6 +80,24 @@ export function isManualUpdate(update: string): boolean {
 }
 
 /**
+ * Whether a version pattern starts with its capture, so nothing before the
+ * version pins where in the output it may match.
+ *
+ * installedVersion runs the regex over stdout with stderr appended, so such a
+ * pattern reads a version out of an error path once the probe fails — an
+ * unanchored fixture reported "now 4" from cat's `/var/folders/fy/4…`. What
+ * counts as "nothing": an optional v in any spelling, leading whitespace, or a
+ * `.*`. A `^` or literal text first is a pin; the `(?:^|\n)` that `add`
+ * writes is a line anchor, which a stderr line can still satisfy, but no
+ * longer any number anywhere. Text after the capture is not looked at, so a
+ * pattern pinned only by its tail is named too.
+ */
+export function isUnanchoredMatch(match: string): boolean {
+  // `(?<name>` is a capture; `(?:`, `(?=`, `(?!`, `(?<=`, `(?<!` are not.
+  return /^(?:[vV]\?|\[[vV]{1,2}\]\?|\\s\*|\.\*\??)*\((?!\?(?:[:=!]|<[=!]))/.test(match);
+}
+
+/**
  * Shipped as the starting point rather than an empty file: the two CLIs this
  * was built for are already wired, so `bumpii init` produces something that
  * works before anything is edited.

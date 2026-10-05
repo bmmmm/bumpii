@@ -120,6 +120,21 @@ test("list names the gaps rather than only the entries", async () => {
   assert.match(r.stdout, /bumpii set/, "and how to close them");
 });
 
+test("list names a version pattern that reads digits out of an error line", async () => {
+  const home = await freshHome();
+  const path = await writeConfig(home, [
+    tool({ name: "loose", source: "github:o/r", version: { cmd: ["echo", "1.0"], match: "([0-9.]+)" } }),
+    tool({ name: "pinned", source: "github:o/r", version: { cmd: ["echo", "1.0"], match: "^([0-9.]+)" } }),
+  ]);
+  const r = await runCli(["list"], home);
+  assert.equal(r.code, 0);
+  assert.match(r.stdout, /^loose\s+github:o\/r\s+needs: \^ in version\.match$/m);
+  assert.doesNotMatch(r.stdout, /^pinned.*needs/m);
+  assert.match(r.stdout, new RegExp(`1 version pattern starts with the version itself, .* in ${path}`));
+  // `set` cannot change a pattern, so the line pointing at it must not appear.
+  assert.doesNotMatch(r.stdout, /incomplete/);
+});
+
 test("rm on a name that is not tracked fails instead of reporting success", async () => {
   // The silent version of this is the dangerous one: a typo'd name in a
   // cleanup script would leave the entry in place and exit 0.
@@ -692,6 +707,23 @@ test("overview exits 2 when brew itself cannot answer", async () => {
   const r = await runCli(["overview", "--no-judge"], home, { PATH: dir });
   assert.equal(r.code, 2);
   assert.match(r.stderr, /brew outdated failed/);
+});
+
+test("overview does not take a manual line's prose for brew managing the tool", async () => {
+  // vhs: kept on a shim outside brew, its manual line says when to run
+  // `brew upgrade vhs`. Read as a formula, the tool landed under "not
+  // installed — nothing was checked" while the digest had just probed it.
+  // brew here has nothing outdated and nothing installed, so only the update
+  // line decides which heading the entry gets.
+  const dir = await fakeBrew(`case "$1" in outdated) ${NOTHING_OUTDATED} ;; *) exit 1 ;; esac`);
+  const home = await freshHome();
+  await writeConfig(home, [
+    tool({ name: "shim", update: "manual: on a fixed release, brew upgrade shim and drop the shim" }),
+    tool({ name: "gone", update: "brew upgrade gone" }),
+  ]);
+  const r = await runCli(["overview", "--no-judge"], home, { PATH: dir });
+  assert.match(r.stdout, /tracked, not covered here\n {2}shim\n/);
+  assert.match(r.stdout, /tracked, not installed\n {2}gone\n/, "a real brew line still lands here");
 });
 
 test("a --only slice hiding a self-updating cask does not claim the machine is clean", async () => {

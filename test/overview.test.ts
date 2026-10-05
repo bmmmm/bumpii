@@ -867,3 +867,21 @@ test("a compare link survives brew and the forge padding versions differently", 
     "https://github.com/o/r/compare/v3.5...v3.5a",
   );
 });
+
+test("every overview line that shows two versions names a crossed major", () => {
+  // Three renderers draw "a → b" here, and the label has to reach each of them.
+  const text = renderOverview(
+    overview({
+      entries: [
+        entry({ name: "pending", refs: 2, bucket: "undigested" }),
+        entry({ name: "quiet", installed: "4.6.11", latest: "5.0.2" }),
+        entry({ name: "minor", refs: 2, bucket: "undigested", installed: "2.0.0", latest: "2.1.0" }),
+      ],
+      selfUpdating: [{ ...SELF_UPDATING, name: "rectangle", installed: "1.100", latest: "2.0.2" }],
+    }),
+  );
+  assert.match(text, /pending +1\.0\.0 → 2\.0\.0 {2}major 1 → 2/);
+  assert.match(text, /quiet +4\.6\.11 → 5\.0\.2 {2}major 4 → 5/);
+  assert.match(text, /rectangle +1\.100 → 2\.0\.2 {2}major 1 → 2/);
+  assert.doesNotMatch(text, /minor.*major/);
+});

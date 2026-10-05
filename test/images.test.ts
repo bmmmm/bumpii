@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import {
   discoverImage,
+  labelMatch,
   runningContainers,
   TAG_MATCH,
   untrackedContainers,
@@ -306,4 +307,29 @@ exit 125
 `);
   await assert.rejects(discoverImage("nope"), /nope: podman could not inspect it/);
   await assert.rejects(discoverImage("nope"), /no such object/);
+});
+
+test("a labelled entry does not read a version out of the runtime's error", async () => {
+  // The probe appends stderr after stdout, so an unanchored pattern took the
+  // "2" out of a removed container's error line and reported it as installed.
+  await stubRuntime(COMPLETE);
+  const d = await discoverImage("app");
+  await stubRuntime('echo "Error: no such container: app-2" >&2; exit 125');
+  const { installedVersion } = await import("../src/version.ts");
+  await assert.rejects(installedVersion(d.entry), /is it still installed/);
+});
+
+test("labelMatch reads every label shape from stdout and nothing from stderr", () => {
+  const read = (label: string, out: string) => new RegExp(labelMatch(label)).exec(out)?.[1];
+  assert.equal(read("2.4.1", "2.4.1\n"), "2.4.1");
+  // Found by review: a plain `^v?` never matched these, so the entry `add`
+  // wrote failed on every later run.
+  assert.equal(read("release-2.3", "release-2.4\n"), "2.4");
+  assert.equal(read(" 1.2", " 1.3\n"), "1.3");
+  // The "v" stays optional both ways round: labels gain and drop it.
+  assert.equal(read("v2.4.1", "2.5.0\n"), "2.5.0");
+  assert.equal(read("2.4.1", "v2.5.0\n"), "2.5.0");
+  // stdout empty, the error on stderr: nothing to read, not the "2" in it.
+  assert.equal(read("2.4.1", "\nError: no such container: app-2\n"), undefined);
+  assert.equal(read("release-2.3", "\nError: no such container: release-2\n"), undefined);
 });

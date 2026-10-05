@@ -24,7 +24,11 @@ up to date: fj 0.6.0
 engine: not asked for
 ```
 
-That is the whole default: four seconds, no model, nothing guessed. Ask for
+That is the whole default: four seconds, no model, nothing guessed. An update
+that raises the leading version number gets `major 1 → 2` after the count, read
+off the two versions alone. It says which number moved, not that anything broke,
+and it stays off when either side's leading number is 100 or more, where that
+number is a weekly release counter or a year. Ask for
 `--judge` and the notes get read and sorted into security / breaking / feature
 / fix, which is what turns a long changelog into a line you can act on:
 
@@ -251,7 +255,9 @@ anything installed by hand — are listed under `tracked, not covered here`,
 because brew never checked them and `bumpii` is what does. And a tracked
 formula brew does not have installed goes under `tracked, not installed`: brew
 is exactly as silent about that as about a current one, so the two have to be
-told apart by asking `brew list`, not by its silence.
+told apart by asking `brew list`, not by its silence. A `manual:` update line
+counts as not managed by brew, even when its text names a `brew upgrade` for
+later.
 
 Reference counts are taken across every name a tool answers to, not just the
 one brew prints. `forgejo-cli` ships `fj`, and counting brew's name alone found
@@ -586,7 +592,11 @@ Or write entries by hand. `~/.config/bumpii/tools.json`:
   needs GitHub or Forgejo — GitLab has no compare endpoint of that shape.
 - **`version.cmd`** — argv, never a shell string. `version.match` is a regex
   with one capture group. Not every CLI agrees on `--version`: `fj` wants
-  `fj version`, and some print to stderr — both are handled.
+  `fj version`, and some print to stderr — both are handled. When nothing
+  precedes the version in the output, start the pattern with `^`. stderr is
+  appended after stdout, so a bare `([0-9][0-9.]*)` reads digits out of an
+  error line once the probe fails. `bumpii list` names a pattern that starts
+  with its capture.
 - **`update`** — whatever bumps it on your machine. Only ever run with `--yes`.
   A tool with no CLI trigger at all (an app that updates itself) takes
   `manual: <where to click>` — a complete entry that `--yes` skips as routine,

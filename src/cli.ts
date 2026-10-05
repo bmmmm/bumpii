@@ -8,6 +8,7 @@ import {
   initConfig,
   isManualUpdate,
   isPlaceholderUpdate,
+  isUnanchoredMatch,
   loadConfig,
   PACKAGE_FIELDS,
   type PackageField,
@@ -815,11 +816,16 @@ async function dispatch(progress: Progress): Promise<number> {
     // a source or with an unfinished update line, and both are invisible until
     // something goes wrong with them.
     let gaps = 0;
+    let loose = 0;
     for (const t of cfg.tools) {
       const missing: string[] = [];
       if (!t.source) missing.push("source");
       if (isPlaceholderUpdate(t.update)) missing.push("update");
       if (missing.length > 0) gaps++;
+      if (isUnanchoredMatch(t.version.match)) {
+        missing.push("^ in version.match");
+        loose++;
+      }
       process.stdout.write(
         `${t.name.padEnd(20)} ${(t.source || "—").padEnd(38)}` +
           `${missing.length > 0 ? `needs: ${missing.join(", ")}` : ""}\n`,
@@ -828,6 +834,15 @@ async function dispatch(progress: Progress): Promise<number> {
     if (gaps > 0) {
       process.stdout.write(
         `\n${gaps} entr${gaps === 1 ? "y" : "ies"} incomplete — bumpii set <name> <field> <value>\n`,
+      );
+    }
+    // Not a gap `set` can close, so it gets its own line: the pattern lives in
+    // tools.json, and until it is anchored a failing probe can report a number
+    // from its own error output as the installed version.
+    if (loose > 0) {
+      process.stdout.write(
+        `\n${loose} version pattern${loose === 1 ? " starts" : "s start"} with the version itself, so a number in an error line can match — ` +
+          `pin ${loose === 1 ? "it" : "each"} with ^ or the text before the version, in ${configPath()}\n`,
       );
     }
     return 0;
