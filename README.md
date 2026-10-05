@@ -372,7 +372,9 @@ A package brew installs from a prerelease line — a non-numeric `@` suffix,
 marked `prerelease`; everywhere else prereleases are skipped.
 
 The exit code is 0 when the question was answered — notes shown, or a
-`none` saying the project publishes nothing — and 2 when it was not.
+`none` saying the project publishes nothing — and 2 when it was not. A `none`
+beside a forge or page that could not be read is printed as your note — `set
+as publishing no notes … not confirmed` — under exit 2: nothing was checked.
 
 `bumpii scan --unmapped` checks that every formula you installed on request,
 every cask and every tracked tool has somewhere to read its notes. A page

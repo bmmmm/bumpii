@@ -589,9 +589,12 @@ export function versionSection(
   const shapes = lines.map(lineShapes);
   const distinct = [...new Set(tries)];
   for (const [n, v] of distinct.entries()) {
-    // Not followed by a letter or a `-word`: `3.5a` is not `3.5`, and
-    // `2.0.0-rc1` is not `2.0.0` — the same pair `compareVersions` keeps apart.
-    const own = new RegExp(`(?<![\\d.])${esc(v)}(?![\\da-zA-Z]|\\.\\d|-[a-zA-Z0-9])`);
+    // Not followed by a letter, `~` or a dash: `3.5a` is not `3.5`, and
+    // `2.0.0-rc1` or `1.0.1-1` (an npm prerelease) is not `2.0.0`/`1.0.1` —
+    // the pairs `compareVersions` keeps apart. The one dash that is the same
+    // release is a Debian packaging revision, and only in the place Debian
+    // writes it: `pkg (1.2.3-1) unstable;` is 1.2.3.
+    const own = new RegExp(`(?<![\\d.])${esc(v)}(?![\\da-zA-Z~]|\\.\\d|-(?!\\d[\\w.+~]*\\)))`);
     type Found = { text: string; matched: string; from: number; to: number; total: number };
     let first: Found | null = null;
     let open: Found | null = null;
@@ -599,12 +602,20 @@ export function versionSection(
     for (let start = 0; start < lines.length && seen < 50; start++) {
       const startLine = lines[start] ?? "";
       const at = own.exec(startLine);
-      if (!at) continue;
+      // A version inside a link or a range is a reference, not a heading —
+      // `## [1.0.2](…/compare/v1.0.1...v1.0.2)` is the 1.0.2 entry, and taking
+      // it for 1.0.1 showed the newer notes as the installed release's.
+      if (!at || isReference(startLine, at.index)) continue;
       seen++;
       const startShape = blur(startLine.slice(0, at.index));
       let end = lines.length;
+      // A line shaped like the start whose heading names the same release
+      // again is its next packaging revision (`pkg (1.2.3-2)`, then
+      // `pkg (1.2.3-1)`), not the next release — the upstream notes sit in
+      // the oldest one. Only in the heading's own place: "## 1.2.2 (backport
+      // of the 1.2.3 fix)" is the next release, mentioning this one.
       for (let j = start + 1; j < lines.length; j++) {
-        if (shapes[j]?.has(startShape)) {
+        if (shapes[j]?.has(startShape) && !sameHeading(lines[j] ?? "", own, startShape)) {
           end = j;
           break;
         }
@@ -636,6 +647,17 @@ export function versionSection(
     if (exact && (open ?? first)) return open ?? first;
   }
   return null;
+}
+
+/** Whether the version at `index` sits in a link path or a range (`/v1.0.1`, `...v1.0.2`). */
+function isReference(line: string, index: number): boolean {
+  return /(?:\/v?|\.\.\.?v?)$/.test(line.slice(Math.max(0, index - 4), index));
+}
+
+/** Whether `own` names this line's heading, in the place the start line named it. */
+function sameHeading(line: string, own: RegExp, startShape: string): boolean {
+  const at = own.exec(line);
+  return at !== null && blur(line.slice(0, at.index)) === startShape;
 }
 
 /** A version-naming prefix with its digits blurred, so dates and numbers in it do not tell entries apart. */

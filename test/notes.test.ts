@@ -416,6 +416,50 @@ test("a version with a letter or a -suffix after it is not that version", () => 
     "\n",
   );
   assert.equal(versionSection(oldestFirst, "2.0.0")?.text, "## 2.0.0\nfinal");
+  // A Debian changelog heads each entry `pkg (version-revision)`: the
+  // revision is packaging, the release is the same.
+  const debian = [
+    "pkg (1.2.3-2ubuntu1) unstable; urgency=medium",
+    "",
+    "  * Fix a.",
+    "",
+    " -- Some One <one@example.org>  Mon, 01 Jun 2026 12:00:00 +0000",
+    "",
+    "pkg (1.2.2-1) unstable; urgency=medium",
+    "",
+    "  * Older.",
+  ].join("\n");
+  assert.equal(versionSection(debian, "1.2.3")?.to, 5);
+  assert.equal(versionSection(debian, "1.2.3")?.matched, "1.2.3");
+  // Several revisions of one release are one section: the upstream notes are
+  // in the oldest revision, and ending at the next one showed only packaging.
+  const revisions = [
+    "pkg (1.2.3-2) unstable; urgency=medium",
+    "  * Packaging fix.",
+    "",
+    "pkg (1.2.3-1) unstable; urgency=medium",
+    "  * New upstream release.",
+    "",
+    "pkg (1.2.2-1) unstable; urgency=medium",
+    "  * Older.",
+  ].join("\n");
+  assert.equal(versionSection(revisions, "1.2.3")?.to, 5);
+  // Anywhere but a Debian heading a dash and a digit is another version: an
+  // npm prerelease, a date-stamped snapshot.
+  const npm = ["## 1.0.1-1", "pre one", "", "## 1.0.1", "final", "", "## 1.0.0", "old"].join("\n");
+  assert.equal(versionSection(npm, "1.0.1")?.text, "## 1.0.1\nfinal");
+  const snapshot = [
+    "## v1.2.3-20260101",
+    "snapshot",
+    "",
+    "## v1.2.3",
+    "release",
+    "",
+    "## v1.2.2",
+    "old",
+  ].join("\n");
+  assert.equal(versionSection(snapshot, "1.2.3")?.text, "## v1.2.3\nrelease");
+  assert.equal(versionSection("pkg (1.2.3~rc1-1) unstable;\n  * rc\npkg (1.2.2-1) unstable;", "1.2.3"), null);
 });
 
 test("versionSection stays fast on a page made of hits that never close", () => {
@@ -425,6 +469,52 @@ test("versionSection stays fast on a page made of hits that never close", () => 
   const t0 = performance.now();
   versionSection([...hits, ...dense].join("\n"), "3.2.1");
   assert.ok(performance.now() - t0 < 1000, `took ${Math.round(performance.now() - t0)} ms`);
+});
+
+test("a heading names its version first: a compare link naming the previous one is not its section", () => {
+  const page = [
+    "## [1.0.2](https://x.example/compare/v1.0.1...v1.0.2) (2026-02-01)",
+    "- newer",
+    "",
+    "## [1.0.1](https://x.example/compare/v1.0.0...v1.0.1) (2026-01-01)",
+    "- the installed one",
+    "",
+    "## [1.0.0](https://x.example/compare/v0.9.0...v1.0.0)",
+    "- old",
+  ].join("\n");
+  assert.equal(
+    versionSection(page, "1.0.1")?.text,
+    "## [1.0.1](https://x.example/compare/v1.0.0...v1.0.1) (2026-01-01)\n- the installed one",
+  );
+});
+
+test("a mention of the version in the next heading ends the section; dates and dotted names before it do not hide it", () => {
+  // The next release mentioning this one is still the next release.
+  const backport = ["## 1.2.3", "fixed", "", "## 1.2.2 (backport of the 1.2.3 fix)", "older"].join("\n");
+  assert.equal(versionSection(backport, "1.2.3")?.text, "## 1.2.3\nfixed");
+  const oldestFirst = ["## 1.0.0", "first", "", "## 1.0.1 - fixes a regression in 1.0.0", "second"].join(
+    "\n",
+  );
+  assert.equal(versionSection(oldestFirst, "1.0.0")?.text, "## 1.0.0\nfirst");
+  const linksOldestFirst = [
+    "## [1.0.1](https://x.example/compare/v1.0.0...v1.0.1)",
+    "- the installed one",
+    "",
+    "## [1.0.2](https://x.example/compare/v1.0.1...v1.0.2)",
+    "- newer",
+  ].join("\n");
+  assert.equal(versionSection(linksOldestFirst, "1.0.1")?.to, 2);
+  // Something version-shaped before the version is not a reason to skip it.
+  const dated = ["14.03.2026 — Version 2.2.0", "notes", "", "02.01.2026 — Version 2.1.0", "older"].join("\n");
+  assert.equal(versionSection(dated, "2.2.0")?.text, "14.03.2026 — Version 2.2.0\nnotes");
+  const dottedName = [
+    "tool9.9 (5.4.6-3) unstable; urgency=medium",
+    "  * fix",
+    "",
+    "tool9.9 (5.4.6-2) unstable;",
+    "  * older",
+  ].join("\n");
+  assert.equal(versionSection(dottedName, "5.4.6")?.to, 5);
 });
 
 test("a shorter version is only trusted with a section the page closes", () => {
@@ -464,6 +554,28 @@ test("an acknowledged none beside a source that only tags is the answer, said, a
     );
     assert.equal(answered(r), true);
     assert.match(renderNotes(r), /no release notes published: tags only, no changelog/);
+  } finally {
+    restore();
+  }
+});
+
+test("a none beside a read that failed is shown as the user's note, not as this run's answer", async () => {
+  const restore = stubFetch({});
+  try {
+    const cfg = config({ packages: { x: { none: "tags only" } } });
+    const r = await readNotes(
+      resolveTarget("x", cfg, [pkg("x", { derived: "https://git.example.com/o/x" })]),
+      { last: 1 },
+    );
+    assert.equal(answered(r), false);
+    const out = renderNotes(r);
+    assert.match(out, /could not read its releases/);
+    assert.match(out, /set as publishing no notes: tags only — not confirmed: a read above failed/);
+    assert.doesNotMatch(out, /no release notes published/);
+    // The same for a page that could not be read.
+    const paged = config({ packages: { y: { none: "nothing", page: "https://down.example/notes" } } });
+    const p = await readNotes(resolveTarget("y", paged, [pkg("y")]), { last: 1 });
+    assert.match(renderNotes(p), /could not read the page[\s\S]*not confirmed: a read above failed/);
   } finally {
     restore();
   }

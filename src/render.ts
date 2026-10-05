@@ -1135,8 +1135,16 @@ export function renderNotes(raw: NotesResult): string {
   // beside a source brew derives that only tags, which is the usual way one
   // gets set. Shown only without notes: with them it would contradict itself.
   const shown = r.releases.some((x) => x.notes) || r.pageText !== null;
-  if (r.none && !shown) out.push(`${yellow("no release notes published")}: ${r.none}`, "");
-  else if (!r.source && !r.page && !r.none) {
+  // Beside a read that failed, the reason is the user's note and not this
+  // run's answer — said so, or the two lines contradict each other under exit 2.
+  if (r.none && !shown) {
+    out.push(
+      r.releasesError || r.pageError
+        ? `${dim("set as publishing no notes")}: ${r.none} ${dim("— not confirmed: a read above failed")}`
+        : `${yellow("no release notes published")}: ${r.none}`,
+      "",
+    );
+  } else if (!r.source && !r.page && !r.none) {
     out.push(`${yellow("no release source or page known")} ${dim(`— bumpii set ${r.name} page <url>`)}`, "");
   }
   return `${out.join("\n")}\n`;
