@@ -603,6 +603,12 @@ export function versionSection(
     // when it names none — once per line, however many hits look at it. Asked
     // per hit instead, a page of identical headings cost 50 full rescans.
     const heads = new Map<number, string | null>();
+    // How far a scan from a heading of each shape already reached. A later
+    // hit of that shape inside the span would end at the same line — nothing
+    // in between ended the first scan — so it is a part of a section already
+    // judged, and scanning again from it is what made a page of identical
+    // headings cost a rescan per hit (1.4 s on a CI runner for 70k lines).
+    const scanned = new Map<string, number>();
     const headShape = (j: number): string | null => {
       let h = heads.get(j);
       if (h === undefined) {
@@ -619,7 +625,7 @@ export function versionSection(
       // the 1.0.2 entry, and taking it for 1.0.1 showed the newer notes as the
       // installed release's.
       const startShape = headShape(start);
-      if (startShape === null) continue;
+      if (startShape === null || start < (scanned.get(startShape) ?? -1)) continue;
       seen++;
       let end = lines.length;
       // A line shaped like the start whose heading names the same release
@@ -633,6 +639,7 @@ export function versionSection(
           break;
         }
       }
+      scanned.set(startShape, end);
       // Trailing blank lines belong to the gap, not to the section.
       let to = end;
       while (to > start + 1 && !(lines[to - 1] ?? "").trim()) to--;
