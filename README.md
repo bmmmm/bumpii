@@ -186,6 +186,10 @@ it says something about the remedy, not about whether anything is pending. Use
 `--greedy-auto-updates` to have the run upgrade them, and the exit code follows
 what brew says afterwards.
 
+Tracked self-updating casks that are behind appear only in that pending section,
+never also under `tracked, up to date`, including when selected by a binary alias
+with `--only`.
+
 A digest names them on its own line too, under the pending count, so
 `bumpii digest --brew-upgrade` no longer reads "no other brew updates pending"
 over a package that is behind — and `--json` carries them as

@@ -1579,6 +1579,40 @@ const UV_PENDING = `printf '{"formulae":[{"name":"uv","installed_versions":["0.1
 const NOTHING = `printf '{"formulae":[],"casks":[]}'`;
 const SELFY = `printf '{"formulae":[],"casks":[{"name":"selfy","installed_versions":["1.0.0"],"current_version":"2.0.0"}]}'`;
 
+for (const name of ["selfy", "self-bin"]) {
+  test(`a pending tracked self-updating cask stays out of current, named ${name}`, async () => {
+    // Live gcloud-cli was both "tracked, up to date" and 572 -> 587 behind.
+    // The quiet list excluded plain outdated names but never greedy-only ones.
+    const dir = await fakeBrew(`case "$1:$3" in
+  outdated:--greedy-auto-updates) printf '{"formulae":[{"name":"uv","installed_versions":["0.1.0"],"current_version":"0.2.0"}],"casks":[{"name":"selfy","installed_versions":["1.0.0"],"current_version":"2.0.0"}]}' ;;
+  outdated:*) ${UV_PENDING} ;;
+  list:*) printf 'selfy 1.0.0\nuv 0.1.0\nstable 1.0.0\n' ;;
+  info:*) printf '{"formulae":[],"casks":[]}' ;;
+  *) exit 0 ;;
+esac`);
+    const home = await freshHome();
+    await writeConfig(home, [
+      tool({ name, update: "brew upgrade --cask selfy" }),
+      tool({ name: "uv", update: "brew upgrade uv" }),
+      tool({ name: "stable", update: "brew upgrade stable" }),
+    ]);
+    const json = await runCli(["overview", "--no-judge", "--json"], home, { PATH: dir });
+    const report = JSON.parse(json.stdout);
+    assert.equal(json.code, 1);
+    assert.equal(report.selfUpdating.length, 1);
+    assert.equal(report.entries.length, 1);
+    assert.deepEqual(
+      report.current.map((t: { name: string }) => t.name),
+      ["stable"],
+    );
+    const text = await runCli(["overview", "--no-judge", "--only", name], home, { PATH: dir });
+    assert.equal(text.code, 1);
+    assert.match(text.stdout, /selfy\s+1\.0\.0 → 2\.0\.0/);
+    assert.doesNotMatch(text.stdout, /tracked, up to date/);
+    assert.doesNotMatch(text.stdout, /tracked, not installed/);
+  });
+}
+
 test("overview --brew-upgrade reaches brew, in the order the report depends on", async () => {
   // The regression this pins: the flag was parsed, accepted, and dropped —
   // `overview` returned before the upgrade block could ever run, so the run

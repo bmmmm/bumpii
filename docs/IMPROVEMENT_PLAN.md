@@ -1,6 +1,13 @@
 # Improvement plan
 
-Analyzed on 2026-10-05. Implementation status: **planned, not implemented**.
+Analyzed on 2026-10-05. Implementation started on 2026-10-06.
+
+Completed: F1 (pending self-updating casks excluded from current).
+Open: F7, F2, F3, F5, F4, F6.
+
+F1 verification: 466 tests passed without skips; omitting either pending list
+made the new CLI assertions fail. Live gcloud-cli remained pending at
+572.0.0 → 587.0.0 and no longer appeared in `current`.
 
 Baseline: `fc58565c0d50a54bfc3bd1a6c3f59bc1803a5605`; local `main`,
 `origin/main`, and `github/main` matched after fetching both remotes.
@@ -249,6 +256,6 @@ failed reads. Extend outdated, overview and CLI tests; document the state.
   broad performance work have no measured requirement from this review.
   Revisit them when a concrete symptom justifies a separate work unit.
 
-Completion of this planning task means the findings and reproductions are
-available. The seven implementation units remain open until their acceptance
-criteria and mutation checks have passed.
+The status above tracks implementation. Remaining units stay open until their
+acceptance criteria and mutation checks have passed; their opt-in probes are
+removed as regressions enter the normal suite.

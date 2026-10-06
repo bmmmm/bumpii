@@ -460,7 +460,9 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
   // position to say so at all: an entry whose update command is not a brew one
   // was never checked here, and reporting it as current would claim a check
   // that never happened.
-  const outdatedNames = new Set(outdated.map((p) => p.name));
+  // A tracked self-updating cask is pending too. The plain listing omits it,
+  // which otherwise puts the same package in both "current" and "updates itself".
+  const outdatedNames = new Set([...outdated, ...(selfUpdating ?? [])].map((p) => p.name));
   const quiet = config.tools
     .filter((t) => !namesOf(t).some((n) => outdatedNames.has(n)))
     // --only restricts the whole report, not only the pending half. Leaving

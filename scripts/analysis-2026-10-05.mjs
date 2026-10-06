@@ -92,18 +92,6 @@ async function sandbox(t, state = {}) {
   };
 }
 
-test("F1: a tracked self-updating cask must not also be current", async (t) => {
-  await sandbox(t, {
-    greedy: { formulae: [], casks: [packageRow("selfy", "1.0.0", "2.0.0")] },
-    versions: "selfy 1.0.0\n",
-  });
-  const got = await buildOverview({ usagePaths: [], tools: [tool("selfy")] }, { engine, concurrency: 1 });
-  assert.equal(got.selfUpdating.length, 1, "the pending cask must actually be observed");
-  t.diagnostic(JSON.stringify({ current: got.current, selfUpdating: got.selfUpdating }));
-  t.diagnostic(renderOverview(got));
-  assert.equal(got.current.length, 0, "a measured pending cask was also called current");
-});
-
 for (const [name, installed, latest, outside] of [
   ["app", "1.0.0", "1.1.0", "1.2.0"],
   ["app@1", "1.0.0", "1.1.0", "2.0.0"],
