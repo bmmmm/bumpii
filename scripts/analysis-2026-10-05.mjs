@@ -90,48 +90,6 @@ async function sandbox(t, state = {}) {
   };
 }
 
-for (const [name, installed, latest, outside] of [
-  ["app", "1.0.0", "1.1.0", "1.2.0"],
-  ["app@1", "1.0.0", "1.1.0", "2.0.0"],
-]) {
-  test(`F2: overview release range for ${name} stops at brew's target`, async (t) => {
-    const env = await sandbox(t, {
-      outdated: { formulae: [packageRow(name, installed, latest)], casks: [] },
-    });
-    const usage = join(env.dir, "usage.txt");
-    await writeFile(usage, `${name}\n`);
-    let fetches = 0;
-    globalThis.fetch = async () => {
-      fetches++;
-      return Response.json(
-        [outside, latest, installed].map((v) => ({
-          tag_name: `v${v}`,
-          body: "A user-visible change.",
-          html_url: `https://example.invalid/v${v}`,
-        })),
-      );
-    };
-    const got = await buildOverview({ usagePaths: [usage], tools: [tool(name)] }, { engine, concurrency: 1 });
-    assert.equal(got.entries.length, 1);
-    assert.equal(got.entries[0].refs, 1, "the forge path must run, not the no-signal shortcut");
-    assert.equal(fetches, 1);
-    const entry = got.entries[0];
-    t.diagnostic(
-      JSON.stringify({
-        name,
-        installed: entry.installed,
-        latest: entry.latest,
-        behind: entry.behind.map((r) => r.version),
-      }),
-    );
-    assert.deepEqual(
-      entry.behind.map((r) => r.version),
-      [latest],
-      "notes exceed the displayed upgrade range",
-    );
-  });
-}
-
 test("F3: a transient source lookup failure is retried after recovery", async (t) => {
   const env = await sandbox(t, { infoFails: true });
   const path = join(env.dir, "sources.json");

@@ -748,6 +748,15 @@ function renderEntry(e: OverviewEntry, ctx: OverviewCtx, prefix: string, cont: s
     return;
   }
 
+  // Brew's interval belongs to the overview; inbox subscriptions have no
+  // installed-to-target boundary and must not share this report state.
+  if (e.rangeError) {
+    body(dim(e.rangeError));
+    body(`${dim("→")} ${e.update}`);
+    return;
+  }
+  if (e.truncated) body(dim("release listing incomplete — older releases may be missing"));
+
   if (e.items.length === 0) {
     // Four different states read as an empty list, and only the second is
     // "nothing changed". A repo that publishes no versioned releases at all
@@ -757,11 +766,13 @@ function renderEntry(e: OverviewEntry, ctx: OverviewCtx, prefix: string, cont: s
     // that to the engine blames a tool for what the forge did not write.
     body(
       dim(
-        e.published === 0
-          ? `${e.source} publishes no versioned releases — bumpii cannot tell what changed, only that brew has a newer build`
-          : e.behind.length === 0
-            ? "brew has a newer build, but the forge published no release between these versions"
-            : noDigestReason(e.behind, e.error, ctx.engine),
+        e.truncated && e.behind.length === 0
+          ? "the fetched page establishes no complete release interval"
+          : e.published === 0
+            ? `${e.source} publishes no versioned releases — bumpii cannot tell what changed, only that brew has a newer build`
+            : e.behind.length === 0
+              ? "brew has a newer build, but the forge published no release between these versions"
+              : noDigestReason(e.behind, e.error, ctx.engine),
       ),
     );
     for (const rel of e.behind) body(dim(`  ${rel.version}  ${link(rel.url, rel.url)}`));
@@ -840,6 +851,7 @@ function safeEntry(e: OverviewEntry): OverviewEntry {
     compare: e.compare === null ? null : safe(e.compare),
     page: e.page ? safe(e.page) : e.page,
     error: e.error === undefined ? undefined : safe(e.error),
+    rangeError: e.rangeError === undefined ? undefined : safe(e.rangeError),
   };
 }
 

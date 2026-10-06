@@ -8,12 +8,14 @@ import { type Engine, parseItems } from "../src/judge.ts";
 import type { OutdatedPackage } from "../src/outdated.ts";
 import {
   bucketFor,
+  buildOverview,
   compareEntries,
   compareFor,
   expandOnly,
   namesOf,
   type Overview,
   type OverviewEntry,
+  overviewRange,
   untrackedOutdated,
 } from "../src/overview.ts";
 import { renderOverview } from "../src/render.ts";
@@ -884,4 +886,266 @@ test("every overview line that shows two versions names a crossed major", () => 
   assert.match(text, /quiet +4\.6\.11 → 5\.0\.2 {2}major 4 → 5/);
   assert.match(text, /rectangle +1\.100 → 2\.0\.2 {2}major 1 → 2/);
   assert.doesNotMatch(text, /minor.*major/);
+});
+
+// Exercise the actual brew, forge and engine boundaries. Each case gives brew
+// one pending package and leaves a real usage reference so no shortcut can pass.
+for (const scenario of [
+  {
+    name: "app",
+    installed: "1.0.0",
+    latest: "1.1.0",
+    versions: ["1.2.0", "1.1.0", "1.0.0"],
+    expected: ["1.1.0"],
+    compare: true,
+  },
+  {
+    name: "app@1",
+    installed: "1.0.0",
+    latest: "1.1.0",
+    versions: ["2.0.0", "1.1.0", "1.0.0"],
+    expected: ["1.1.0"],
+    compare: true,
+  },
+  {
+    name: "app@1.2",
+    installed: "1.2.0",
+    latest: "1.2.2",
+    versions: ["1.3.0", "1.2.2", "1.2.1", "1.2.0"],
+    expected: ["1.2.1", "1.2.2"],
+    compare: true,
+  },
+  {
+    name: "app@preview",
+    installed: "2.0.0-rc1",
+    latest: "2.0.0-rc2",
+    versions: ["2.0.0", "2.0.0-rc3", "2.0.0-rc2", "2.0.0-rc1"],
+    expected: ["2.0.0-rc2"],
+    compare: true,
+  },
+  {
+    name: "app",
+    installed: "1.0.0",
+    latest: "1.3.0",
+    versions: ["1.1.0", "1.0.0"],
+    expected: ["1.1.0"],
+    compare: false,
+  },
+  {
+    name: "app",
+    installed: "1.0_1",
+    latest: "1.0.1_2",
+    versions: ["1.0.2", "1.0.1", "1.0"],
+    expected: ["1.0.1"],
+    compare: false,
+  },
+  {
+    name: "app",
+    installed: "1.1.0",
+    latest: "1.1.0_1",
+    versions: ["1.2.0", "1.1.0"],
+    expected: [],
+    compare: false,
+  },
+  {
+    name: "app",
+    installed: "1.0,100",
+    latest: "1.0.1,200",
+    versions: ["1.0.2", "1.0.1", "1.0"],
+    expected: ["1.0.1"],
+    compare: false,
+    cask: true,
+  },
+  {
+    name: "app",
+    installed: "1.0.0",
+    latest: "latest",
+    versions: ["1.2.0", "1.0.0"],
+    expected: [],
+    compare: false,
+    unknown: true,
+  },
+  {
+    name: "app",
+    installed: "unknown",
+    latest: "1.1.0",
+    versions: ["1.2.0", "1.1.0"],
+    expected: [],
+    compare: false,
+    unknown: true,
+  },
+  {
+    name: "app",
+    installed: "2.0.0",
+    latest: "1.1.0",
+    versions: ["2.1.0", "1.1.0"],
+    expected: [],
+    compare: false,
+    unknown: true,
+  },
+]) {
+  test(`overview selects brew's interval: ${scenario.name} ${scenario.installed} to ${scenario.latest}`, async (t) => {
+    const d = await scratch();
+    const row = {
+      name: scenario.name,
+      installed_versions: [scenario.installed],
+      current_version: scenario.latest,
+    };
+    const outdated = { formulae: scenario.cask ? [] : [row], casks: scenario.cask ? [row] : [] };
+    await writeFile(
+      join(d, "brew"),
+      `#!${process.execPath}
+const args = process.argv.slice(2);
+console.log(JSON.stringify(args[0] === 'outdated' ? ${JSON.stringify(outdated)} : {formulae: [], casks: []}));
+`,
+      { mode: 0o755 },
+    );
+    const usage = join(d, "usage.txt");
+    await writeFile(usage, scenario.name);
+    const originalEnv = process.env;
+    const originalFetch = globalThis.fetch;
+    process.env = {
+      PATH: `${d}:/usr/bin:/bin`,
+      XDG_CONFIG_HOME: d,
+      XDG_CACHE_HOME: d,
+      OPENAI_API_KEY: "test-placeholder",
+      OPENAI_BASE_URL: "https://engine.invalid/v1",
+      NO_COLOR: "1",
+    };
+    t.after(() => {
+      process.env = originalEnv;
+      globalThis.fetch = originalFetch;
+    });
+    const prompts: string[] = [];
+    let forgeCalls = 0;
+    globalThis.fetch = async (url, init) => {
+      if (String(url).startsWith("https://engine.invalid/")) {
+        prompts.push(JSON.parse(String(init?.body)).messages[0].content);
+        return Response.json({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify(
+                  scenario.expected.map((version) => ({
+                    kind: "fix",
+                    version,
+                    summary: `Change in ${version}`,
+                  })),
+                ),
+              },
+            },
+          ],
+        });
+      }
+      forgeCalls++;
+      return Response.json(
+        scenario.versions.map((v) => ({
+          tag_name: `v${v}`,
+          body: `NOTE[${v}]`,
+          prerelease: v.includes("-rc"),
+          html_url: `https://forge.invalid/o/app/releases/v${v}`,
+        })),
+      );
+    };
+    const result = await buildOverview(
+      {
+        usagePaths: [usage],
+        tools: [
+          {
+            name: scenario.name,
+            source: "https://forge.invalid/o/app",
+            version: { cmd: ["app"], match: "(.*)" },
+            update: `brew upgrade ${scenario.name}`,
+          },
+        ],
+      },
+      {
+        engine: { kind: "openai", model: "test", label: "test", base: "https://engine.invalid/v1" },
+        concurrency: 1,
+      },
+    );
+    assert.equal(result.entries.length, 1);
+    const got = result.entries[0];
+    assert.ok(got);
+    assert.equal(got.refs, 1);
+    assert.equal(forgeCalls, 1);
+    assert.deepEqual(
+      got.behind.map((r) => r.version),
+      scenario.expected,
+      "notes must stay in brew's interval",
+    );
+    assert.equal(prompts.length, scenario.expected.length ? 1 : 0);
+    for (const v of scenario.versions)
+      assert.equal(
+        prompts.join("").includes(`NOTE[${v}]`),
+        (scenario.expected as string[]).includes(v),
+        `model input for ${v}`,
+      );
+    assert.equal(
+      got.compare,
+      scenario.compare
+        ? `https://forge.invalid/o/app/compare/v${scenario.installed}...v${scenario.latest}`
+        : null,
+    );
+    const report = renderOverview(result);
+    assert.doesNotMatch(report, /release listing incomplete|no complete release interval/);
+    if (scenario.unknown) {
+      assert.match(report, /cannot establish the release interval/);
+      assert.doesNotMatch(report, /forge published no release between|up to date/);
+      assert.match(JSON.stringify(result), /cannot establish the release interval/);
+    } else if (scenario.expected.length) {
+      assert.match(report, new RegExp(`${scenario.expected.length} release`));
+    }
+  });
+}
+
+test("overview interval respects branch selection and the fetched page boundary", () => {
+  const pkg: OutdatedPackage = {
+    name: "app@1.2",
+    installed: "1.2.0",
+    latest: "1.3.2",
+    kind: "formula",
+    pinned: false,
+  };
+  const releases = ["1.3.1", "1.2.2", "1.2.1"].map((version) => ({
+    tag: `v${version}`,
+    version,
+    notes: "Change",
+    url: "https://example.invalid",
+    publishedAt: null,
+  }));
+  assert.ok(releases[0]);
+  assert.deepEqual(
+    overviewRange(pkg, releases, true).behind.map((r) => r.version),
+    ["1.2.1", "1.2.2"],
+  );
+  assert.equal(overviewRange(pkg, releases, true).truncated, true);
+  assert.equal(overviewRange(pkg, releases, false).truncated, false);
+  assert.equal(
+    overviewRange(pkg, [...releases, { ...releases[0], version: "1.2.0" }], true).truncated,
+    false,
+  );
+  const above = [{ ...releases[0], version: "1.2.9" }];
+  const range = overviewRange({ ...pkg, latest: "1.2.3" }, above, true);
+  // Zero isolates the target guard: the ordering guard must not mask it.
+  const unknownTarget = overviewRange({ ...pkg, installed: "0.0.0", latest: "latest" }, releases, false);
+  assert.match(unknownTarget.rangeError ?? "", /cannot establish/);
+  assert.equal(range.truncated, true);
+  assert.deepEqual(range.behind, []);
+  const rendered = renderOverview(
+    overview({
+      entries: [
+        entry({ name: pkg.name, source: "https://example.invalid/o/app", bucket: "undigested", ...range }),
+      ],
+    }),
+  );
+  assert.match(rendered, /release listing incomplete/);
+  assert.doesNotMatch(rendered, /forge published no release between/);
+  const partial = renderOverview(
+    overview({
+      entries: [entry({ name: pkg.name, bucket: "undigested", ...overviewRange(pkg, releases, true) })],
+    }),
+  );
+  assert.match(partial, /2\+ releases/);
+  assert.doesNotMatch(partial, /no complete release interval/);
 });

@@ -3,8 +3,9 @@
 Analyzed on 2026-10-05. Implementation started on 2026-10-06.
 
 Completed: F1 (pending self-updating casks excluded from current), F7 (digest
-errors take precedence over pending updates).
-Open: F2, F3, F5, F4, F6.
+errors take precedence over pending updates), F2 (overview notes bounded by
+brew's upgrade interval).
+Open: F3, F5, F4, F6.
 
 F1 verification: 466 tests passed without skips; omitting either pending list
 made the new CLI assertions fail. Live gcloud-cli remained pending at
@@ -13,6 +14,14 @@ made the new CLI assertions fail. Live gcloud-cli remained pending at
 F7 verification: 468 tests passed without skips, including text and JSON
 reports with one pending and one failed tool. Reversing the precedence,
 ignoring errors, and ignoring a single pending release each failed an assertion.
+
+F2 verification: 481 tests passed without skips. Real subprocess/forge/engine
+stubs cover branches, preview, targets ahead of or behind the forge, revisions,
+cask builds and unknown bounds; CLI text and JSON agree on the range. Mutations
+independently exercise both bounds, both orderability guards, reversed bounds,
+branch/channel selection, packaging suffixes, page boundaries and report states.
+Use two-component packaging versions in these tests: three-component examples
+alone did not detect a removed suffix normalization.
 
 Baseline: `fc58565c0d50a54bfc3bd1a6c3f59bc1803a5605`; local `main`,
 `origin/main`, and `github/main` matched after fetching both remotes.

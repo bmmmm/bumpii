@@ -724,6 +724,30 @@ test("overview keeps an unreachable package in the report rather than dropping i
   assert.equal(r.code, 1, "brew says something is pending — that is not a quiet run");
 });
 
+test("overview CLI reports only releases brew can deliver", async (t) => {
+  const source = await stubForge(["v0.3.0", "v0.2.0", "v0.1.0"]);
+  if (!source) return t.skip(SKIP);
+  const path = await stubBrewOutdated({ name: "uv", installed: "0.1.0", latest: "0.2.0" });
+  const home = await freshHome();
+  const usage = join(home, "usage.sh");
+  await writeFile(usage, "uv sync");
+  await writeConfig(home, [tool({ name: "uv", source, update: "brew upgrade uv" })], [usage]);
+  const env = { PATH: path, XDG_CACHE_HOME: home };
+  const json = await runCli(["overview", "--no-judge", "--json"], home, env);
+  const report = JSON.parse(json.stdout);
+  assert.equal(json.code, 1);
+  assert.equal(report.entries.length, 1);
+  assert.equal(report.entries[0].refs, 1);
+  assert.deepEqual(
+    report.entries[0].behind.map((r: { version: string }) => r.version),
+    ["0.2.0"],
+  );
+  assert.match(report.entries[0].compare, /v0\.1\.0\.\.\.v0\.2\.0$/);
+  const text = await runCli(["overview", "--no-judge"], home, env);
+  assert.match(text.stdout, /1 release/);
+  assert.doesNotMatch(text.stdout, /0\.3\.0/);
+});
+
 test("overview exits 2 when brew itself cannot answer", async () => {
   // The other half: if the source of the whole report fails, there is no
   // report — and that must not read as "nothing pending" either.

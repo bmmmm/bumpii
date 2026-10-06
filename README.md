@@ -95,7 +95,11 @@ these does and why.
 
 `bumpii digest` reports on what you tracked. `bumpii overview` starts from what
 Homebrew already knows is pending — every formula and cask, tracked or not —
-and sorts it by whether it can say anything useful about it:
+and sorts it by whether it can say anything useful about it. Release notes cover
+only `installed < release <= brew target`, on a versioned formula's branch
+or its preview channel. Brew revisions and cask build suffixes are excluded
+from upstream version comparisons; compare links still require actual tags.
+An unknown interval or an incomplete forge page is stated in the report.
 
 ```console
 $ bumpii overview --judge

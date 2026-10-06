@@ -12,7 +12,7 @@
 import { formulaOf, isManualUpdate, namesOf } from "./config.ts";
 import { digest, type Engine } from "./judge.ts";
 import { limiter } from "./limit.ts";
-import { fillPage, pageVersion } from "./notes.ts";
+import { fillPage, pageVersion, pickReleases, prereleaseChannel } from "./notes.ts";
 import {
   brewInstalledVersions,
   brewOutdated,
@@ -25,7 +25,7 @@ import type { Progress } from "./progress.ts";
 import { listReleases, parseSource } from "./sources.ts";
 import type { Config, DigestItem, Release, ToolConfig } from "./types.ts";
 import { referenceCounts, resolveUsagePaths } from "./usage.ts";
-import { isComparable, isTruncated, releaseFor, releasesBehind } from "./version.ts";
+import { compareVersions, isComparable, isOrderable, releaseFor } from "./version.ts";
 
 /** Why an entry ended up where it did. Each bucket renders differently. */
 export type Bucket =
@@ -87,6 +87,8 @@ export interface OverviewEntry {
   compare: string | null;
   /** Why this landed in "unreachable", or why its digest came back empty. */
   error?: string;
+  /** Brew did not provide an orderable installed-to-target interval. */
+  rangeError?: string;
 }
 
 export interface Overview {
@@ -214,6 +216,43 @@ export function compareFor(
   const from = tagFor(releases, installed);
   const to = tagFor(releases, latest);
   return from && to ? compareUrl(source, from, to) : null;
+}
+
+/**
+ * Only notes for the upgrade brew actually offers. Brew revisions and cask
+ * build suffixes describe packaging, not upstream tags; compare links still
+ * require the original versions to match real tags. A capped page with no
+ * lower boundary is incomplete even when all its releases exceed the target.
+ */
+export function overviewRange(
+  pkg: OutdatedPackage,
+  releases: Release[],
+  capped: boolean,
+): {
+  behind: Release[];
+  published: number;
+  truncated: boolean;
+  rangeError?: string;
+} {
+  const pool = pickReleases(pkg.name, releases, releases.length).picked.filter(isComparable);
+  const upstream = (raw: string) => (pageVersion(raw) ?? "").replace(/_\d+$/, "");
+  const installed = upstream(pkg.installed);
+  const latest = upstream(pkg.latest);
+  if (!isOrderable(installed) || !isOrderable(latest) || compareVersions(installed, latest) > 0) {
+    return {
+      behind: [],
+      published: pool.length,
+      truncated: false,
+      rangeError: "cannot establish the release interval from brew's versions — not digested",
+    };
+  }
+  return {
+    behind: pool
+      .filter((r) => compareVersions(r.version, installed) > 0 && compareVersions(r.version, latest) <= 0)
+      .sort((a, b) => compareVersions(a.version, b.version)),
+    published: pool.length,
+    truncated: capped && !pool.some((r) => compareVersions(r.version, installed) <= 0),
+  };
 }
 
 /**
@@ -395,12 +434,12 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
       }
 
       try {
-        const list = await listReleases(parseSource(source));
+        const list = await listReleases(parseSource(source), {
+          prereleases: prereleaseChannel(pkg.name) !== null,
+        });
         // brew's installed version, not a probe: it has just told us both
         // numbers, and a second answer from the binary could only disagree.
-        const behind = releasesBehind(list.releases, pkg.installed);
-        const published = list.releases.filter(isComparable).length;
-        const truncated = isTruncated(list.releases, behind, list.capped);
+        const { behind, published, truncated, rangeError } = overviewRange(pkg, list.releases, list.capped);
 
         const compare = compareFor(source, list.releases, pkg.installed, pkg.latest);
 
@@ -432,6 +471,7 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
             behind,
             published,
             truncated,
+            rangeError,
             items,
             compare,
             error,
