@@ -739,7 +739,9 @@ case; it prints the digest first regardless.
 Exit codes: `0` nothing pending, `1` updates available, `2` error. `0` means
 *checked, and nothing was waiting* — so a run where a forge could not be
 reached exits `2` even though nothing came back pending, because nothing was
-checked either. Under `--yes` and `--brew-upgrade` the run re-probes every
+checked either. In a digest, an error also takes precedence when another tool
+has updates: the report keeps both results, and the exit code is `2`, including
+with `--json`. Under `--yes` and `--brew-upgrade` the run re-probes every
 tool it said was behind, so *nothing left pending* is measured rather than
 assumed: `0` when every one came back on a version no longer behind, `1` when
 one is still behind for a reason that is not a failure — brew did not list

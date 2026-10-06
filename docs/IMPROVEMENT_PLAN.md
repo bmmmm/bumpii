@@ -2,12 +2,17 @@
 
 Analyzed on 2026-10-05. Implementation started on 2026-10-06.
 
-Completed: F1 (pending self-updating casks excluded from current).
-Open: F7, F2, F3, F5, F4, F6.
+Completed: F1 (pending self-updating casks excluded from current), F7 (digest
+errors take precedence over pending updates).
+Open: F2, F3, F5, F4, F6.
 
 F1 verification: 466 tests passed without skips; omitting either pending list
 made the new CLI assertions fail. Live gcloud-cli remained pending at
 572.0.0 → 587.0.0 and no longer appeared in `current`.
+
+F7 verification: 468 tests passed without skips, including text and JSON
+reports with one pending and one failed tool. Reversing the precedence,
+ignoring errors, and ignoring a single pending release each failed an assertion.
 
 Baseline: `fc58565c0d50a54bfc3bd1a6c3f59bc1803a5605`; local `main`,
 `origin/main`, and `github/main` matched after fetching both remotes.

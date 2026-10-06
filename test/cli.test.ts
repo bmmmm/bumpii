@@ -657,6 +657,35 @@ test("--yes on a run that could not reach anything must not exit 0 either", asyn
   assert.equal(r.code, 2, "--yes must not be a quieter exit code than the read-only run");
 });
 
+for (const json of [false, true]) {
+  test(`a pending tool never hides a failed tool's exit status (${json ? "json" : "text"})`, async (t) => {
+    const pending = await stubForge(["v2.0.0", "v1.0.0"]);
+    const broken = await stubForgeFailing();
+    if (!pending || !broken) return t.skip(SKIP);
+    const home = await freshHome();
+    // fakeBrew's isolated PATH has no echo; use an absolute probe so this
+    // measures a pending installation rather than a missing binary.
+    const version = { cmd: ["/bin/echo", "app 1.0.0"], match: "^app ([0-9.]+)" };
+    await writeConfig(home, [
+      tool({ source: pending, version }),
+      tool({ name: "other", source: broken, version }),
+    ]);
+    const dir = await fakeBrew(`printf '{"formulae":[],"casks":[]}'`);
+    const r = await runCli(["digest", "--no-judge", ...(json ? ["--json"] : [])], home, { PATH: dir });
+    if (json) {
+      const reports = JSON.parse(r.stdout).reports;
+      assert.equal(reports.length, 2);
+      assert.equal(reports[0].installed, "1.0.0");
+      assert.equal(reports[0].behind.length, 1);
+      assert.match(reports[1].error, /500/);
+    } else {
+      assert.match(r.stdout, /1 release behind/);
+      assert.match(r.stdout, /other\s+error/);
+    }
+    assert.equal(r.code, 2, "a known failure takes precedence over available updates");
+  });
+}
+
 test("one broken tool among current ones still exits non-zero", async (t) => {
   // The mixed case: nothing is pending, one forge failed. "Nothing pending"
   // is only true of the eleven that answered.

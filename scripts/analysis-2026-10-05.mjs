@@ -7,8 +7,6 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
-import { run } from "../src/exec.ts";
 import { digest } from "../src/judge.ts";
 import { brewSources, resolveSources } from "../src/outdated.ts";
 import { buildOverview } from "../src/overview.ts";
@@ -248,32 +246,4 @@ test("F6: a failed installed-version listing must not mean not installed", async
     "not-installed",
     "the listing failed; absence was never established",
   );
-});
-
-test("F7: a digest with a pending tool and a failed tool exits 2", async (t) => {
-  const env = await sandbox(t);
-  const tools = [tool("pending"), { ...tool("broken"), source: `${source}-broken` }];
-  await writeFile(join(env.dir, "bumpii", "tools.json"), JSON.stringify({ tools, usagePaths: [] }));
-  const hook = join(env.dir, "fetch.mjs");
-  await writeFile(
-    hook,
-    `globalThis.fetch = async (url) => String(url).includes('app-broken')
-    ? new Response('unavailable', {status: 503})
-    : Response.json([{tag_name: 'v2.0.0', body: 'Change', html_url: 'https://example.invalid/v2.0.0'}]);`,
-  );
-  let result;
-  try {
-    const out = await run(
-      process.execPath,
-      ["--import", hook, fileURLToPath(new URL("../src/cli.ts", import.meta.url)), "digest", "--no-judge"],
-      { env: process.env, timeout: 10_000 },
-    );
-    result = { ...out, code: 0 };
-  } catch (err) {
-    result = err;
-  }
-  assert.match(result.stdout, /1 release behind/);
-  assert.match(result.stdout, /broken\s+error/);
-  t.diagnostic(JSON.stringify({ code: result.code, stdout: result.stdout, stderr: result.stderr }));
-  assert.equal(result.code, 2, "a known fetch failure is hidden by the updates-available exit code");
 });
