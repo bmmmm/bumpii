@@ -152,11 +152,18 @@ export function parseItems(text: string): DigestItem[] {
     );
 
   const items: DigestItem[] = [];
-  for (const raw of parsed) {
+  for (const [index, raw] of parsed.entries()) {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error(
+        `invalid engine item ${index + 1}: expected an object — try a larger model with --model`,
+      );
+    }
     const o = raw as Record<string, unknown>;
     const kind = String(o.kind ?? "").toLowerCase() as ItemKind;
     const summary = typeof o.summary === "string" ? o.summary.trim() : "";
-    if (!summary) continue;
+    // Dropping malformed entries turned a nonempty invalid answer into a
+    // cached "no changes" result. Reject the whole answer before it is stored.
+    if (!summary) throw new Error(`invalid engine item ${index + 1}: summary must be a nonempty string`);
     items.push({
       // Not "fix". A kind outside the four is a classification that did not
       // happen, and filing it under the mildest of them is how a model writing

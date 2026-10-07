@@ -323,3 +323,36 @@ test("stored text survives a reparse into the same items", async () => {
   assert.equal(JSON.parse(raw)[0].summary, "Handle empty input");
   assert.equal(await readFile(join(dir, `${key}.txt`), "utf8"), ANSWER);
 });
+
+for (const malformed of [
+  [{ summary: 42 }],
+  [{ kind: "fix", summary: "A valid change" }, { summary: "   " }],
+]) {
+  test(`malformed model items are retried and old cached items repaired: ${JSON.stringify(malformed)}`, async (t) => {
+    const prevKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "test-placeholder";
+    t.after(() => {
+      if (prevKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = prevKey;
+    });
+    let answer = JSON.stringify(malformed);
+    const env = withEngine(() => answer);
+    t.after(env.restore);
+    const dir = await env.dir;
+    const releases = [release("1.2.0", "A nonempty release body")];
+    await assert.rejects(() => digest(OPENAI, "tool", releases), /invalid engine item/);
+    const { readdir } = await import("node:fs/promises");
+    const cacheDir = join(dir, "bumpii", "digests");
+    assert.deepEqual(await readdir(cacheDir).catch(() => []), [], "malformed data must never be cached");
+    answer = ANSWER;
+    assert.equal((await digest(OPENAI, "tool", releases)).length, 1);
+    assert.equal(env.calls, 2);
+    const [file] = await readdir(cacheDir);
+    assert.ok(file, "the corrected answer must actually be cached");
+    await writeFile(join(cacheDir, file), JSON.stringify(malformed));
+    assert.equal((await digest(OPENAI, "tool", releases)).length, 1);
+    assert.equal(env.calls, 3, "an old malformed cache item must be judged again");
+    await digest(OPENAI, "tool", releases);
+    assert.equal(env.calls, 3, "the corrected result is reusable");
+  });
+}

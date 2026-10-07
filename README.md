@@ -902,6 +902,10 @@ key, switching models or changing how the prompt is built produces a fresh
 judgement instead of replaying one made under different conditions. Nothing
 expires and nothing is invalidated by age. Delete the directory to have every
 judgement made again — it is derived data, like `sources.json`.
+Every model item must be an object with a nonempty string summary. Malformed
+answers fail visibly and are never cached as “no changes”; valid empty arrays
+and unknown classifications remain supported. An old malformed cache entry is
+re-read with the current parser and judged again if invalid.
 
 An answer that does not parse is never stored, so a model having a bad day
 costs one run rather than every run after it.

@@ -403,10 +403,8 @@ test("parseItems digs the array out of whatever the model wrapped it in", () => 
   assert.equal(items[0]?.version, "2.96.0");
 });
 
-test("parseItems repairs what it can and drops what it cannot", () => {
-  const items = parseItems(
-    '[{"kind":"nonsense","summary":"x"},{"summary":"   "},{"kind":"fix","summary":"y"}]',
-  );
+test("parseItems preserves unknown kinds without claiming a classification", () => {
+  const items = parseItems('[{"kind":"nonsense","summary":"x"},{"kind":"fix","summary":"y"}]');
   assert.deepEqual(
     items.map((i) => i.kind),
     ["unclassified", "fix"],
@@ -416,7 +414,7 @@ test("parseItems repairs what it can and drops what it cannot", () => {
   // a change the notes did describe. What changed is where it lands: "fix" is
   // the mildest of the four and claimed a classification nothing performed.
   assert.equal(items[0]?.summary, "x", "the summary is what carries the change; it must not be lost");
-  assert.equal(items.length, 2, "an item with no summary carries no information");
+  assert.equal(items.length, 2, "both valid summaries survive");
 });
 
 test("parseItems refuses output with no array rather than inventing one", () => {
@@ -628,4 +626,36 @@ test("a pending update across a major says so without a model", () => {
     { engine: noEngine },
   );
   assert.doesNotMatch(channel, /major/);
+});
+
+for (const invalid of [null, 42, "text", [], {}, { summary: 42 }, { summary: "   " }]) {
+  test(`parseItems rejects malformed item ${JSON.stringify(invalid)}`, () => {
+    const reason =
+      invalid !== null && typeof invalid === "object" && !Array.isArray(invalid)
+        ? "summary must be a nonempty string"
+        : "expected an object";
+    assert.throws(
+      () => parseItems(JSON.stringify([invalid])),
+      new RegExp(`invalid engine item 1: ${reason}`),
+    );
+    assert.throws(
+      () => parseItems(JSON.stringify([{ summary: "Valid change" }, invalid])),
+      new RegExp(`invalid engine item 2: ${reason}`),
+    );
+  });
+}
+
+test("parseItems preserves a valid empty answer and reports invalid items as failures", () => {
+  assert.deepEqual(parseItems("[]"), []);
+  let digestError: string | undefined;
+  try {
+    parseItems('[{"summary":42}]');
+  } catch (err) {
+    digestError = (err as Error).message;
+  }
+  assert.match(digestError ?? "", /invalid engine item/);
+  const text = renderReport([report({ behind: [rel("2.96.0", "A real change")], digestError })], { engine });
+  assert.match(text, /digest failed.*invalid engine item/);
+  assert.match(text, /https:\/\/example.com\/2.96.0/);
+  assert.doesNotMatch(text, /returned no items|all dependency bumps|up to date/);
 });
