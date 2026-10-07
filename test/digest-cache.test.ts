@@ -105,7 +105,7 @@ test("the same notes judged twice reach the model once", async () => {
     const first = await digest(OPENAI, "tool", releases);
     const second = await digest(OPENAI, "tool", releases);
     assert.deepEqual(second, first);
-    assert.equal(first.length, 1);
+    assert.equal(first.items.length, 1);
     // The point of the whole feature: the second run pays a file read, not a
     // model call.
     assert.equal(env.calls, 1);
@@ -179,7 +179,7 @@ test("a stored answer that no longer parses is a miss, not a failed run", async 
     await writeFile(join(cacheDir, file), "not an array at all", "utf8");
 
     const items = await digest(OPENAI, "tool", releases);
-    assert.equal(items.length, 1);
+    assert.equal(items.items.length, 1);
     assert.equal(env.calls, 2);
   } finally {
     env.restore();
@@ -192,10 +192,10 @@ test("an engine that judges nothing is never consulted or cached", async () => {
     await env.dir;
     assert.deepEqual(
       await digest({ kind: "none", model: "", label: "none" }, "tool", [release("1.0.0", "x")]),
-      [],
+      { items: [] },
     );
     // No releases means nothing to judge, whatever the engine is.
-    assert.deepEqual(await digest(OPENAI, "tool", []), []);
+    assert.deepEqual(await digest(OPENAI, "tool", []), { items: [] });
     assert.equal(env.calls, 0);
   } finally {
     env.restore();
@@ -209,7 +209,7 @@ test("releases with no notes are never sent to the engine", async () => {
     // htop's real shape: plain tags, every body empty. The prompt would be the
     // version header and nothing else, which no model can turn into JSON.
     const items = await digest(OPENAI, "htop", [release("3.5.3", ""), release("3.5.2", "   \n  ")]);
-    assert.deepEqual(items, []);
+    assert.deepEqual(items, { items: [] });
     assert.equal(env.calls, 0, "an empty body cannot be summarised, so asking costs a call for nothing");
   } finally {
     env.restore();
@@ -224,7 +224,7 @@ test("a mixed set asks only about the releases that carry notes", async () => {
       release("1.2.0", "Fixed `tool run --strict` on empty input"),
       release("1.1.0", ""),
     ]);
-    assert.equal(items.length, 1);
+    assert.equal(items.items.length, 1);
     assert.equal(env.calls, 1);
     // Asserted on the prompt that was actually sent, not on the call count:
     // the empty release must not appear in it as a bare header, and a test
@@ -345,14 +345,75 @@ for (const malformed of [
     const cacheDir = join(dir, "bumpii", "digests");
     assert.deepEqual(await readdir(cacheDir).catch(() => []), [], "malformed data must never be cached");
     answer = ANSWER;
-    assert.equal((await digest(OPENAI, "tool", releases)).length, 1);
+    assert.equal((await digest(OPENAI, "tool", releases)).items.length, 1);
     assert.equal(env.calls, 2);
     const [file] = await readdir(cacheDir);
     assert.ok(file, "the corrected answer must actually be cached");
     await writeFile(join(cacheDir, file), JSON.stringify(malformed));
-    assert.equal((await digest(OPENAI, "tool", releases)).length, 1);
+    assert.equal((await digest(OPENAI, "tool", releases)).items.length, 1);
     assert.equal(env.calls, 3, "an old malformed cache item must be judged again");
     await digest(OPENAI, "tool", releases);
     assert.equal(env.calls, 3, "the corrected result is reusable");
   });
 }
+
+for (const length of [59_999, 60_000, 60_001]) {
+  test(`digest discloses omitted input at ${length} note characters, including cache hits`, async (t) => {
+    const prevKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "test-placeholder";
+    t.after(() => {
+      if (prevKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = prevKey;
+    });
+    const env = withEngine(() => ANSWER);
+    t.after(env.restore);
+    await env.dir;
+    const releases = [release("1.2.0", `${"A".repeat(length - 1)}Z`)];
+    const first = await digest(OPENAI, "tool", releases);
+    const second = await digest(OPENAI, "tool", releases);
+    const expected =
+      length > 60_000
+        ? {
+            totalCharacters: length,
+            omittedCharacters: 1,
+            releases: [{ version: "1.2.0", url: releases[0]?.url, omittedCharacters: 1 }],
+          }
+        : undefined;
+    assert.equal(env.prompts[0]?.includes("[truncated at"), length > 60_000);
+    assert.deepEqual(first.input, expected);
+    assert.deepEqual(second.input, expected);
+    assert.equal(env.calls, 1);
+    assert.equal(
+      env.prompts[0]?.includes("Z"),
+      length <= 60_000,
+      "the actual request must match the qualifier",
+    );
+  });
+}
+
+test("digest measures each shortened release and shares its budget", async (t) => {
+  const prevKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-placeholder";
+  t.after(() => {
+    if (prevKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = prevKey;
+  });
+  const env = withEngine(() => ANSWER);
+  t.after(env.restore);
+  await env.dir;
+  const releases = [
+    release("1.1.0", `${"A".repeat(30_000)}OMITTED_A`),
+    release("1.2.0", `${"B".repeat(30_000)}OMITTED_B`),
+    release("1.0.0", "   "),
+  ];
+  const got = await digest(OPENAI, "tool", releases);
+  assert.deepEqual(got.input, {
+    totalCharacters: 60_018,
+    omittedCharacters: 18,
+    releases: releases.slice(0, 2).map((r) => ({ version: r.version, url: r.url, omittedCharacters: 9 })),
+  });
+  assert.equal(got.items.length, 1);
+  assert.equal(env.calls, 1);
+  assert.doesNotMatch(env.prompts[0] ?? "", /OMITTED_A|OMITTED_B|### tool 1.0.0/);
+  assert.equal((env.prompts[0]?.match(/truncated at 30000/g) ?? []).length, 2);
+});

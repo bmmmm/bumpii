@@ -898,6 +898,7 @@ for (const scenario of [
     versions: ["1.2.0", "1.1.0", "1.0.0"],
     expected: ["1.1.0"],
     compare: true,
+    shortenedInput: true,
   },
   {
     name: "app@1",
@@ -1041,7 +1042,10 @@ console.log(JSON.stringify(args[0] === 'outdated' ? ${JSON.stringify(outdated)} 
       return Response.json(
         scenario.versions.map((v) => ({
           tag_name: `v${v}`,
-          body: `NOTE[${v}]`,
+          body:
+            scenario.shortenedInput && v === scenario.latest
+              ? `NOTE[${v}]${"A".repeat(60_001)}OMITTED_END`
+              : `NOTE[${v}]`,
           prerelease: v.includes("-rc"),
           html_url: `https://forge.invalid/o/app/releases/v${v}`,
         })),
@@ -1090,6 +1094,15 @@ console.log(JSON.stringify(args[0] === 'outdated' ? ${JSON.stringify(outdated)} 
     );
     const report = renderOverview(result);
     assert.doesNotMatch(report, /release listing incomplete|no complete release interval/);
+    if (scenario.shortenedInput) {
+      assert.ok((got.digestInput?.omittedCharacters ?? 0) > 0);
+      assert.match(JSON.stringify(result), /"digestInput"/);
+      assert.match(report, /model input shortened/);
+      assert.doesNotMatch(prompts[0] ?? "", /OMITTED_END/);
+    } else {
+      assert.equal(got.digestInput, undefined);
+      assert.doesNotMatch(report, /model input shortened/);
+    }
     if (scenario.unknown) {
       assert.match(report, /cannot establish the release interval/);
       assert.doesNotMatch(report, /forge published no release between|up to date/);

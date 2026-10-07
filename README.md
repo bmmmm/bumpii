@@ -907,6 +907,14 @@ answers fail visibly and are never cached as “no changes”; valid empty array
 and unknown classifications remain supported. An old malformed cache entry is
 re-read with the current parser and judged again if invalid.
 
+Long note bodies share a 60,000-character input budget, with a minimum of 800
+characters per release. When input is shortened, digest, overview and inbox
+reports state the omitted count and link to the full notes, even for cached
+summaries. Their JSON entries add `digestInput` with `totalCharacters`,
+`omittedCharacters`, and `releases` (version, URL and omitted character count).
+This describes model input; the existing `truncated` flag still describes an
+incomplete forge listing.
+
 An answer that does not parse is never stored, so a model having a bad day
 costs one run rather than every run after it.
 

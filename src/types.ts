@@ -97,6 +97,13 @@ export interface DigestItem {
   version: string;
 }
 
+/** Notes omitted from a model request, separate from forge pagination. */
+export interface DigestInput {
+  totalCharacters: number;
+  omittedCharacters: number;
+  releases: { version: string; url: string; omittedCharacters: number }[];
+}
+
 export interface ToolReport {
   tool: ToolConfig;
   installed: string | null;
@@ -130,4 +137,5 @@ export interface ToolReport {
    * showing, so a model that returns junk costs you the summary, not the news.
    */
   digestError?: string;
+  digestInput?: DigestInput;
 }

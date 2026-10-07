@@ -23,7 +23,7 @@ import {
 } from "./outdated.ts";
 import type { Progress } from "./progress.ts";
 import { listReleases, parseSource } from "./sources.ts";
-import type { Config, DigestItem, Release, ToolConfig } from "./types.ts";
+import type { Config, DigestInput, DigestItem, Release, ToolConfig } from "./types.ts";
 import { referenceCounts, resolveUsagePaths } from "./usage.ts";
 import { compareVersions, isComparable, isOrderable, releaseFor } from "./version.ts";
 
@@ -83,6 +83,7 @@ export interface OverviewEntry {
    */
   truncated: boolean;
   items: DigestItem[];
+  digestInput?: DigestInput;
   /** Diff between the installed and the newest tag, when both tags are known. */
   compare: string | null;
   /** Why this landed in "unreachable", or why its digest came back empty. */
@@ -466,9 +467,10 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
         // A digest that fails costs the summary, not the news — same split the
         // digest command makes, for the same reason.
         let items: DigestItem[] = [];
+        let digestInput: DigestInput | undefined;
         let error: string | undefined;
         try {
-          items = await limitJudge(() => digest(opts.engine, pkg.name, behind));
+          ({ items, input: digestInput } = await limitJudge(() => digest(opts.engine, pkg.name, behind)));
         } catch (err) {
           error = err instanceof Error ? err.message : String(err);
         }
@@ -481,6 +483,7 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
             truncated,
             rangeError,
             items,
+            digestInput,
             compare,
             error,
           },

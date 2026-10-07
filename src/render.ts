@@ -5,7 +5,7 @@ import type { Engine } from "./judge.ts";
 import type { CoverageRow, NotesResult } from "./notes.ts";
 import type { Overview, OverviewEntry } from "./overview.ts";
 import { releasesPage } from "./sources.ts";
-import type { DigestItem, ItemKind, Release, ToolReport } from "./types.ts";
+import type { DigestInput, DigestItem, ItemKind, Release, ToolReport } from "./types.ts";
 import { compareVersions, isOrderable, majorJump, releaseFor } from "./version.ts";
 
 /**
@@ -413,6 +413,25 @@ function safeItem(i: DigestItem): DigestItem {
   return { ...i, summary: safe(i.summary), version: safe(i.version) };
 }
 
+function safeDigestInput(input: DigestInput | undefined): DigestInput | undefined {
+  if (!input) return undefined;
+  return {
+    ...input,
+    releases: input.releases.map((r) => ({ ...r, version: safe(r.version), url: safe(r.url) })),
+  };
+}
+
+/** The same input limitation in all three reports, even over valid items. */
+function digestInputLines(input: DigestInput | undefined): string[] {
+  if (!input) return [];
+  return [
+    dim(
+      `model input shortened: ${input.omittedCharacters} of ${input.totalCharacters} note characters omitted — summary may be incomplete`,
+    ),
+    ...input.releases.map((r) => dim(`full notes ${r.version}: ${link(r.url, r.url)}`)),
+  ];
+}
+
 function safeReport(r: ToolReport): ToolReport {
   return {
     ...r,
@@ -429,6 +448,7 @@ function safeReport(r: ToolReport): ToolReport {
     items: r.items.map(safeItem),
     error: r.error === undefined ? undefined : safe(r.error),
     digestError: r.digestError === undefined ? undefined : safe(r.digestError),
+    digestInput: safeDigestInput(r.digestInput),
   };
 }
 
@@ -526,6 +546,7 @@ export function renderReport(rawReports: ToolReport[], opts: RenderOptions): str
       `${name} ${r.installed} → ${bold(r.latest)}  ${yellow(behindLabel)}${r.channel ? "" : majorLabel(r.installed, r.latest)}`,
     );
 
+    for (const line of digestInputLines(r.digestInput)) out.push(`  ${line}`);
     if (r.items.length === 0) {
       // The links follow either way — unlike the overview list, this report is
       // where you go to read the release, and its URL is the only thing left
@@ -607,6 +628,7 @@ export function renderInbox(raw: Inbox): string {
       items: e.items.map(safeItem),
       error: e.error === undefined ? undefined : safe(e.error),
       digestError: e.digestError === undefined ? undefined : safe(e.digestError),
+      digestInput: safeDigestInput(e.digestInput),
     })),
   };
   const out: string[] = [""];
@@ -635,6 +657,7 @@ export function renderInbox(raw: Inbox): string {
     ].filter(Boolean);
     out.push(`${name} → ${bold(latest?.tag ?? "?")}  ${count}${flags.length ? `  ${flags.join("  ")}` : ""}`);
 
+    for (const line of digestInputLines(e.digestInput)) out.push(`  ${line}`);
     if (e.items.length === 0) {
       out.push(dim(`  ${noDigestReason(e.releases, e.digestError, inbox.engine)}`));
       for (const rel of e.releases) out.push(dim(`    ${rel.tag}  ${link(rel.url, rel.url)}`));
@@ -761,6 +784,7 @@ function renderEntry(e: OverviewEntry, ctx: OverviewCtx, prefix: string, cont: s
   }
   if (e.truncated) body(dim("release listing incomplete — older releases may be missing"));
 
+  for (const line of digestInputLines(e.digestInput)) body(line);
   if (e.items.length === 0) {
     // Four different states read as an empty list, and only the second is
     // "nothing changed". A repo that publishes no versioned releases at all
@@ -857,6 +881,7 @@ function safeEntry(e: OverviewEntry): OverviewEntry {
     error: e.error === undefined ? undefined : safe(e.error),
     rangeError: e.rangeError === undefined ? undefined : safe(e.rangeError),
     sourceError: e.sourceError === undefined ? undefined : safe(e.sourceError),
+    digestInput: safeDigestInput(e.digestInput),
   };
 }
 

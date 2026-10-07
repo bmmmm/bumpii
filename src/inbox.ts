@@ -11,7 +11,7 @@ import { digest, type Engine } from "./judge.ts";
 import { limiter } from "./limit.ts";
 import type { Progress } from "./progress.ts";
 import { authHeaders, bare, type ForgeRef, getJson } from "./sources.ts";
-import type { Config, DigestItem, Release } from "./types.ts";
+import type { Config, DigestInput, DigestItem, Release } from "./types.ts";
 
 /** Notifications are a GitHub-only concept, so the ref never varies. */
 const GITHUB: ForgeRef = { kind: "github", api: "https://api.github.com", repo: "" };
@@ -43,6 +43,7 @@ export interface InboxEntry {
   /** Notification thread ids — what --mark-read patches. */
   threads: string[];
   items: DigestItem[];
+  digestInput?: DigestInput;
   /** The engine failed on these notes; the releases are still listed. */
   digestError?: string;
   /** The release bodies could not be fetched; nothing was shown, so
@@ -184,6 +185,7 @@ export async function buildInbox(config: Config, opts: InboxOptions): Promise<In
         // A digest that fails costs the summary, not the news — the same
         // split the digest command makes, for the same reason.
         let items: DigestItem[] = [];
+        let digestInput: DigestInput | undefined;
         let digestError: string | undefined;
         if (releases.length > 0 && opts.engine.kind !== "none") {
           progress?.phase("judge", {
@@ -194,7 +196,7 @@ export async function buildInbox(config: Config, opts: InboxOptions): Promise<In
           });
         }
         try {
-          items = await limitJudge(() => digest(opts.engine, name, releases));
+          ({ items, input: digestInput } = await limitJudge(() => digest(opts.engine, name, releases)));
         } catch (err) {
           digestError = err instanceof Error ? err.message : String(err);
         }
@@ -204,6 +206,7 @@ export async function buildInbox(config: Config, opts: InboxOptions): Promise<In
             releases,
             prerelease: bodies.some((r) => Boolean(r.prerelease)),
             items,
+            digestInput,
             digestError,
           },
         };

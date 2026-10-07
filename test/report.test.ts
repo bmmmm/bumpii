@@ -6,7 +6,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Engine } from "../src/judge.ts";
 import { parseItems } from "../src/judge.ts";
-import { brewReprobeVerdict, type Reprobe, renderReport, reprobeVerdict } from "../src/render.ts";
+import {
+  brewReprobeVerdict,
+  type Reprobe,
+  renderInbox,
+  renderOverview,
+  renderReport,
+  reprobeVerdict,
+} from "../src/render.ts";
 import type { Release, ToolConfig, ToolReport } from "../src/types.ts";
 
 const engine: Engine = { kind: "openai", model: "local", label: "openai-compatible/local" };
@@ -659,3 +666,76 @@ test("parseItems preserves a valid empty answer and reports invalid items as fai
   assert.match(text, /https:\/\/example.com\/2.96.0/);
   assert.doesNotMatch(text, /returned no items|all dependency bumps|up to date/);
 });
+
+for (const items of [[], [{ kind: "fix" as const, summary: "Valid model summary", version: "2.96.0" }]]) {
+  test(`all reports disclose shortened input with ${items.length} model items`, () => {
+    const ESC = String.fromCharCode(27);
+    const digestInput = {
+      totalCharacters: 60_001,
+      omittedCharacters: 1,
+      releases: [
+        { version: `2.96.0${ESC}[2J`, url: `https://example.com/full${ESC}[2J`, omittedCharacters: 1 },
+      ],
+    };
+    const releases = [rel("2.96.0", "Some notes")];
+    const reports = [
+      renderReport([report({ behind: releases, items, digestInput })], { engine }),
+      renderInbox({
+        engine,
+        other: {},
+        capped: false,
+        entries: [
+          {
+            repo: "o/r",
+            tool: "app",
+            tracked: true,
+            releases,
+            prerelease: false,
+            threads: ["1"],
+            items,
+            digestInput,
+          },
+        ],
+      }),
+      renderOverview({
+        engine,
+        entries: [
+          {
+            name: "app",
+            installed: "1.0.0",
+            latest: "2.96.0",
+            kind: "formula",
+            pinned: false,
+            tracked: true,
+            refs: 1,
+            source: "github:o/r",
+            update: "brew upgrade app",
+            bucket: items.length ? "digested" : "undigested",
+            behind: releases,
+            published: 1,
+            truncated: false,
+            compare: null,
+            items,
+            digestInput,
+          },
+        ],
+        current: [],
+        unchecked: [],
+        missingUsagePaths: [],
+        noUsagePaths: false,
+        filteredOut: 0,
+        selfUpdating: [],
+      }),
+    ];
+    assert.equal(reports.length, 3);
+    for (const text of reports) {
+      assert.match(text, /model input shortened: 1 of 60001 note characters omitted/);
+      assert.match(text, /summary may be incomplete/);
+      // Control bytes are stripped; printable escape tails may remain.
+      assert.match(text, /full notes 2.96.0/);
+      assert.match(text, /https:\/\/example.com\/full/);
+      assert.equal(text.includes(`${ESC}[2J`), false);
+      if (items.length) assert.match(text, /Valid model summary/);
+    }
+  });
+}

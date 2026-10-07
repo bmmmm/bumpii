@@ -7,9 +7,8 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { digest } from "../src/judge.ts";
 import { buildOverview } from "../src/overview.ts";
-import { renderOverview, renderReport } from "../src/render.ts";
+import { renderOverview } from "../src/render.ts";
 
 const engine = { kind: "none", model: "", label: "not asked for" };
 const model = { kind: "openai", model: "audit-stub", label: "audit-stub", base: "https://engine.invalid/v1" };
@@ -88,50 +87,6 @@ async function sandbox(t, state = {}) {
     calls: async () => (await readFile(join(dir, "calls.txt"), "utf8")).trim().split("\n"),
   };
 }
-
-test("F4: a digest must disclose notes omitted from model input", async (t) => {
-  await sandbox(t);
-  const marker = "SECURITY_CHANGE_AT_END";
-  const releases = [release("2.0.0", `${"A".repeat(60_001)}\n${marker}`)];
-  let sent = "";
-  globalThis.fetch = async (_url, init) => {
-    sent = JSON.parse(init.body).messages[0].content;
-    return Response.json({
-      choices: [
-        {
-          message: {
-            content: JSON.stringify([{ kind: "feature", summary: "Add a command", version: "2.0.0" }]),
-          },
-        },
-      ],
-    });
-  };
-  const items = await digest(model, "app", releases);
-  assert.ok(sent.length > 60_000);
-  assert.equal(sent.includes(marker), false, "the sentinel must actually be outside the input");
-  const report = renderReport(
-    [
-      {
-        tool: tool(),
-        installed: "1.0.0",
-        latest: "2.0.0",
-        behind: releases,
-        items,
-        truncated: false,
-      },
-    ],
-    { engine: model },
-  );
-  t.diagnostic(
-    JSON.stringify({
-      noteCharacters: releases[0].notes.length,
-      promptCharacters: sent.length,
-      sentinelSeen: sent.includes(marker),
-      report,
-    }),
-  );
-  assert.match(report, /truncat|partial|incomplete|omitted/i, "the reader cannot see that input was omitted");
-});
 
 test("F6: a failed installed-version listing must not mean not installed", async (t) => {
   await sandbox(t, { listFails: true });

@@ -2953,3 +2953,53 @@ test("overview names how many installed packages have no release notes mapped", 
   const only = await runCli(["overview", "--only", "orphanapp"], home, { PATH });
   assert.doesNotMatch(only.stdout, /no release source or page/);
 });
+
+test("digest CLI discloses shortened model input in text and JSON, including cached results", async () => {
+  const home = await freshHome();
+  const hook = join(home, "fetch.mjs");
+  const sent = join(home, "sent.txt");
+  await writeFile(
+    hook,
+    `import {writeFileSync, appendFileSync} from 'node:fs';
+globalThis.fetch = async (url, init) => {
+  if (String(url).endsWith('/models')) return Response.json({data: [{id: 'test'}]});
+  if (String(url).endsWith('/chat/completions')) {
+    appendFileSync(${JSON.stringify(sent)}, JSON.parse(init.body).messages[0].content);
+    return Response.json({choices: [{message: {content: '[{"kind":"fix","summary":"Valid summary","version":"2.0.0"}]'}}]});
+  }
+  if (String(url).includes('/releases?')) return Response.json(['2.0.0','1.0.0'].map(v => ({tag_name: 'v'+v, body: 'A'.repeat(60000)+'OMITTED_END', html_url: 'https://forge.invalid/o/r/releases/v'+v})));
+  throw new Error('Unexpected request: '+url);
+};`,
+  );
+  const dir = await fakeBrew(`case "$1" in outdated) ${NOTHING_OUTDATED} ;; esac`);
+  await writeConfig(home, [
+    tool({
+      source: "https://forge.invalid/o/r",
+      version: { cmd: ["/bin/echo", "app 1.0.0"], match: "^app ([0-9.]+)" },
+    }),
+  ]);
+  const env = {
+    PATH: dir,
+    XDG_CACHE_HOME: home,
+    OPENAI_BASE_URL: "https://engine.invalid/v1",
+    OPENAI_API_KEY: "test-placeholder",
+    NODE_OPTIONS: `--import=${hook}`,
+  };
+  const json = await runCli(["digest", "--judge", "--model", "test", "--json"], home, env);
+  assert.equal(json.code, 1);
+  const report = JSON.parse(json.stdout);
+  assert.equal(report.reports.length, 1);
+  assert.equal(report.reports[0].items.length, 1);
+  // Missing metadata must fail an assertion, not crash the test on access.
+  assert.equal(report.reports[0].digestInput?.omittedCharacters, 11);
+  const prompt = await readFile(sent, "utf8");
+  assert.doesNotMatch(prompt, /OMITTED_END/);
+  const text = await runCli(["digest", "--judge", "--model", "test"], home, env);
+  assert.match(text.stdout, /model input shortened: 11 of 60011/);
+  assert.match(text.stdout, /full notes 2.0.0: https:\/\/forge.invalid\/o\/r\/releases\/v2.0.0/);
+  assert.equal(
+    await readFile(sent, "utf8"),
+    prompt,
+    "cached results retain the qualifier without another model call",
+  );
+});

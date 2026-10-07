@@ -5,8 +5,8 @@ Analyzed on 2026-10-05. Implementation started on 2026-10-06.
 Completed: F1 (pending self-updating casks excluded from current), F7 (digest
 errors take precedence over pending updates), F2 (overview notes bounded by
 brew's upgrade interval), F3 (retryable source discovery failures), F5 (invalid
-model items rejected before caching).
-Open: F4, F6.
+model items rejected before caching), F4 (model-input omissions in reports).
+Open: F6.
 
 F1 verification: 466 tests passed without skips; omitting either pending list
 made the new CLI assertions fail. Live gcloud-cli remained pending at
@@ -35,6 +35,12 @@ items, wrong summary types and blank summaries fail visibly; mixed arrays cannot
 become partial success. Corrected answers and old malformed cache entries recover.
 Each shape guard, the summary guard and cache-before-validation were mutated;
 all failed assertions. Valid empty arrays and unknown kinds remain supported.
+
+F4 verification: 506 tests passed without skips. Sent prompts and cold/cached
+results agree below, at and above the budget, including shared budgets. Digest,
+overview and inbox retain the qualifier in text and JSON alongside valid items.
+Mutations cover the cut boundary, counts, both cache paths, each caller and the
+shared renderer, including control-byte stripping in the new links.
 
 Baseline: `fc58565c0d50a54bfc3bd1a6c3f59bc1803a5605`; local `main`,
 `origin/main`, and `github/main` matched after fetching both remotes.

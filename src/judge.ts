@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { localServerBase, localServerKey } from "./env.ts";
 import { run } from "./exec.ts";
 import { describeFetchError } from "./sources.ts";
-import type { DigestItem, ItemKind, Release } from "./types.ts";
+import type { DigestInput, DigestItem, ItemKind, Release } from "./types.ts";
 
 export type EngineKind = "openai" | "claude-cli" | "none";
 
@@ -106,18 +106,23 @@ export async function resolveEngine(opts: { model?: string } = {}): Promise<Engi
 const PROMPT_BUDGET = 60_000;
 const MIN_PER_RELEASE = 800;
 
-function prompt(tool: string, releases: Release[]): string {
+function prompt(tool: string, releases: Release[]): { text: string; input?: DigestInput } {
   const per = Math.max(MIN_PER_RELEASE, Math.floor(PROMPT_BUDGET / Math.max(1, releases.length)));
+  const input: DigestInput = { totalCharacters: 0, omittedCharacters: 0, releases: [] };
   const body = releases
     .map((r) => {
-      const notes =
-        r.notes.length > per
-          ? `${r.notes.slice(0, per)}\n…[truncated at ${per} characters — see ${r.url}]`
-          : r.notes;
+      let notes = r.notes;
+      input.totalCharacters += notes.length;
+      if (notes.length > per) {
+        const omittedCharacters = notes.length - per;
+        input.omittedCharacters += omittedCharacters;
+        input.releases.push({ version: r.version, url: r.url, omittedCharacters });
+        notes = `${notes.slice(0, per)}\n…[truncated at ${per} characters — see ${r.url}]`;
+      }
       return `### ${tool} ${r.version}\n${notes}`;
     })
     .join("\n\n");
-  return `You are summarising release notes for someone who uses the \`${tool}\` CLI daily and needs to know what is newly available or newly broken.
+  const text = `You are summarising release notes for someone who uses the \`${tool}\` CLI daily and needs to know what is newly available or newly broken.
 
 Return ONLY a JSON array, no prose, no code fence. Each element:
 {"kind":"security|breaking|feature|fix","summary":"one line","version":"<x.y.z>"}
@@ -133,6 +138,7 @@ Rules:
 Release notes:
 
 ${body}`;
+  return { text, input: input.omittedCharacters > 0 ? input : undefined };
 }
 
 export function parseItems(text: string): DigestItem[] {
@@ -305,7 +311,9 @@ export async function writeCachedDigest(key: string, raw: string, dir = digestCa
 }
 
 /**
- * Digest one tool's pending releases. Returns [] when no engine is available.
+ * Digest one tool's pending releases. Empty items when no engine is available.
+ * Input omissions are measured while building the prompt, before cache lookup,
+ * so a cached answer carries the same qualifier as a fresh judgement.
  *
  * Answered from cache when the same notes have already been judged by the same
  * model. This is where nearly all of a run's wall-clock goes — measured at 140s
@@ -313,8 +321,12 @@ export async function writeCachedDigest(key: string, raw: string, dir = digestCa
  * tool — and the notes for a published tag do not change, so a hit is not a
  * stale answer but the same answer without the wait.
  */
-export async function digest(engine: Engine, tool: string, releases: Release[]): Promise<DigestItem[]> {
-  if (engine.kind === "none" || releases.length === 0) return [];
+export async function digest(
+  engine: Engine,
+  tool: string,
+  releases: Release[],
+): Promise<{ items: DigestItem[]; input?: DigestInput }> {
+  if (engine.kind === "none" || releases.length === 0) return { items: [] };
   // A release with an empty body carries nothing to summarise, and plenty of
   // projects tag every version that way — htop publishes plain tags, so its
   // whole prompt was the line "### htop 3.5.3". A model handed that answers by
@@ -323,14 +335,14 @@ export async function digest(engine: Engine, tool: string, releases: Release[]):
   // where there is none. Dropped before the prompt is built rather than after
   // the answer comes back, because the call could not have produced anything.
   const readable = releases.filter((r) => r.notes.trim() !== "");
-  if (readable.length === 0) return [];
-  const text = prompt(tool, readable);
+  if (readable.length === 0) return { items: [] };
+  const { text, input } = prompt(tool, readable);
   const key = digestKey(engine, text);
 
   const cached = await readCachedDigest(key);
   if (cached !== null) {
     try {
-      return parseItems(cached);
+      return { items: parseItems(cached), input };
     } catch {
       // A stored answer that no longer parses is treated as a miss rather than
       // as a failure: re-judging is always available, and refusing to would
@@ -344,5 +356,5 @@ export async function digest(engine: Engine, tool: string, releases: Release[]):
   // that failure for every future run, and the point of the key is that a hit
   // is always usable.
   await writeCachedDigest(key, out);
-  return items;
+  return { items, input };
 }

@@ -53,7 +53,7 @@ import {
   reprobeVerdict,
 } from "./render.ts";
 import { channelStatus, listReleases, parseSource } from "./sources.ts";
-import type { DigestItem, Release, ToolConfig, ToolReport } from "./types.ts";
+import type { DigestInput, DigestItem, Release, ToolConfig, ToolReport } from "./types.ts";
 import { mentioned, resolveUsagePaths } from "./usage.ts";
 import { installedVersion, isTruncated, latestComparable, releasesBehind } from "./version.ts";
 
@@ -1510,9 +1510,10 @@ async function dispatch(progress: Progress): Promise<number> {
         // the releases we already have, so the report degrades to their URLs
         // instead of throwing the news away along with the summary.
         let items: DigestItem[] = [];
+        let digestInput: DigestInput | undefined;
         let digestError: string | undefined;
         try {
-          items = await limitJudge(() => digest(engine, tool.name, behind));
+          ({ items, input: digestInput } = await limitJudge(() => digest(engine, tool.name, behind)));
         } catch (err) {
           digestError = err instanceof Error ? err.message : String(err);
         }
@@ -1531,6 +1532,7 @@ async function dispatch(progress: Progress): Promise<number> {
             truncated,
             channel,
             items,
+            digestInput,
             digestError,
           },
         };

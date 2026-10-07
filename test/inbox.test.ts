@@ -304,3 +304,38 @@ test("a release whose notes cannot be read stays an entry, and keeps the exit co
     s.restore();
   }
 });
+
+test("inbox carries shortened model input into JSON and its report", async (t) => {
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = await mkdtemp(join(tmpdir(), "bumpii-inbox-input-"));
+  const previous = process.env;
+  process.env = { ...previous, XDG_CACHE_HOME: dir, OPENAI_API_KEY: "test-placeholder" };
+  t.after(async () => {
+    process.env = previous;
+    await rm(dir, { recursive: true, force: true });
+  });
+  const stub = stubFetch((url) => {
+    if (url.includes("/notifications")) return { body: [notification("1", "o/r")] };
+    if (url.includes("/chat/completions"))
+      return {
+        body: {
+          choices: [
+            { message: { content: '[{"kind":"fix","summary":"A valid change","version":"1.0.0"}]' } },
+          ],
+        },
+      };
+    return { body: releaseBody("v1.0.0", { body: "A".repeat(60_001) }) };
+  });
+  t.after(stub.restore);
+  const inbox = await buildInbox(config(), {
+    engine: { kind: "openai", model: "test", label: "test", base: "https://engine.invalid/v1" },
+    concurrency: 1,
+  });
+  assert.equal(inbox.entries.length, 1);
+  assert.equal(inbox.entries[0]?.items.length, 1);
+  assert.equal(inbox.entries[0]?.digestInput?.omittedCharacters, 1);
+  assert.match(JSON.stringify(inbox), /"digestInput"/);
+  assert.match(renderInbox(inbox), /model input shortened: 1 of 60001/);
+});
