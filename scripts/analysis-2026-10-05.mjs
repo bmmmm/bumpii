@@ -8,7 +8,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { digest } from "../src/judge.ts";
-import { brewSources, resolveSources } from "../src/outdated.ts";
 import { buildOverview } from "../src/overview.ts";
 import { renderOverview, renderReport } from "../src/render.ts";
 
@@ -89,28 +88,6 @@ async function sandbox(t, state = {}) {
     calls: async () => (await readFile(join(dir, "calls.txt"), "utf8")).trim().split("\n"),
   };
 }
-
-test("F3: a transient source lookup failure is retried after recovery", async (t) => {
-  const env = await sandbox(t, { infoFails: true });
-  const path = join(env.dir, "sources.json");
-  const failed = await resolveSources(["app"], path);
-  await env.save({ info: { formulae: [{ name: "app", homepage: source }], casks: [] } });
-  assert.equal((await brewSources(["app"])).app, source, "brew must actually have recovered");
-  const callsBeforeRetry = (await env.calls()).length;
-  const recovered = await resolveSources(["app"], path);
-  const calls = await env.calls();
-  assert.ok(calls.length > 0);
-  t.diagnostic(
-    JSON.stringify({
-      failed,
-      recovered,
-      callsBeforeRetry,
-      calls,
-      disk: JSON.parse(await readFile(path, "utf8")),
-    }),
-  );
-  assert.equal(recovered.app, source, "cached unknown still hides a source after brew recovered");
-});
 
 test("F4: a digest must disclose notes omitted from model input", async (t) => {
   await sandbox(t);

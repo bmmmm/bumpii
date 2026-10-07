@@ -1068,6 +1068,7 @@ console.log(JSON.stringify(args[0] === 'outdated' ? ${JSON.stringify(outdated)} 
     const got = result.entries[0];
     assert.ok(got);
     assert.equal(got.refs, 1);
+    assert.equal(got.sourceError, undefined, "an explicit source overrides missing brew metadata");
     assert.equal(forgeCalls, 1);
     assert.deepEqual(
       got.behind.map((r) => r.version),

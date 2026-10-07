@@ -4,8 +4,8 @@ Analyzed on 2026-10-05. Implementation started on 2026-10-06.
 
 Completed: F1 (pending self-updating casks excluded from current), F7 (digest
 errors take precedence over pending updates), F2 (overview notes bounded by
-brew's upgrade interval).
-Open: F3, F5, F4, F6.
+brew's upgrade interval), F3 (retryable source discovery failures).
+Open: F5, F4, F6.
 
 F1 verification: 466 tests passed without skips; omitting either pending list
 made the new CLI assertions fail. Live gcloud-cli remained pending at
@@ -22,6 +22,12 @@ independently exercise both bounds, both orderability guards, reversed bounds,
 branch/channel selection, packaging suffixes, page boundaries and report states.
 Use two-component packaging versions in these tests: three-component examples
 alone did not detect a removed suffix normalization.
+
+F3 verification: 488 tests passed without skips. Subprocess tests cover recovery,
+mixed batches, confirmed nulls, legacy revalidation and failed persistence.
+CLI text and JSON retain lookup errors with or without usage references;
+explicit sources take precedence. Cache conditions and report branches were
+mutated independently and failed assertions.
 
 Baseline: `fc58565c0d50a54bfc3bd1a6c3f59bc1803a5605`; local `main`,
 `origin/main`, and `github/main` matched after fetching both remotes.

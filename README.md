@@ -288,7 +288,10 @@ that was never tagged — no link is shown at all, because a link to
 `compare/v1.2.3...v1.2.4` would work perfectly and describe a release the
 upgrade does not contain. In a terminal that supports OSC 8 every URL is also clickable, and
 the resolved repos are cached in `~/.config/bumpii/sources.json` — a derived
-file, safe to delete.
+file, safe to delete. Successful metadata with no forge URL is cached too;
+failed or missing metadata is reported as unknown and retried on the next run.
+Legacy null entries are revalidated once because the old cache could not
+distinguish those cases.
 
 ## The releases GitHub already told you about
 

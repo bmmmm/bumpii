@@ -190,19 +190,26 @@ test("compareUrl refuses rather than inventing half a link", () => {
   assert.equal(compareUrl("not-a-source", "v1", "v2"), null);
 });
 
-test("a cached null is an answer, so brew is not re-asked for it", async () => {
-  const path = join(await scratch(), "sources.json");
+test("a cached null is an answer, so brew is not re-asked for it", async (t) => {
+  const env = await sourceBrew(t);
+  await env.save({}, ["glib", "gh"]);
+  const path = join(env.dir, "sources.json");
   // "glib" resolving to null is the real case: brew's URL is a GNOME tarball,
   // and re-deriving that on every run would cost a brew info to learn nothing.
-  await writeFile(path, JSON.stringify({ glib: null, gh: "github:cli/cli" }), "utf8");
+  await writeFile(
+    path,
+    JSON.stringify({ version: 1, sources: { glib: null, gh: "github:cli/cli" } }),
+    "utf8",
+  );
   // Both names are cached, so resolveSources must not shell out at all — if it
   // did, this test would spawn brew and the assertion below would still pass,
   // which is why the file is left unchanged as the second check.
   const before = await readFile(path, "utf8");
   const got = await resolveSources(["glib", "gh"], path);
-  assert.equal(got.glib, null);
-  assert.equal(got.gh, "github:cli/cli");
+  assert.equal(got.sources.glib, null);
+  assert.equal(got.sources.gh, "github:cli/cli");
   assert.equal(await readFile(path, "utf8"), before);
+  assert.deepEqual(await env.calls(), []);
 });
 
 test("a corrupt cache is an empty one, never a failed run", async () => {
@@ -251,7 +258,11 @@ test("a tapped formula resolves under the name it was asked for", async () => {
   try {
     const path = join(dir, "sources.json");
     const got = await resolveSources(["jundot/omlx/omlx"], path);
-    assert.equal(got["jundot/omlx/omlx"], "github:jundot/omlx", "the name asked for must carry the answer");
+    assert.equal(
+      got.sources["jundot/omlx/omlx"],
+      "github:jundot/omlx",
+      "the name asked for must carry the answer",
+    );
   } finally {
     process.env.PATH = realPath;
   }
@@ -268,7 +279,113 @@ test("a null cached under a tap-qualified name is asked again, not kept", async 
     "utf8",
   );
   const cache = await readSourceCache(path);
-  assert.equal("glib" in cache, true, "a plain name brew genuinely could not place stays settled");
+  assert.equal("glib" in cache, false, "legacy nulls have no provenance, even under plain names");
   assert.equal("jundot/omlx/omlx" in cache, false, "a tapped null is dropped so it gets one more chance");
   assert.equal(cache.gh, "github:cli/cli", "a name that did resolve is untouched");
+});
+
+/** Real subprocess failures and cache reads, isolated from the machine's brew. */
+async function sourceBrew(t: import("node:test").TestContext) {
+  const dir = await scratch();
+  const state = join(dir, "state.json");
+  const calls = join(dir, "calls.txt");
+  await writeFile(calls, "");
+  await writeFile(
+    join(dir, "brew"),
+    `#!${process.execPath}
+const fs = require('node:fs');
+const state = JSON.parse(fs.readFileSync(${JSON.stringify(state)}, 'utf8'));
+const names = process.argv.slice(4);
+fs.appendFileSync(${JSON.stringify(calls)}, names.join(',') + '\\n');
+if (names.some(n => state.fail.includes(n))) { console.error('temporary metadata failure'); process.exit(1); }
+console.log(JSON.stringify({formulae: names.filter(n => n in state.known).map(name => ({name, homepage: state.known[name] || 'https://example.invalid'})), casks: []}));
+`,
+    { mode: 0o755 },
+  );
+  const previous = process.env.PATH;
+  process.env.PATH = dir;
+  t.after(() => {
+    process.env.PATH = previous;
+  });
+  return {
+    dir,
+    save: (known: Record<string, string | null>, fail: string[] = []) =>
+      writeFile(state, JSON.stringify({ known, fail })),
+    calls: async () => (await readFile(calls, "utf8")).trim().split("\n").filter(Boolean),
+  };
+}
+
+test("source discovery retries a failed name after recovery", async (t) => {
+  const env = await sourceBrew(t);
+  const path = join(env.dir, "sources.json");
+  await env.save({}, ["app"]);
+  const failed = await resolveSources(["app"], path);
+  assert.equal("app" in failed.sources, false, "unknown is not a cached negative");
+  assert.match(failed.errors.app ?? "", /temporary metadata failure/);
+  assert.equal("app" in (await readSourceCache(path)), false);
+  await env.save({ app: "https://github.com/o/app" });
+  const recovered = await resolveSources(["app"], path);
+  assert.equal(recovered.sources.app, "github:o/app");
+  assert.deepEqual(await env.calls(), ["app", "app"]);
+});
+
+test("source discovery caches successful siblings and only retries failures", async (t) => {
+  const env = await sourceBrew(t);
+  const path = join(env.dir, "sources.json");
+  await env.save({ good: "https://github.com/o/good", absent: null }, ["broken"]);
+  const first = await resolveSources(["good", "absent", "broken"], path);
+  assert.deepEqual(first.sources, { good: "github:o/good", absent: null });
+  assert.deepEqual(Object.keys(first.errors), ["broken"]);
+  assert.match(first.errors.broken ?? "", /temporary metadata failure/);
+  const before = (await env.calls()).length;
+  assert.equal(before, 4, "one batch and three singleton recoveries");
+  await env.save({ broken: "https://github.com/o/recovered" });
+  const second = await resolveSources(["good", "absent", "broken"], path);
+  assert.deepEqual(second, {
+    sources: { good: "github:o/good", absent: null, broken: "github:o/recovered" },
+    errors: {},
+  });
+  assert.deepEqual((await env.calls()).slice(before), ["broken"]);
+  await resolveSources(["good", "absent", "broken"], path);
+  assert.equal((await env.calls()).length, before + 1);
+});
+
+test("source discovery revalidates legacy nulls once and preserves proven nulls", async (t) => {
+  const env = await sourceBrew(t);
+  const path = join(env.dir, "sources.json");
+  await writeFile(path, JSON.stringify({ app: null, absent: null, known: "github:o/known" }));
+  await env.save({ app: "https://github.com/o/app", absent: null });
+  const first = await resolveSources(["app", "absent", "known"], path);
+  assert.deepEqual(first, {
+    sources: { known: "github:o/known", app: "github:o/app", absent: null },
+    errors: {},
+  });
+  assert.equal(JSON.parse(await readFile(path, "utf8")).version, 1);
+  assert.deepEqual(await resolveSources(["app", "absent", "known"], path), first);
+  assert.deepEqual(await env.calls(), ["app,absent"]);
+});
+
+test("source discovery preserves missing metadata and failed cache writes", async (t) => {
+  const env = await sourceBrew(t);
+  await env.save({ app: "https://github.com/o/app" });
+  const path = join(env.dir, "missing-parent", "sources.json");
+  for (let i = 0; i < 2; i++) {
+    const got = await resolveSources(["app", "omitted"], path);
+    assert.deepEqual(got.sources, { app: "github:o/app" });
+    assert.match(got.errors.omitted ?? "", /returned no metadata/);
+  }
+  assert.deepEqual(await env.calls(), ["app,omitted", "app,omitted"]);
+});
+
+test("source cache accepts only versioned lookup objects and validated values", async () => {
+  const path = join(await scratch(), "sources.json");
+  for (const sources of [null, 1, "github:o/app", ["github:o/app"]]) {
+    await writeFile(path, JSON.stringify({ version: 1, sources }));
+    assert.deepEqual(await readSourceCache(path), {});
+  }
+  await writeFile(
+    path,
+    JSON.stringify({ version: 1, sources: { app: "github:o/app", absent: null, invalid: 42 } }),
+  );
+  assert.deepEqual(await readSourceCache(path), { app: "github:o/app", absent: null });
 });

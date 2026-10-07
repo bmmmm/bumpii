@@ -249,22 +249,16 @@ export type SourceCache = Record<string, string | null>;
 export async function readSourceCache(path = sourceCachePath()): Promise<SourceCache> {
   try {
     const raw = await readFile(path, "utf8");
-    const parsed = JSON.parse(raw) as unknown;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    // Values are checked, not just the container. A hand-edited `{"gh": 123}`
-    // is truthy, so it would be carried all the way to parseSource and surface
-    // as "source.startsWith is not a function" — a message about this file that
-    // never mentions it. Dropping the bad entry re-derives it instead.
+    const confirmed = parsed.version === 1;
+    const values = confirmed ? parsed.sources : parsed;
+    if (!values || typeof values !== "object" || Array.isArray(values)) return {};
     const out: SourceCache = {};
-    for (const [k, v] of Object.entries(parsed)) {
-      // A null under a tap-qualified name is dropped rather than read, so it is
-      // asked again once. Those nulls were written by a lookup that could not
-      // succeed — brewSources keyed only on the short name — and `!(n in
-      // cache)` in resolveSources treats a null as a settled answer, so without
-      // this the fix would never reach a machine that already has one on disk.
-      // A plain name resolving to null is a real answer and stays.
-      if (v === null && k.includes("/")) continue;
-      if (v === null || typeof v === "string") out[k] = v;
+    for (const [k, v] of Object.entries(values)) {
+      // Legacy nulls cannot distinguish missing metadata from a successful
+      // lookup with no forge URL. Revalidate once; only version 1 proves null.
+      if (typeof v === "string" || (confirmed && v === null)) out[k] = v;
     }
     return out;
   } catch {
@@ -276,7 +270,7 @@ export async function readSourceCache(path = sourceCachePath()): Promise<SourceC
 
 async function writeSourceCache(cache: SourceCache, path: string): Promise<void> {
   const tmp = `${path}.tmp.${process.pid}`;
-  await writeFile(tmp, `${JSON.stringify(cache, null, 2)}\n`, "utf8");
+  await writeFile(tmp, `${JSON.stringify({ version: 1, sources: cache }, null, 2)}\n`, "utf8");
   await rename(tmp, path);
 }
 
@@ -317,6 +311,12 @@ export function caskSource(c: RawInfoCask): string | null {
   return sourceFromUrls([c.url ?? "", c.homepage ?? ""]);
 }
 
+export interface SourceLookup {
+  sources: SourceCache;
+  /** Missing metadata is retryable, never a confirmed absence of a forge. */
+  errors: Record<string, string>;
+}
+
 /**
  * Ask brew where these packages come from, in one call for all of them.
  *
@@ -325,64 +325,58 @@ export function caskSource(c: RawInfoCask): string | null {
  * the answer, which is why the result is keyed by what came back rather than by
  * what was asked.
  */
-export async function brewSources(names: string[]): Promise<SourceCache> {
-  if (names.length === 0) return {};
-  let stdout: string;
+export async function brewSources(names: string[]): Promise<SourceLookup> {
+  if (names.length === 0) return { sources: {}, errors: {} };
   try {
-    ({ stdout } = await run("brew", ["info", "--json=v2", ...names], { timeout: 300_000 }));
-  } catch {
-    // brew exits non-zero for the whole batch as soon as one name is unknown,
-    // and it writes nothing at all — so the names it does know are lost with
-    // it. A formula from a tap that has since gone away is enough to trigger
-    // this, and losing the entire report over one dead name is the opposite of
-    // what `add` does ("one unresolvable name must not sink the rest").
-    // Retried one at a time, and only on this path, so the cost lands on the
-    // rare failure rather than on every run.
-    if (names.length === 1) return {};
-    const each = await Promise.all(names.map((n) => brewSources([n])));
-    return Object.assign({}, ...each) as SourceCache;
-  }
-  const d = parseBrewJson<{ formulae?: RawInfoFormula[]; casks?: RawInfoCask[] }>(stdout, "brew info");
-  const out: SourceCache = {};
-  for (const f of d.formulae ?? []) {
-    if (!f.name) continue;
-    const source = formulaSource(f);
-    // Under both names it answers to, the same way discover.ts indexes its
-    // batch. A tapped formula is asked for by its full name and comes back
-    // with the short one in `name`, so keying on `name` alone made the lookup
-    // in resolveSources miss and cache a null for a forge brew had just named.
-    for (const key of [f.name, f.full_name]) {
-      if (key) out[key] = source;
+    const { stdout } = await run("brew", ["info", "--json=v2", ...names], { timeout: 300_000 });
+    const d = parseBrewJson<{ formulae?: RawInfoFormula[]; casks?: RawInfoCask[] }>(stdout, "brew info");
+    const sources: SourceCache = {};
+    for (const f of d.formulae ?? []) {
+      if (!f.name) continue;
+      const source = formulaSource(f);
+      // Brew answers tapped names under both a short name and full_name.
+      for (const key of [f.name, f.full_name]) if (key) sources[key] = source;
     }
+    for (const c of d.casks ?? []) {
+      if (c.token) sources[c.token] = caskSource(c);
+    }
+    return {
+      sources,
+      errors: Object.fromEntries(
+        names.filter((n) => !(n in sources)).map((n) => [n, `brew info returned no metadata for ${n}`]),
+      ),
+    };
+  } catch (err) {
+    // One unavailable name makes brew fail the batch. Recover successful
+    // siblings, but keep failures outside the cache so the next run retries.
+    if (names.length === 1)
+      return { sources: {}, errors: Object.fromEntries(names.map((n) => [n, String(err)])) };
+    const each = await Promise.all(names.map((n) => brewSources([n])));
+    return {
+      sources: Object.assign({}, ...each.map((r) => r.sources)),
+      errors: Object.assign({}, ...each.map((r) => r.errors)),
+    };
   }
-  for (const c of d.casks ?? []) {
-    if (!c.token) continue;
-    out[c.token] = caskSource(c);
-  }
-  return out;
 }
 
 /**
  * Sources for these packages, asking brew only about the ones not cached.
  *
- * A name brew never answered for is recorded as `null` too. Without that, a
- * formula from a tap that has since gone away would be re-asked on every run,
- * and each run would pay a full `brew info` to be told the same nothing.
+ * Only successful metadata is cached, including a confirmed absence of a
+ * forge URL. Failed or absent metadata remains unknown and is retried next run.
  */
-export async function resolveSources(names: string[], path = sourceCachePath()): Promise<SourceCache> {
+export async function resolveSources(names: string[], path = sourceCachePath()): Promise<SourceLookup> {
   const cache = await readSourceCache(path);
   const missing = names.filter((n) => !(n in cache));
-  if (missing.length === 0) return cache;
-
+  if (missing.length === 0) return { sources: cache, errors: {} };
   const fresh = await brewSources(missing);
-  for (const n of missing) cache[n] = fresh[n] ?? null;
+  for (const n of missing) if (n in fresh.sources) cache[n] = fresh.sources[n] ?? null;
   try {
     await writeSourceCache(cache, path);
   } catch {
-    // Failing to persist costs a repeat lookup next run, nothing else — not
-    // worth sinking a report over.
+    // Persistence is optional; the measured answer is still valid this run.
   }
-  return cache;
+  return { sources: cache, errors: fresh.errors };
 }
 
 /**

@@ -744,7 +744,11 @@ function renderEntry(e: OverviewEntry, ctx: OverviewCtx, prefix: string, cont: s
     return;
   }
   if (e.bucket === "unreachable") {
-    body(`${red("could not read its releases")}: ${e.error ?? "unknown error"}`);
+    body(
+      e.sourceError
+        ? `${red("could not determine its release source")}: ${e.sourceError}`
+        : `${red("could not read its releases")}: ${e.error ?? "unknown error"}`,
+    );
     return;
   }
 
@@ -852,6 +856,7 @@ function safeEntry(e: OverviewEntry): OverviewEntry {
     page: e.page ? safe(e.page) : e.page,
     error: e.error === undefined ? undefined : safe(e.error),
     rangeError: e.rangeError === undefined ? undefined : safe(e.rangeError),
+    sourceError: e.sourceError === undefined ? undefined : safe(e.sourceError),
   };
 }
 
@@ -940,7 +945,7 @@ export function renderOverview(raw: Overview, opts: { greedyUpgrade?: boolean } 
   // "digest failed" would be the report contradicting itself.
   section("★ pending, not digested", of("undigested"), ctx, out);
   section("referenced, but bumpii found no repo to read", of("no-repo"), ctx, out);
-  section("referenced, but its forge could not be read", of("unreachable"), ctx, out);
+  section("referenced, but release discovery failed", of("unreachable"), ctx, out);
 
   if (o.current.length > 0) {
     // "tracked", not "referenced": every entry here was checked and is current,
@@ -968,6 +973,7 @@ export function renderOverview(raw: Overview, opts: { greedyUpgrade?: boolean } 
       // are known — the repo itself is the only link that is certainly real.
       const repo = (e.source && releasesPage(e.source)) || (e.pageUnfilled ? null : e.page);
       if (repo) out.push(`    ${dim(link(repo, repo))}`);
+      if (e.sourceError) out.push(`    ${red("could not determine its release source")}: ${e.sourceError}`);
     }
     out.push("");
   }

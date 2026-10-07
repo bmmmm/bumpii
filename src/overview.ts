@@ -89,6 +89,8 @@ export interface OverviewEntry {
   error?: string;
   /** Brew did not provide an orderable installed-to-target interval. */
   rangeError?: string;
+  /** Brew metadata failed before a forge could be identified. */
+  sourceError?: string;
 }
 
 export interface Overview {
@@ -381,7 +383,7 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
   // unreferenced list is deliberately unjudged, but it still promises a link,
   // and a link is the one thing that is useful without any judgement at all.
   progress?.phase("discover", { tools: wanted.length });
-  const sources = await resolveSources(wanted.map((p) => p.name));
+  const { sources, errors: sourceErrors } = await resolveSources(wanted.map((p) => p.name));
 
   const limitJudge = limiter(opts.concurrency);
 
@@ -402,6 +404,7 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
       // precisely because brew's URLs point somewhere unhelpful.
       const mapping = config.packages?.[pkg.name];
       const source = tool?.source || mapping?.source || sources[pkg.name] || null;
+      const sourceError = source ? undefined : sourceErrors[pkg.name];
       const base: OverviewEntry = {
         name: pkg.name,
         installed: pkg.installed,
@@ -411,6 +414,7 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
         tracked: Boolean(tool),
         refs: count,
         source,
+        sourceError,
         // The same filling `notes` uses: a cask's `,build` suffix is no part
         // of any page's name, and "latest" is no version.
         ...(mapping?.page ? pageFields(fillPage(mapping.page, pageVersion(pkg.latest))) : { page: null }),
@@ -425,6 +429,10 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
       if (count === 0) {
         done();
         return { entry: base };
+      }
+      if (sourceError) {
+        done();
+        return { entry: { ...base, bucket: "unreachable" } };
       }
       if (!source) {
         done();

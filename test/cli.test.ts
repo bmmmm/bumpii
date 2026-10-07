@@ -748,6 +748,31 @@ test("overview CLI reports only releases brew can deliver", async (t) => {
   assert.doesNotMatch(text.stdout, /0\.3\.0/);
 });
 
+for (const referenced of [false, true]) {
+  test(`overview reports failed source discovery with references=${referenced}`, async () => {
+    const home = await freshHome();
+    const usage = join(home, "usage.sh");
+    await writeFile(usage, referenced ? "uv sync" : "unrelated");
+    await writeConfig(home, [], [usage]);
+    const dir = await fakeBrew(`case "$1" in
+outdated) ${UV_PENDING} ;;
+info) echo 'temporary metadata failure' >&2; exit 1 ;;
+list) exit 0 ;;
+esac`);
+    const env = { PATH: dir, XDG_CACHE_HOME: home };
+    const json = await runCli(["overview", "--no-judge", "--json"], home, env);
+    const report = JSON.parse(json.stdout);
+    assert.equal(report.entries.length, 1);
+    assert.equal(report.entries[0].bucket, referenced ? "unreachable" : "no-signal");
+    assert.equal(report.entries[0].refs, referenced ? 1 : 0);
+    assert.match(report.entries[0].sourceError, /temporary metadata failure/);
+    const text = await runCli(["overview", "--no-judge"], home, env);
+    assert.match(text.stdout, /could not determine its release source/);
+    assert.doesNotMatch(text.stdout, /no forge repo in its brew URLs|up to date/);
+    assert.equal(text.code, 1);
+  });
+}
+
 test("overview exits 2 when brew itself cannot answer", async () => {
   // The other half: if the source of the whole report fails, there is no
   // report — and that must not read as "nothing pending" either.
