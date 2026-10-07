@@ -277,14 +277,74 @@ failed reads. Extend outdated, overview and CLI tests; document the state.
    and macOS CI results. For F1, repeat the live-data check if an installed
    self-updating cask is still pending; otherwise state the changed conditions.
 
+## Follow-up verification (2026-10-07)
+
+The seven fixes above are complete. The requested follow-up completed these
+four checks:
+
+1. **Schema aligned.** `biome.json` is project-owned; its schema now matches
+   the installed 2.5.14 CLI. The existing lint check inspected 44 files with
+   no diagnostics. A scratch counter-check inspected copies of `biome.json`
+   and `package.json`: restoring 2.5.11 reproduced the schema info; 2.5.14 removed it.
+   Both exit zero, so the diagnostic, rather than the exit code, proves this.
+2. **Live models measured.** Public release notes went through the production
+   `digest` function and parser with isolated derived caches. Every successful
+   fresh answer made one actual model request or CLI invocation. All eight
+   repeat answers were identical and made zero further model calls. See the
+   input review and model limitations below.
+3. **Real upgrade verified.** Homebrew's dry run and a temporary bumpii config
+   both selected exactly `brew upgrade git-delta`, from 0.19.2 to 0.20.1.
+   `bumpii digest --yes` ran that command and re-probed `delta: now 0.20.1`.
+   An independent `delta --version` matched; `brew outdated --json=v2
+   git-delta` returned empty formula/cask lists; a fresh JSON digest reported
+   installed/latest 0.20.1 with no pending releases. The upgraded binary also
+   rendered a real two-file diff containing both changed values. Cleanup and
+   dependent checks were disabled for this bounded run: `brew list --versions
+   git-delta` still listed both 0.20.1 and 0.19.2. The normal bumpii config was
+   untouched, and twelve other packages remained pending in the report.
+4. **Audit and required local checks passed.** `pnpm audit --json` reported
+   32 dependency entries, zero runtime dependencies and zero known advisories
+   at every severity. Type check and lint passed. The full suite ran 514 tests:
+   514 passed, zero failed, zero skipped (150.3 seconds). No dependency change
+   was needed for these findings.
+
+### Live input and semantic review
+
+The three model runs below used byte-identical public note bodies. SHA-256
+was measured on the original bytes, retaining line endings. Fresh/cache
+durations are single observations on a shared machine, including model load
+where applicable; they are not a latency benchmark or a model ranking.
+
+| Release | Note bytes / SHA-256 | What was checked |
+| --- | --- | --- |
+| [delta 0.20.1](https://github.com/dandavison/delta/releases/tag/0.20.1) | 26 / `460e01b14688e0062a4ed218abe174fba8dc3091dbac46a8960f47f355a164ad` | Preserve the terse patch notice without inventing what issue 2270 fixes. |
+| [jq 1.8.1](https://github.com/jqlang/jq/releases/tag/jq-1.8.1) | 1,058 / `405718e1f53746a4e1bc0967c447cea4afa00ee596d817a01b6d0df59e3bf0ac` | Both CVE/GHSA fixes classified as security; the assertion and portability fixes stated accurately. |
+| [uv 0.9.0](https://github.com/astral-sh/uv/releases/tag/0.9.0) | 10,085 / `835f206d0f9ce7f8a1debbd382d111fdef744cd02e7583e988c277c9e47640ca` | Changed defaults and Docker bases, the 3.14+ free-threaded condition, unchanged version pins, and the four listed bug fixes. |
+
+| Engine | delta fresh / cached | jq fresh / cached | uv fresh / cached | Observed semantic result |
+| --- | --- | --- | --- | --- |
+| `Qwen3.5-2B-MLX-8bit`, local | 7.21 s / 0.44 ms | 2.33 s / 0.61 ms | 180 s timeout / unavailable | Dropped the patch notice; labelled jq's assertion fix breaking. Both security fixes were labelled security. |
+| `LFM2.5-8B-A1B-MLX-4bit`, local | 10.38 s / 0.69 ms | 15.75 s / 0.99 ms | 45.07 s / 0.28 ms | Preserved the patch notice, but labelled jq's GHSA fix as an ordinary fix and duplicated another item. Omitted several uv fixes and labelled one item unclassified. |
+| `claude-cli/haiku` | 5.68 s / 0.14 ms | 8.80 s / 0.12 ms | 12.91 s / 0.12 ms | In these three answers, the checked claims matched the notes, including both security classifications and the uv conditions. |
+
+The initial `Qwen3.6-35B-A3B-4bit` request returned HTTP 507: the server
+required 19.08 GB while its dynamic ceiling was 12.91 GB. That is an
+infrastructure rejection, not a model-quality result. No server settings,
+application defaults or user configuration were changed to bypass it.
+
+**Lesson from the live check:** syntactically valid model JSON and a working
+cache do not establish semantic coverage or correct severity. The two small
+local models did not pass this sample review. Haiku's three checked answers
+are evidence for those inputs only, not a general quality guarantee. Broader
+model selection or prompt changes need a separate measured work unit.
+
 ## Deferred and unverified
 
-- The Biome schema drift is confirmed but informational. Align it with the
-  installed version in a small maintenance change; no dependency upgrade is
-  justified by this diagnostic alone.
-- This analysis did not execute upgrades, contact a live model, benchmark
-  model latency, or audit dependency advisories. No claim about those follows
-  from the tests above.
+- The follow-up measured one targeted upgrade and three public releases.
+  Other package upgrades, a representative quality corpus, latency percentiles
+  and undisclosed dependency vulnerabilities remain unverified. Registry
+  advisory coverage and the eight cached answers establish no claims about
+  those cases.
 - Local runtime was Node 26.10.0. Node 24/Linux coverage comes from CI, not
   from these local measurements.
 - Parser rewrites, a CLI split, new features, extra release pagination and
