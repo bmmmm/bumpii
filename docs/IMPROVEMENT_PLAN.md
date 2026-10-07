@@ -1,12 +1,13 @@
 # Improvement plan
 
-Analyzed on 2026-10-05. Implementation started on 2026-10-06.
+Analyzed on 2026-10-05. Implemented on 2026-10-06 and 2026-10-07.
 
 Completed: F1 (pending self-updating casks excluded from current), F7 (digest
 errors take precedence over pending updates), F2 (overview notes bounded by
 brew's upgrade interval), F3 (retryable source discovery failures), F5 (invalid
-model items rejected before caching), F4 (model-input omissions in reports).
-Open: F6.
+model items rejected before caching), F4 (model-input omissions in reports),
+F6 (failed installation lookups remain unknown).
+All seven implementation units are complete; deferred work is listed below.
 
 F1 verification: 466 tests passed without skips; omitting either pending list
 made the new CLI assertions fail. Live gcloud-cli remained pending at
@@ -41,6 +42,16 @@ results agree below, at and above the budget, including shared budgets. Digest,
 overview and inbox retain the qualifier in text and JSON alongside valid items.
 Mutations cover the cut boundary, counts, both cache paths, each caller and the
 shared renderer, including control-byte stripping in the new links.
+
+F6 verification: 514 tests passed without skips; type check and lint passed
+(the pre-existing Biome schema info remains). Real subprocess tests cover both
+listing failures, successful empty listings, formula/cask mixtures, partial
+stdout and a timed interruption. Mutations of each error source, classification,
+diagnostic and rendering branch failed assertions. An old absence fixture now
+returns a successful empty listing: exit 1 cannot prove absence.
+
+The installed `~/.local/bin/bumpii` resolves to this checkout's launcher;
+its help command ran successfully. No separate build or installation was needed.
 
 Baseline: `fc58565c0d50a54bfc3bd1a6c3f59bc1803a5605`; local `main`,
 `origin/main`, and `github/main` matched after fetching both remotes.
@@ -82,21 +93,12 @@ updates itself (1)
   gcloud-cli  572.0.0 → 587.0.0
 ```
 
-Run the retained [regression probes](../scripts/analysis-2026-10-05.mjs):
-
-```sh
-node --test scripts/analysis-2026-10-05.mjs
-node --test --test-name-pattern='F3:' scripts/analysis-2026-10-05.mjs
-```
-
-These are opt-in **red reproductions**, outside the default `node --test`
-discovery patterns. Exit 1 is expected on the baseline: assertions describe
-the desired behaviour, not the bugs. Diagnostics show the actual values.
-They run production functions, renderers, real stub-brew subprocesses, and
-one complete CLI process. All fetches are intercepted; models, upgrades, and
-external services are not contacted. F2 has two cases, hence eight tests for
-seven findings. During implementation, move each regression into its existing
-test file and remove the corresponding probe when the fix is proved.
+The [original regression probes](https://github.com/bmmmm/bumpii/blob/3ace0e68961a2d1c090d3a027e602843c87b7dc3/scripts/analysis-2026-10-05.mjs)
+are retained in the analysis commit. They were opt-in red reproductions: eight
+assertion failures across seven findings on the analyzed baseline, using real
+stub-brew subprocesses, intercepted fetches and one complete CLI process.
+Each reproduction has now moved into the normal suite; the obsolete script
+was removed. Models, upgrades and public network requests are not required.
 
 ## Order and scope
 
@@ -289,6 +291,5 @@ failed reads. Extend outdated, overview and CLI tests; document the state.
   broad performance work have no measured requirement from this review.
   Revisit them when a concrete symptom justifies a separate work unit.
 
-The status above tracks implementation. Remaining units stay open until their
-acceptance criteria and mutation checks have passed; their opt-in probes are
-removed as regressions enter the normal suite.
+All seven regressions now run in the normal suite. Their original failing
+probes remain available in the analysis commit linked above.

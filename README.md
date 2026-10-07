@@ -154,6 +154,11 @@ treatment as `gh` — so `tools.json` decides what `bumpii` watches, not what
 `overview` can tell you. `worth tracking` at the end names the ones that
 earned an entry.
 
+A failed or timed-out `brew list --versions` leaves missing tracked packages
+under `tracked, installation unknown`. JSON marks them `lookup-failed` with
+the diagnostic. Versions printed before the failure remain usable; only
+successful formula and cask listings can establish that a package is absent.
+
 `overview` carries the same exit codes as the digest — `0` nothing pending, `1`
 something is, `2` the run failed — so a scheduled `bumpii overview` can be acted
 on without parsing the report. Worth knowing before it goes in a `set -e`

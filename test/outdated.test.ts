@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import {
+  brewInstalledVersions,
   compareUrl,
   greedyOnly,
   installedVersionMap,
@@ -388,4 +389,24 @@ test("source cache accepts only versioned lookup objects and validated values", 
     JSON.stringify({ version: 1, sources: { app: "github:o/app", absent: null, invalid: 42 } }),
   );
   assert.deepEqual(await readSourceCache(path), { app: "github:o/app", absent: null });
+});
+
+test("installation listing preserves partial output when its deadline interrupts both calls", async (t) => {
+  const dir = await scratch();
+  await writeFile(join(dir, "brew"), "#!/bin/sh\nprintf 'app 1.0.0\\n'\nexec /bin/sleep 5\n", {
+    mode: 0o755,
+  });
+  const previous = process.env.PATH;
+  process.env.PATH = dir;
+  t.after(() => {
+    process.env.PATH = previous;
+  });
+  // A 200 ms deadline killed sandbox startup before printf; leave room for
+  // the observed version to arrive, then interrupt the running listing.
+  assert.deepEqual(await brewInstalledVersions([], 1_000), { versions: new Map(), errors: [] });
+  const got = await brewInstalledVersions(["app", "missing"], 1_000);
+  assert.deepEqual([...got.versions], [["app", "1.0.0"]], "a timed-out listing still observed this version");
+  assert.equal(got.errors.length, 2, "neither interrupted listing can establish absence");
+  assert.ok(got.errors.every((e) => /brew list.*failed: timed out/.test(e)));
+  assert.equal(got.versions.has("missing"), false);
 });

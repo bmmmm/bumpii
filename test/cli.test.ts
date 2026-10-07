@@ -793,7 +793,10 @@ test("overview does not take a manual line's prose for brew managing the tool", 
   // installed — nothing was checked" while the digest had just probed it.
   // brew here has nothing outdated and nothing installed, so only the update
   // line decides which heading the entry gets.
-  const dir = await fakeBrew(`case "$1" in outdated) ${NOTHING_OUTDATED} ;; *) exit 1 ;; esac`);
+  // Absence needs a successful empty listing; exit 1 measures unknown status.
+  const dir = await fakeBrew(
+    `case "$1" in outdated) ${NOTHING_OUTDATED} ;; list) exit 0 ;; *) exit 1 ;; esac`,
+  );
   const home = await freshHome();
   await writeConfig(home, [
     tool({ name: "shim", update: "manual: on a fixed release, brew upgrade shim and drop the shim" }),
@@ -3003,3 +3006,68 @@ globalThis.fetch = async (url, init) => {
     "cached results retain the qualifier without another model call",
   );
 });
+
+for (const scenario of [
+  { label: "both failed", formula: "", cask: "", formulaCode: 1, caskCode: 1, current: [] },
+  {
+    label: "formula partial output",
+    formula: "app 1.0.0",
+    cask: "",
+    formulaCode: 1,
+    caskCode: 0,
+    current: ["app"],
+  },
+  {
+    label: "cask partial output",
+    formula: "",
+    cask: "app 1.0.0",
+    formulaCode: 0,
+    caskCode: 1,
+    current: ["app"],
+  },
+  { label: "formula only", formula: "app 1.0.0", cask: "", formulaCode: 0, caskCode: 1, current: ["app"] },
+  { label: "cask only", formula: "", cask: "app 1.0.0", formulaCode: 1, caskCode: 0, current: ["app"] },
+  { label: "confirmed absence", formula: "", cask: "", formulaCode: 0, caskCode: 0, current: [] },
+]) {
+  test(`overview distinguishes installation lookup failure: ${scenario.label}`, async () => {
+    const home = await freshHome();
+    await writeConfig(home, [
+      tool({ name: "app", update: "brew upgrade app" }),
+      tool({ name: "missing", update: "brew upgrade missing" }),
+    ]);
+    const dir = await fakeBrew(`case "$1" in
+outdated|info) ${NOTHING_OUTDATED} ;;
+list)
+  if [ "$2" = '--cask' ]; then
+    printf '%s\\n' '${scenario.cask}'
+    if [ ${scenario.caskCode} -ne 0 ]; then echo 'cask listing unavailable' >&2; fi
+    exit ${scenario.caskCode}
+  fi
+  printf '%s\\n' '${scenario.formula}'
+  if [ ${scenario.formulaCode} -ne 0 ]; then echo 'formula listing unavailable' >&2; fi
+  exit ${scenario.formulaCode} ;;
+esac`);
+    const env = { PATH: dir, XDG_CACHE_HOME: home };
+    const json = await runCli(["overview", "--no-judge", "--json"], home, env);
+    const report = JSON.parse(json.stdout);
+    assert.deepEqual(
+      report.current.map((e: { name: string }) => e.name),
+      scenario.current,
+    );
+    const failed = scenario.formulaCode !== 0 || scenario.caskCode !== 0;
+    assert.equal(report.unchecked.length, 2 - scenario.current.length);
+    for (const e of report.unchecked) {
+      assert.equal(e.reason, failed ? "lookup-failed" : "not-installed", "absence needs a completed lookup");
+      if (failed) assert.match(e.error ?? "", /listing unavailable/);
+    }
+    const text = await runCli(["overview", "--no-judge"], home, env);
+    if (failed) {
+      assert.match(text.stdout, /tracked, installation unknown/);
+      assert.doesNotMatch(text.stdout, /tracked, not installed|brew manages these but does not have them/);
+      if (scenario.current.length === 0) assert.doesNotMatch(text.stdout, /up to date/);
+    } else {
+      assert.match(text.stdout, /tracked, not installed/);
+      assert.doesNotMatch(text.stdout, /installation unknown/);
+    }
+  });
+}

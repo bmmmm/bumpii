@@ -892,7 +892,11 @@ export function renderOverview(raw: Overview, opts: { greedyUpgrade?: boolean } 
     unmappedError: raw.unmappedError === undefined ? undefined : safe(raw.unmappedError),
     entries: raw.entries.map(safeEntry),
     current: raw.current.map((c) => ({ ...c, name: safe(c.name) })),
-    unchecked: raw.unchecked.map((u) => ({ ...u, name: safe(u.name) })),
+    unchecked: raw.unchecked.map((u) => ({
+      ...u,
+      name: safe(u.name),
+      error: u.error === undefined ? undefined : safe(u.error),
+    })),
   };
   const out: string[] = [""];
   const of = (b: OverviewEntry["bucket"]) => o.entries.filter((e) => e.bucket === b);
@@ -1024,10 +1028,11 @@ export function renderOverview(raw: Overview, opts: { greedyUpgrade?: boolean } 
     out.push("");
   }
 
-  // The two reasons brew stayed silent are different problems with different
+  // The reasons brew stayed silent are different problems with different
   // answers, so they do not share a line.
   const notBrew = o.unchecked.filter((t) => t.reason === "not-brew");
   const notInstalled = o.unchecked.filter((t) => t.reason === "not-installed");
+  const lookupFailed = o.unchecked.filter((t) => t.reason === "lookup-failed");
   if (notBrew.length > 0) {
     out.push(
       bold("tracked, not covered here"),
@@ -1043,6 +1048,12 @@ export function renderOverview(raw: Overview, opts: { greedyUpgrade?: boolean } 
       dim("  brew manages these but does not have them — nothing was checked, and nothing is up to date"),
       "",
     );
+  }
+
+  if (lookupFailed.length > 0) {
+    out.push(bold("tracked, installation unknown"));
+    for (const t of lookupFailed) out.push(`  ${t.name}: ${t.error ?? "brew installation lookup failed"}`);
+    out.push(dim("  the listing was incomplete — absence was not established; run again"), "");
   }
 
   // A measured zero says nothing; an uncounted run says it could not count.

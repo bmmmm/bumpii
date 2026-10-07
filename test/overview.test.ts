@@ -1163,3 +1163,16 @@ test("overview interval respects branch selection and the fetched page boundary"
   assert.match(partial, /2\+ releases/);
   assert.doesNotMatch(partial, /no complete release interval/);
 });
+
+test("failed installation lookups render as unknown and sanitize the diagnostic", () => {
+  const ESC = String.fromCharCode(27);
+  const text = renderOverview(
+    overview({
+      unchecked: [{ name: "app", refs: 1, reason: "lookup-failed", error: `listing failed ${ESC}[2J` }],
+    }),
+  );
+  assert.match(text, /tracked, installation unknown/);
+  assert.match(text, /listing failed/);
+  assert.doesNotMatch(text, /not installed|up to date/);
+  assert.equal(text.includes(ESC), false);
+});

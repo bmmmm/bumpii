@@ -101,11 +101,16 @@ export interface Overview {
   /**
    * Tracked, but nothing here checked them. Either brew does not manage them at
    * all (container entries, anything installed by hand) or it does and they are
-   * not installed — brew is equally silent about both, and folding that silence
+   * not installed, or their installation lookup failed. Folding that silence
    * into "up to date" would be the confident wrong answer this tool exists to
    * avoid. `bumpii` itself is what checks the first kind.
    */
-  unchecked: { name: string; refs: number; reason: "not-brew" | "not-installed" }[];
+  unchecked: {
+    name: string;
+    refs: number;
+    reason: "not-brew" | "not-installed" | "lookup-failed";
+    error?: string;
+  }[];
   missingUsagePaths: string[];
   /**
    * The config names no usagePaths at all. Distinct from `missingUsagePaths`
@@ -527,7 +532,7 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
   const brewFormula = (t: ToolConfig) => (isManualUpdate(t.update) ? null : formulaOf(t.update));
   const brewManaged = quiet.filter((t) => brewFormula(t) !== null);
   progress?.phase("brew");
-  const installedVersions = await brewInstalledVersions(
+  const { versions: installedVersions, errors: installationErrors } = await brewInstalledVersions(
     brewManaged.flatMap((t) => {
       const f = brewFormula(t);
       return f ? [f] : [];
@@ -548,7 +553,12 @@ export async function buildOverview(config: Config, opts: OverviewOptions): Prom
     if (!formula) {
       unchecked.push({ name: t.name, refs: refsForTool(t), reason: "not-brew" });
     } else if (!installed) {
-      unchecked.push({ name: t.name, refs: refsForTool(t), reason: "not-installed" });
+      unchecked.push({
+        name: t.name,
+        refs: refsForTool(t),
+        reason: installationErrors.length > 0 ? "lookup-failed" : "not-installed",
+        ...(installationErrors.length > 0 ? { error: installationErrors.join("; ") } : {}),
+      });
     } else {
       current.push({ name: t.name, installed, refs: refsForTool(t) });
     }

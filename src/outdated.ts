@@ -159,13 +159,16 @@ function parseBrewJson<T>(stdout: string, what: string): T {
  *
  * `brew list --versions` rather than `brew info --json=v2 --installed`: the
  * same numbers, but one cheap call instead of the several seconds and megabytes
- * of JSON the info form costs — and this runs to decorate a line, not to decide
- * anything. A name brew does not manage is simply absent from the result, which
- * is how a tracked entry that is not a brew package stays distinguishable from
- * one that is.
+ * of JSON the info form costs. Observed versions are kept separately from
+ * listing errors: missing names establish absence only after both calls finish
+ * successfully. The deadline can be shortened to exercise real interruptions
+ * without waiting for the production limit.
  */
-export async function brewInstalledVersions(names: string[]): Promise<Map<string, string>> {
-  if (names.length === 0) return new Map();
+export async function brewInstalledVersions(
+  names: string[],
+  timeout = 120_000,
+): Promise<{ versions: Map<string, string>; errors: string[] }> {
+  if (names.length === 0) return { versions: new Map(), errors: [] };
   // Casks and formulae need separate calls, and each exits non-zero as soon as
   // one name is not of its kind — which is the normal case here, since the list
   // holds both. The output printed before that exit is the part we want, so a
@@ -177,14 +180,20 @@ export async function brewInstalledVersions(names: string[]): Promise<Map<string
       ["list", "--cask", "--versions", ...names],
     ].map(async (argv) => {
       try {
-        const { stdout } = await run("brew", argv, { timeout: 120_000 });
-        return stdout;
+        const { stdout } = await run("brew", argv, { timeout });
+        return { stdout, error: undefined };
       } catch (err) {
-        return (err as ExecError).stdout ?? "";
+        const failure = err as ExecError;
+        return { stdout: failure.stdout ?? "", error: `brew ${argv.join(" ")} failed: ${failure.message}` };
       }
     }),
   );
-  return installedVersionMap(names, formulae ?? "", casks ?? "");
+  // Positive observations survive a failed or timed-out read. Missing names
+  // establish absence only when both listings reached a successful end.
+  return {
+    versions: installedVersionMap(names, formulae?.stdout ?? "", casks?.stdout ?? ""),
+    errors: [formulae?.error, casks?.error].filter((e): e is string => e !== undefined),
+  };
 }
 
 /**
